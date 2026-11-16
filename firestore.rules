@@ -1,0 +1,692 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: default deny everything
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ---------- Core Primitives ----------
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_.\\-:]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedEmailUser() {
+      return isSignedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedSuperAdmin() {
+      return isVerifiedEmailUser()
+        && request.auth.token.email == 'spv.xpplay@gmail.com';
+    }
+
+    function adminDocExists() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    function adminData() {
+      return get(/databases/$(database)/documents/admins/$(request.auth.uid)).data;
+    }
+
+    function isAdmin() {
+      return isBootstrappedSuperAdmin()
+        || (isVerifiedEmailUser() && adminDocExists() && adminData().active == true);
+    }
+
+    function isSuperAdmin() {
+      return isBootstrappedSuperAdmin()
+        || (isAdmin() && adminData().role == 'SUPER_ADMIN');
+    }
+
+    function isFullAdminOrSuper() {
+      return isBootstrappedSuperAdmin()
+        || (isAdmin() && (adminData().role == 'SUPER_ADMIN' || adminData().role == 'ADMIN'));
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isActiveMember(uid) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/members/$(uid))
+        && get(/databases/$(database)/documents/members/$(uid)).data.status == 'ACTIVE';
+    }
+
+    function regBonusSetting() {
+      return exists(/databases/$(database)/documents/systemSettings/default)
+        ? get(/databases/$(database)/documents/systemSettings/default).data.registrationBonusXp
+        : 10;
+    }
+
+    function refBonusSetting() {
+      return exists(/databases/$(database)/documents/systemSettings/default)
+        ? get(/databases/$(database)/documents/systemSettings/default).data.referralBonusXp
+        : 5;
+    }
+
+    function isValidAuthIndexHash(id) {
+      return id is string && id.size() == 66 && id.matches('^[uw]_[a-f0-9]{64}$');
+    }
+
+    function isValidAuthIndex(data) {
+      return data.keys().hasAll(['uid', 'authEmail', 'kind', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'authEmail', 'kind', 'createdAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128
+        && data.authEmail is string && data.authEmail.size() >= 10 && data.authEmail.size() <= 120
+        && data.authEmail.matches('^m_[a-zA-Z0-9_\\-]+@member\\.xpplay\\.app$')
+        && data.kind in ['USERNAME', 'WHATSAPP']
+        && data.createdAt is int;
+    }
+
+    // ---------- Entity Validation Helpers ----------
+    function isValidBranch(data) {
+      return data.keys().hasAll(['id', 'name', 'subtitle', 'whatsapp', 'mapsUrl', 'active'])
+        && data.keys().hasOnly(['id', 'name', 'subtitle', 'whatsapp', 'mapsUrl', 'active'])
+        && data.id in ['DEMANG', 'SEKIP']
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 100
+        && data.subtitle is string && data.subtitle.size() >= 2 && data.subtitle.size() <= 120
+        && data.whatsapp is string && data.whatsapp.size() >= 8 && data.whatsapp.size() <= 20
+        && data.mapsUrl is string && data.mapsUrl.size() >= 10 && data.mapsUrl.size() <= 300
+        && data.active is bool;
+    }
+
+    function isValidLevelConfig(data) {
+      return data.keys().hasAll(['id', 'name', 'rank', 'minXp', 'colorHex', 'description'])
+        && data.keys().hasOnly(['id', 'name', 'rank', 'minXp', 'colorHex', 'description'])
+        && data.id in ['BRONZE', 'SILVER', 'JURAGAN', 'SULTAN']
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 40
+        && data.rank is int && data.rank >= 1 && data.rank <= 4
+        && data.minXp is int && data.minXp >= 0 && data.minXp <= 10000000
+        && data.colorHex is string && data.colorHex.size() >= 4 && data.colorHex.size() <= 12
+        && data.description is string && data.description.size() <= 300;
+    }
+
+    function isValidSystemSettings(data) {
+      return data.keys().hasAll([
+          'id', 'transactionXpRate', 'registrationBonusXp', 'referralBonusXp',
+          'currentCycleId', 'resetEnabled', 'resetInterval', 'resetUnit',
+          'nextResetAt', 'resetXpProgress', 'resetLevel', 'resetXpReward',
+          'updatedAt', 'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'id', 'transactionXpRate', 'registrationBonusXp', 'referralBonusXp',
+          'currentCycleId', 'resetEnabled', 'resetInterval', 'resetUnit',
+          'nextResetAt', 'resetXpProgress', 'resetLevel', 'resetXpReward',
+          'updatedAt', 'updatedBy'
+        ])
+        && data.id is string && data.id.size() >= 1 && data.id.size() <= 64
+        && data.transactionXpRate is int && data.transactionXpRate >= 100 && data.transactionXpRate <= 10000000
+        && data.registrationBonusXp is int && data.registrationBonusXp >= 0 && data.registrationBonusXp <= 10000
+        && data.referralBonusXp is int && data.referralBonusXp >= 0 && data.referralBonusXp <= 10000
+        && data.currentCycleId is string && data.currentCycleId.size() >= 2 && data.currentCycleId.size() <= 64
+        && data.resetEnabled is bool
+        && data.resetInterval is int && data.resetInterval >= 1 && data.resetInterval <= 3650
+        && data.resetUnit in ['DAYS', 'MONTHS']
+        && (data.nextResetAt == null || data.nextResetAt is int)
+        && data.resetXpProgress is bool
+        && data.resetLevel is bool
+        && data.resetXpReward is bool
+        && data.updatedAt is int
+        && data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128;
+    }
+
+    function isValidAdminUser(data) {
+      return data.keys().hasAll([
+          'uid', 'email', 'fullName', 'role', 'branchScope',
+          'permissions', 'active', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'email', 'fullName', 'role', 'branchScope',
+          'permissions', 'active', 'createdAt', 'updatedAt'
+        ])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 100
+        && data.role in ['SUPER_ADMIN', 'ADMIN', 'STAFF']
+        && data.branchScope in ['ALL', 'DEMANG', 'SEKIP']
+        && data.permissions is map
+        && data.active is bool
+        && data.createdAt is int
+        && data.updatedAt is int;
+    }
+
+    function isValidMemberProfile(data) {
+      return data.keys().hasAll([
+          'uid', 'memberId', 'fullName', 'username', 'whatsapp',
+          'socialMedia', 'status', 'xpProgress', 'xpReward',
+          'currentLevel', 'currentCycleId', 'referredByUid',
+          'referredByUsername', 'referralCount', 'lastPlayAt',
+          'lastPlayBranch', 'preferredBranch', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid', 'memberId', 'fullName', 'username', 'whatsapp',
+          'socialMedia', 'status', 'xpProgress', 'xpReward',
+          'currentLevel', 'currentCycleId', 'referredByUid',
+          'referredByUsername', 'referralCount', 'lastPlayAt',
+          'lastPlayBranch', 'preferredBranch', 'createdAt', 'updatedAt'
+        ])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128
+        && data.memberId is string && data.memberId.size() >= 4 && data.memberId.size() <= 40
+        && data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 100
+        && data.username is string && data.username.size() >= 3 && data.username.size() <= 24
+        && data.username.matches('^[a-z0-9][a-z0-9._]*[a-z0-9]$')
+        && data.whatsapp is string && data.whatsapp.size() >= 10 && data.whatsapp.size() <= 16
+        && data.whatsapp.matches('^628[1-9][0-9]{6,11}$')
+        && data.socialMedia is string && data.socialMedia.size() <= 100
+        && data.status in ['ACTIVE', 'SUSPENDED', 'INACTIVE', 'DELETED']
+        && data.xpProgress is int && data.xpProgress >= 0
+        && data.xpReward is int && data.xpReward >= 0
+        && data.currentLevel in ['BRONZE', 'SILVER', 'JURAGAN', 'SULTAN']
+        && data.currentCycleId is string && data.currentCycleId.size() >= 2 && data.currentCycleId.size() <= 64
+        && (data.referredByUid == null || (data.referredByUid is string && data.referredByUid.size() <= 128))
+        && (data.referredByUsername == null || (data.referredByUsername is string && data.referredByUsername.size() <= 24))
+        && data.referralCount is int && data.referralCount >= 0
+        && (data.lastPlayAt == null || data.lastPlayAt is int)
+        && (data.lastPlayBranch == null || data.lastPlayBranch in ['DEMANG', 'SEKIP'])
+        && (data.preferredBranch == null || data.preferredBranch in ['DEMANG', 'SEKIP'])
+        && data.createdAt is int
+        && data.updatedAt is int;
+    }
+
+    function isValidBenefit(data) {
+      return data.keys().hasAll([
+          'id', 'name', 'description', 'imageUrl', 'xpCost',
+          'levelRequirement', 'claimable', 'redeemable', 'stock',
+          'expiryAt', 'terms', 'active', 'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'name', 'description', 'imageUrl', 'xpCost',
+          'levelRequirement', 'claimable', 'redeemable', 'stock',
+          'expiryAt', 'terms', 'active', 'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id.size() >= 1 && data.id.size() <= 128
+        && data.name is string && data.name.size() >= 2 && data.name.size() <= 120
+        && data.description is string && data.description.size() <= 600
+        && data.imageUrl is string && data.imageUrl.size() <= 500
+        && data.xpCost is int && data.xpCost >= 0 && data.xpCost <= 1000000
+        && data.levelRequirement in ['BRONZE', 'SILVER', 'JURAGAN', 'SULTAN']
+        && data.claimable is bool
+        && data.redeemable is bool
+        && (data.stock == null || (data.stock is int && data.stock >= 0))
+        && (data.expiryAt == null || data.expiryAt is int)
+        && data.terms is string && data.terms.size() <= 600
+        && data.active is bool
+        && data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128
+        && data.createdAt is int
+        && data.updatedAt is int;
+    }
+
+    function isValidCampaign(data) {
+      return data.keys().hasAll([
+          'id', 'type', 'title', 'description', 'startAt', 'endAt',
+          'xpReward', 'imageUrl', 'terms', 'maxClaimsPerMember',
+          'totalClaimLimit', 'claimsCount', 'active', 'status',
+          'requiresEvidence', 'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'type', 'title', 'description', 'startAt', 'endAt',
+          'xpReward', 'imageUrl', 'terms', 'maxClaimsPerMember',
+          'totalClaimLimit', 'claimsCount', 'active', 'status',
+          'requiresEvidence', 'createdBy', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id.size() >= 1 && data.id.size() <= 128
+        && data.type in ['CHALLENGE', 'EVENT', 'PROMO']
+        && data.title is string && data.title.size() >= 2 && data.title.size() <= 120
+        && data.description is string && data.description.size() <= 1000
+        && data.startAt is int
+        && data.endAt is int
+        && data.endAt >= data.startAt
+        && data.xpReward is int && data.xpReward >= 1 && data.xpReward <= 100000
+        && data.imageUrl is string && data.imageUrl.size() <= 500
+        && data.terms is string && data.terms.size() <= 600
+        && data.maxClaimsPerMember is int && data.maxClaimsPerMember >= 1 && data.maxClaimsPerMember <= 100
+        && (data.totalClaimLimit == null || (data.totalClaimLimit is int && data.totalClaimLimit >= 1))
+        && data.claimsCount is int && data.claimsCount >= 0
+        && data.active is bool
+        && data.status in ['DRAFT', 'ACTIVE', 'EXPIRED', 'DISABLED']
+        && data.requiresEvidence is bool
+        && data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128
+        && data.createdAt is int
+        && data.updatedAt is int;
+    }
+
+    function isValidClaim(data) {
+      return data.keys().hasAll([
+          'id', 'memberId', 'memberUid', 'memberUsername', 'campaignId',
+          'campaignTitle', 'campaignType', 'xpRewardSnapshot',
+          'evidenceUrl', 'evidencePath', 'note', 'status',
+          'reviewedBy', 'reviewerRole', 'reviewedAt', 'denialReason',
+          'cycleId', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'memberId', 'memberUid', 'memberUsername', 'campaignId',
+          'campaignTitle', 'campaignType', 'xpRewardSnapshot',
+          'evidenceUrl', 'evidencePath', 'note', 'status',
+          'reviewedBy', 'reviewerRole', 'reviewedAt', 'denialReason',
+          'cycleId', 'createdAt'
+        ])
+        && data.id is string && data.id.size() >= 1 && data.id.size() <= 128
+        && data.memberId is string && data.memberId.size() >= 4 && data.memberId.size() <= 40
+        && data.memberUid is string && data.memberUid.size() >= 1 && data.memberUid.size() <= 128
+        && data.memberUsername is string && data.memberUsername.size() >= 3 && data.memberUsername.size() <= 24
+        && data.campaignId is string && data.campaignId.size() >= 1 && data.campaignId.size() <= 128
+        && data.campaignTitle is string && data.campaignTitle.size() >= 1 && data.campaignTitle.size() <= 120
+        && data.campaignType in ['CHALLENGE', 'EVENT', 'PROMO']
+        && data.xpRewardSnapshot is int && data.xpRewardSnapshot >= 0
+        && data.evidenceUrl is string && data.evidenceUrl.size() <= 500
+        && data.evidencePath is string && data.evidencePath.size() <= 300
+        && data.note is string && data.note.size() <= 400
+        && data.status in ['ON_PROCESS', 'APPROVED', 'DENIED']
+        && (data.reviewedBy == null || (data.reviewedBy is string && data.reviewedBy.size() <= 128))
+        && (data.reviewerRole == null || data.reviewerRole in ['SUPER_ADMIN', 'ADMIN', 'STAFF'])
+        && (data.reviewedAt == null || data.reviewedAt is int)
+        && (data.denialReason == null || (data.denialReason is string && data.denialReason.size() <= 300))
+        && data.cycleId is string && data.cycleId.size() >= 2 && data.cycleId.size() <= 64
+        && data.createdAt is int;
+    }
+
+    function isValidRedemption(data) {
+      return data.keys().hasAll([
+          'id', 'memberId', 'memberUid', 'memberUsername', 'benefitId',
+          'benefitName', 'xpCostSnapshot', 'levelRequirement', 'redemptionKind',
+          'status', 'reviewedBy', 'reviewerRole', 'reviewedAt', 'denialReason',
+          'cycleId', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'memberId', 'memberUid', 'memberUsername', 'benefitId',
+          'benefitName', 'xpCostSnapshot', 'levelRequirement', 'redemptionKind',
+          'status', 'reviewedBy', 'reviewerRole', 'reviewedAt', 'denialReason',
+          'cycleId', 'createdAt'
+        ])
+        && data.id is string && data.id.size() >= 1 && data.id.size() <= 128
+        && data.memberId is string && data.memberId.size() >= 4 && data.memberId.size() <= 40
+        && data.memberUid is string && data.memberUid.size() >= 1 && data.memberUid.size() <= 128
+        && data.memberUsername is string && data.memberUsername.size() >= 3 && data.memberUsername.size() <= 24
+        && data.benefitId is string && data.benefitId.size() >= 1 && data.benefitId.size() <= 128
+        && data.benefitName is string && data.benefitName.size() >= 1 && data.benefitName.size() <= 120
+        && data.xpCostSnapshot is int && data.xpCostSnapshot >= 0
+        && data.levelRequirement in ['BRONZE', 'SILVER', 'JURAGAN', 'SULTAN']
+        && data.redemptionKind in ['XP_REWARD', 'LEVEL_BENEFIT']
+        && data.status in ['ON_PROCESS', 'APPROVED', 'DENIED']
+        && (data.reviewedBy == null || (data.reviewedBy is string && data.reviewedBy.size() <= 128))
+        && (data.reviewerRole == null || data.reviewerRole in ['SUPER_ADMIN', 'ADMIN', 'STAFF'])
+        && (data.reviewedAt == null || data.reviewedAt is int)
+        && (data.denialReason == null || (data.denialReason is string && data.denialReason.size() <= 300))
+        && data.cycleId is string && data.cycleId.size() >= 2 && data.cycleId.size() <= 64
+        && data.createdAt is int;
+    }
+
+    function isValidMemberNotification(data) {
+      return data.keys().hasAll([
+          'id', 'memberId', 'memberUid', 'notificationCampaignId',
+          'category', 'title', 'message', 'read', 'readAt', 'status', 'sentAt', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'memberId', 'memberUid', 'notificationCampaignId',
+          'category', 'title', 'message', 'read', 'readAt', 'status', 'sentAt', 'createdAt'
+        ])
+        && data.id is string && data.id.size() >= 1 && data.id.size() <= 128
+        && data.memberId is string && data.memberId.size() >= 4 && data.memberId.size() <= 40
+        && data.memberUid is string && data.memberUid.size() >= 1 && data.memberUid.size() <= 128
+        && (data.notificationCampaignId == null || (data.notificationCampaignId is string && data.notificationCampaignId.size() <= 128))
+        && data.category in ['SYSTEM', 'LEVEL_UP', 'CLAIM', 'REDEMPTION', 'PROMO', 'INACTIVITY', 'RESET']
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 140
+        && data.message is string && data.message.size() >= 1 && data.message.size() <= 600
+        && data.read is bool
+        && (data.readAt == null || data.readAt is int)
+        && data.status in ['SENT', 'READ']
+        && data.sentAt is int
+        && data.createdAt is int;
+    }
+
+    // ---------- Connection Check ----------
+    match /test/connection {
+      allow get: if true;
+      allow list, write: if false;
+    }
+
+    // ---------- Public / Config Collections ----------
+    match /branches/{branchId} {
+      allow get: if isValidId(branchId);
+      allow list: if true;
+      allow create, update: if isSuperAdmin() && isValidId(branchId) && isValidBranch(incoming());
+      allow delete: if false;
+    }
+
+    match /levels/{levelId} {
+      allow get: if isValidId(levelId);
+      allow list: if true;
+      allow create, update: if isSuperAdmin() && isValidId(levelId) && isValidLevelConfig(incoming());
+      allow delete: if false;
+    }
+
+    match /systemSettings/{settingId} {
+      allow get: if isValidId(settingId) && isSignedIn();
+      allow list: if isAdmin();
+      allow create, update: if isSuperAdmin() && isValidId(settingId) && isValidSystemSettings(incoming());
+      allow delete: if false;
+    }
+
+    // ---------- Admin RBAC Collection ----------
+    match /admins/{uid} {
+      allow get: if isValidId(uid) && (isOwner(uid) || isAdmin());
+      allow list: if isAdmin();
+      allow create, update: if isSuperAdmin() && isValidId(uid) && isValidAdminUser(incoming());
+      allow delete: if false;
+    }
+
+    // ---------- Internal Identity Mapping (Server-Only) ----------
+    match /identityIndex/{indexKey} {
+      allow read, write: if false;
+    }
+
+    // ---------- Zero-PII Hashed Auth Lookup (Get by Exact SHA-256 Only, No List) ----------
+    match /authIndex/{hashId} {
+      allow get: if isValidAuthIndexHash(hashId);
+      allow list: if false;
+      allow create: if isSignedIn()
+        && isValidAuthIndexHash(hashId)
+        && !exists(/databases/$(database)/documents/authIndex/$(hashId))
+        && isValidAuthIndex(incoming())
+        && (isAdmin() || incoming().uid == request.auth.uid);
+      allow update, delete: if false;
+    }
+
+    // ---------- Members Collection ----------
+    match /members/{uid} {
+      allow get: if isValidId(uid) && (isOwner(uid) || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isValidId(uid) && isValidMemberProfile(incoming()) && (
+        isAdmin() || (
+          isOwner(uid)
+          && !exists(/databases/$(database)/documents/members/$(uid))
+          && incoming().uid == uid
+          && incoming().status == 'ACTIVE'
+          && incoming().currentLevel == 'BRONZE'
+          && incoming().referralCount == 0
+          && incoming().lastPlayAt == null
+          && incoming().lastPlayBranch == null
+          && (
+            (
+              incoming().referredByUid == null
+              && incoming().referredByUsername == null
+              && incoming().xpProgress == regBonusSetting()
+              && incoming().xpReward == regBonusSetting()
+            ) || (
+              incoming().referredByUid != null
+              && incoming().referredByUid != uid
+              && incoming().referredByUsername != null
+              && exists(/databases/$(database)/documents/members/$(incoming().referredByUid))
+              && get(/databases/$(database)/documents/members/$(incoming().referredByUid)).data.status == 'ACTIVE'
+              && incoming().xpProgress == (regBonusSetting() + refBonusSetting())
+              && incoming().xpReward == (regBonusSetting() + refBonusSetting())
+              && existsAfter(/databases/$(database)/documents/referrals/$('ref_' + uid))
+            )
+          )
+        )
+      );
+      allow update: if isValidId(uid) && isValidMemberProfile(incoming()) && (
+        isAdmin() || (
+          isOwner(uid)
+          && isActiveMember(uid)
+          && incoming().uid == existing().uid
+          && incoming().memberId == existing().memberId
+          && incoming().username == existing().username
+          && incoming().whatsapp == existing().whatsapp
+          && incoming().status == existing().status
+          && incoming().xpProgress == existing().xpProgress
+          && incoming().xpReward == existing().xpReward
+          && incoming().currentLevel == existing().currentLevel
+          && incoming().currentCycleId == existing().currentCycleId
+          && incoming().referredByUid == existing().referredByUid
+          && incoming().referredByUsername == existing().referredByUsername
+          && incoming().referralCount == existing().referralCount
+          && incoming().lastPlayAt == existing().lastPlayAt
+          && incoming().lastPlayBranch == existing().lastPlayBranch
+          && incoming().createdAt == existing().createdAt
+          && incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'socialMedia', 'preferredBranch', 'updatedAt'])
+        ) || (
+          isSignedIn()
+          && uid != request.auth.uid
+          && existing().status == 'ACTIVE'
+          && !exists(/databases/$(database)/documents/members/$(request.auth.uid))
+          && existsAfter(/databases/$(database)/documents/members/$(request.auth.uid))
+          && existsAfter(/databases/$(database)/documents/referrals/$('ref_' + request.auth.uid))
+          && getAfter(/databases/$(database)/documents/members/$(request.auth.uid)).data.referredByUid == uid
+          && incoming().diff(existing()).affectedKeys().hasOnly(['xpProgress', 'xpReward', 'referralCount', 'updatedAt'])
+          && incoming().xpProgress == existing().xpProgress + refBonusSetting()
+          && incoming().xpReward == existing().xpReward + refBonusSetting()
+          && incoming().referralCount == existing().referralCount + 1
+        )
+      );
+      allow delete: if false;
+    }
+
+    // ---------- Immutable Ledgers & Transactions ----------
+    match /xpProgressLedger/{entryId} {
+      allow get: if isValidId(entryId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
+      allow create: if isValidId(entryId) && (
+        isAdmin() || (
+          isSignedIn()
+          && !exists(/databases/$(database)/documents/members/$(request.auth.uid))
+          && existsAfter(/databases/$(database)/documents/members/$(request.auth.uid))
+          && incoming().direction == 'CREDIT'
+          && (
+            (
+              incoming().memberUid == request.auth.uid
+              && incoming().source == 'REGISTRATION'
+              && incoming().amount == regBonusSetting()
+            ) || (
+              incoming().source == 'REFERRAL'
+              && incoming().amount == refBonusSetting()
+              && existsAfter(/databases/$(database)/documents/referrals/$('ref_' + request.auth.uid))
+              && (
+                incoming().memberUid == request.auth.uid
+                || incoming().memberUid == getAfter(/databases/$(database)/documents/members/$(request.auth.uid)).data.referredByUid
+              )
+            )
+          )
+        )
+      );
+      allow update, delete: if false;
+    }
+
+    match /xpRewardLedger/{entryId} {
+      allow get: if isValidId(entryId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
+      allow create: if isValidId(entryId) && (
+        isAdmin() || (
+          isSignedIn()
+          && !exists(/databases/$(database)/documents/members/$(request.auth.uid))
+          && existsAfter(/databases/$(database)/documents/members/$(request.auth.uid))
+          && incoming().direction == 'CREDIT'
+          && (
+            (
+              incoming().memberUid == request.auth.uid
+              && incoming().source == 'REGISTRATION'
+              && incoming().amount == regBonusSetting()
+            ) || (
+              incoming().source == 'REFERRAL'
+              && incoming().amount == refBonusSetting()
+              && existsAfter(/databases/$(database)/documents/referrals/$('ref_' + request.auth.uid))
+              && (
+                incoming().memberUid == request.auth.uid
+                || incoming().memberUid == getAfter(/databases/$(database)/documents/members/$(request.auth.uid)).data.referredByUid
+              )
+            )
+          )
+        )
+      );
+      allow update, delete: if false;
+    }
+
+    match /transactions/{transactionId} {
+      allow get: if isValidId(transactionId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
+      allow create: if isAdmin() && isValidId(transactionId);
+      allow update, delete: if false;
+    }
+
+    match /referrals/{referralId} {
+      allow get: if isValidId(referralId) && (
+        isAdmin() || (isSignedIn() && (existing().referrerUid == request.auth.uid || existing().refereeUid == request.auth.uid))
+      );
+      allow list: if isAdmin() || (
+        isSignedIn() && (resource.data.referrerUid == request.auth.uid || resource.data.refereeUid == request.auth.uid)
+      );
+      allow create: if isValidId(referralId) && (
+        isAdmin() || (
+          isSignedIn()
+          && referralId == ('ref_' + request.auth.uid)
+          && !exists(/databases/$(database)/documents/members/$(request.auth.uid))
+          && existsAfter(/databases/$(database)/documents/members/$(request.auth.uid))
+          && incoming().refereeUid == request.auth.uid
+          && incoming().referrerUid != request.auth.uid
+          && incoming().referrerXp == refBonusSetting()
+          && incoming().refereeXp == refBonusSetting()
+        )
+      );
+      allow update, delete: if false;
+    }
+
+    match /levelHistory/{historyId} {
+      allow get: if isValidId(historyId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
+      allow create: if isAdmin() && isValidId(historyId);
+      allow update, delete: if false;
+    }
+
+    // ---------- Benefits & Campaigns ----------
+    match /benefits/{benefitId} {
+      allow get: if isValidId(benefitId) && (isAdmin() || (isSignedIn() && existing().active == true));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.active == true);
+      allow create, update: if isFullAdminOrSuper() && isValidId(benefitId) && isValidBenefit(incoming());
+      allow delete: if false;
+    }
+
+    match /campaigns/{campaignId} {
+      allow get: if isValidId(campaignId) && (isAdmin() || (isSignedIn() && existing().active == true));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.active == true);
+      allow create, update: if isFullAdminOrSuper() && isValidId(campaignId) && isValidCampaign(incoming());
+      allow delete: if false;
+    }
+
+    // ---------- Claims & Redemptions ----------
+    match /claims/{claimId} {
+      allow get: if isValidId(claimId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
+      allow create: if isSignedIn()
+        && isValidId(claimId)
+        && isValidClaim(incoming())
+        && isActiveMember(request.auth.uid)
+        && incoming().memberUid == request.auth.uid
+        && incoming().status == 'ON_PROCESS'
+        && incoming().reviewedBy == null
+        && incoming().reviewerRole == null
+        && incoming().reviewedAt == null
+        && incoming().denialReason == null;
+      allow update: if isAdmin()
+        && isValidId(claimId)
+        && isValidClaim(incoming())
+        && existing().status == 'ON_PROCESS'
+        && incoming().status in ['APPROVED', 'DENIED']
+        && incoming().memberUid == existing().memberUid
+        && incoming().campaignId == existing().campaignId
+        && incoming().xpRewardSnapshot == existing().xpRewardSnapshot
+        && incoming().createdAt == existing().createdAt;
+      allow delete: if false;
+    }
+
+    match /redemptions/{redemptionId} {
+      allow get: if isValidId(redemptionId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
+      allow create: if isSignedIn()
+        && isValidId(redemptionId)
+        && isValidRedemption(incoming())
+        && isActiveMember(request.auth.uid)
+        && incoming().memberUid == request.auth.uid
+        && incoming().status == 'ON_PROCESS'
+        && incoming().reviewedBy == null
+        && incoming().reviewerRole == null
+        && incoming().reviewedAt == null
+        && incoming().denialReason == null;
+      allow update: if isAdmin()
+        && isValidId(redemptionId)
+        && isValidRedemption(incoming())
+        && existing().status == 'ON_PROCESS'
+        && incoming().status in ['APPROVED', 'DENIED']
+        && incoming().memberUid == existing().memberUid
+        && incoming().benefitId == existing().benefitId
+        && incoming().xpCostSnapshot == existing().xpCostSnapshot
+        && incoming().createdAt == existing().createdAt;
+      allow delete: if false;
+    }
+
+    // ---------- Notifications ----------
+    match /notifications/{notificationId} {
+      allow get: if isValidId(notificationId) && isAdmin();
+      allow list: if isAdmin();
+      allow create, update: if isFullAdminOrSuper() && isValidId(notificationId);
+      allow delete: if false;
+    }
+
+    match /memberNotifications/{notificationId} {
+      allow get: if isValidId(notificationId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
+      allow create: if isAdmin() && isValidId(notificationId) && isValidMemberNotification(incoming());
+      allow update: if isValidId(notificationId) && isValidMemberNotification(incoming()) && (
+        isAdmin() || (
+          isOwner(existing().memberUid)
+          && incoming().memberUid == existing().memberUid
+          && incoming().memberId == existing().memberId
+          && incoming().title == existing().title
+          && incoming().message == existing().message
+          && incoming().createdAt == existing().createdAt
+          && incoming().diff(existing()).affectedKeys().hasOnly(['read', 'readAt', 'status'])
+        )
+      );
+      allow delete: if false;
+    }
+
+    // ---------- Membership Cycles & Snapshots ----------
+    match /membershipCycles/{cycleId} {
+      allow get: if isValidId(cycleId) && isSignedIn();
+      allow list: if isSignedIn();
+      allow create, update: if isSuperAdmin() && isValidId(cycleId);
+      allow delete: if false;
+    }
+
+    match /cycleSnapshots/{snapshotId} {
+      allow get: if isValidId(snapshotId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
+      allow create: if isSuperAdmin() && isValidId(snapshotId);
+      allow update, delete: if false;
+    }
+
+    // ---------- Immutable Audit Logs ----------
+    match /auditLogs/{logId} {
+      allow get: if isValidId(logId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isAdmin() && isValidId(logId);
+      allow update, delete: if false;
+    }
+  }
+}

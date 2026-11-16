@@ -1,0 +1,491 @@
+{
+  "entities": {
+    "Branch": {
+      "title": "Branch",
+      "description": "Cabang XP PLAY (Demang atau Sekip)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "enum": ["DEMANG", "SEKIP"] },
+        "name": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "subtitle": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "whatsapp": { "type": "string", "minLength": 8, "maxLength": 20 },
+        "mapsUrl": { "type": "string", "minLength": 10, "maxLength": 300 },
+        "active": { "type": "boolean" }
+      },
+      "required": ["id", "name", "subtitle", "whatsapp", "mapsUrl", "active"]
+    },
+    "LevelConfig": {
+      "title": "LevelConfig",
+      "description": "Konfigurasi threshold level member berdasarkan XP Progress",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "enum": ["BRONZE", "SILVER", "JURAGAN", "SULTAN"] },
+        "name": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "rank": { "type": "integer" },
+        "minXp": { "type": "integer" },
+        "colorHex": { "type": "string", "minLength": 4, "maxLength": 12 },
+        "description": { "type": "string", "maxLength": 300 }
+      },
+      "required": ["id", "name", "rank", "minXp", "colorHex", "description"]
+    },
+    "SystemSettings": {
+      "title": "SystemSettings",
+      "description": "Konfigurasi sistem XP rate, bonus, dan jadwal reset cycle",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "transactionXpRate": { "type": "integer" },
+        "registrationBonusXp": { "type": "integer" },
+        "referralBonusXp": { "type": "integer" },
+        "currentCycleId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "resetEnabled": { "type": "boolean" },
+        "resetInterval": { "type": "integer" },
+        "resetUnit": { "type": "string", "enum": ["DAYS", "MONTHS"] },
+        "nextResetAt": { "type": "integer" },
+        "resetXpProgress": { "type": "boolean" },
+        "resetLevel": { "type": "boolean" },
+        "resetXpReward": { "type": "boolean" },
+        "updatedAt": { "type": "integer" },
+        "updatedBy": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "required": [
+        "id",
+        "transactionXpRate",
+        "registrationBonusXp",
+        "referralBonusXp",
+        "currentCycleId",
+        "resetEnabled",
+        "resetInterval",
+        "resetUnit",
+        "resetXpProgress",
+        "resetLevel",
+        "resetXpReward",
+        "updatedAt",
+        "updatedBy"
+      ]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Operator dan pengelola sistem dengan RBAC (SUPER_ADMIN, ADMIN, STAFF)",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "fullName": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "role": { "type": "string", "enum": ["SUPER_ADMIN", "ADMIN", "STAFF"] },
+        "branchScope": { "type": "string", "enum": ["ALL", "DEMANG", "SEKIP"] },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "integer" },
+        "updatedAt": { "type": "integer" }
+      },
+      "required": ["uid", "email", "fullName", "role", "branchScope", "active", "createdAt", "updatedAt"]
+    },
+    "MemberProfile": {
+      "title": "MemberProfile",
+      "description": "Profil member XP PLAY dengan pemisahan saldo XP Progress dan XP Reward",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberId": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "fullName": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "username": { "type": "string", "minLength": 3, "maxLength": 24, "pattern": "^[a-z0-9][a-z0-9._]*[a-z0-9]$" },
+        "whatsapp": { "type": "string", "minLength": 10, "maxLength": 16, "pattern": "^628[1-9][0-9]{6,11}$" },
+        "socialMedia": { "type": "string", "maxLength": 100 },
+        "status": { "type": "string", "enum": ["ACTIVE", "SUSPENDED", "INACTIVE", "DELETED"] },
+        "xpProgress": { "type": "integer" },
+        "xpReward": { "type": "integer" },
+        "currentLevel": { "type": "string", "enum": ["BRONZE", "SILVER", "JURAGAN", "SULTAN"] },
+        "currentCycleId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "referredByUid": { "type": "string", "maxLength": 128 },
+        "referredByUsername": { "type": "string", "maxLength": 24 },
+        "referralCount": { "type": "integer" },
+        "lastPlayAt": { "type": "integer" },
+        "lastPlayBranch": { "type": "string", "enum": ["DEMANG", "SEKIP"] },
+        "createdAt": { "type": "integer" },
+        "updatedAt": { "type": "integer" }
+      },
+      "required": [
+        "uid",
+        "memberId",
+        "fullName",
+        "username",
+        "whatsapp",
+        "socialMedia",
+        "status",
+        "xpProgress",
+        "xpReward",
+        "currentLevel",
+        "currentCycleId",
+        "referralCount",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "IdentityIndex": {
+      "title": "IdentityIndex",
+      "description": "Mapping internal username/WhatsApp unik untuk server-side auth lookup",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "authEmail": { "type": "string", "maxLength": 180 },
+        "kind": { "type": "string", "enum": ["USERNAME", "WHATSAPP"] },
+        "value": { "type": "string", "minLength": 3, "maxLength": 32 },
+        "createdAt": { "type": "integer" }
+      },
+      "required": ["uid", "authEmail", "kind", "value", "createdAt"]
+    },
+    "AuthIndex": {
+      "title": "AuthIndex",
+      "description": "Index lookup SHA-256 zero-PII untuk login username/WhatsApp + password",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "authEmail": { "type": "string", "minLength": 10, "maxLength": 120 },
+        "kind": { "type": "string", "enum": ["USERNAME", "WHATSAPP"] },
+        "createdAt": { "type": "integer" }
+      },
+      "required": ["uid", "authEmail", "kind", "createdAt"]
+    },
+    "XpLedgerEntry": {
+      "title": "XpLedgerEntry",
+      "description": "Buku besar immutable XP Progress atau XP Reward",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberId": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "memberUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "amount": { "type": "integer" },
+        "type": { "type": "string", "enum": ["PROGRESS", "REWARD"] },
+        "direction": { "type": "string", "enum": ["CREDIT", "DEBIT"] },
+        "source": { "type": "string" },
+        "referenceId": { "type": "string", "maxLength": 128 },
+        "cycleId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "createdAt": { "type": "integer" },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "note": { "type": "string", "maxLength": 300 }
+      },
+      "required": ["id", "memberId", "memberUid", "amount", "type", "direction", "source", "referenceId", "cycleId", "createdAt", "createdBy", "note"]
+    },
+    "TransactionRecord": {
+      "title": "TransactionRecord",
+      "description": "Transaksi kasir cabang Demang/Sekip penghasil XP",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberId": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "memberUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberUsername": { "type": "string", "minLength": 3, "maxLength": 24 },
+        "branch": { "type": "string", "enum": ["DEMANG", "SEKIP"] },
+        "amountIdr": { "type": "integer" },
+        "xpRateUsed": { "type": "integer" },
+        "xpGenerated": { "type": "integer" },
+        "source": { "type": "string", "enum": ["TRANSACTION"] },
+        "receiptNumber": { "type": "string", "maxLength": 64 },
+        "note": { "type": "string", "maxLength": 300 },
+        "adminId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "adminName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "cycleId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "createdAt": { "type": "integer" }
+      },
+      "required": ["id", "memberId", "memberUid", "memberUsername", "branch", "amountIdr", "xpRateUsed", "xpGenerated", "source", "receiptNumber", "note", "adminId", "adminName", "cycleId", "createdAt"]
+    },
+    "ReferralRecord": {
+      "title": "ReferralRecord",
+      "description": "Catatan referral valid antar member",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "referrerUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "referrerMemberId": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "referrerUsername": { "type": "string", "minLength": 3, "maxLength": 24 },
+        "refereeUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "refereeMemberId": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "refereeUsername": { "type": "string", "minLength": 3, "maxLength": 24 },
+        "referrerXp": { "type": "integer" },
+        "refereeXp": { "type": "integer" },
+        "cycleId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "createdAt": { "type": "integer" }
+      },
+      "required": ["id", "referrerUid", "referrerMemberId", "referrerUsername", "refereeUid", "refereeMemberId", "refereeUsername", "referrerXp", "refereeXp", "cycleId", "createdAt"]
+    },
+    "LevelHistoryRecord": {
+      "title": "LevelHistoryRecord",
+      "description": "Riwayat perubahan level member",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberId": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "memberUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "fromLevel": { "type": "string", "enum": ["BRONZE", "SILVER", "JURAGAN", "SULTAN"] },
+        "toLevel": { "type": "string", "enum": ["BRONZE", "SILVER", "JURAGAN", "SULTAN"] },
+        "xpProgressAtEvent": { "type": "integer" },
+        "source": { "type": "string", "maxLength": 64 },
+        "cycleId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "createdAt": { "type": "integer" }
+      },
+      "required": ["id", "memberId", "memberUid", "fromLevel", "toLevel", "xpProgressAtEvent", "source", "cycleId", "createdAt"]
+    },
+    "BenefitItem": {
+      "title": "BenefitItem",
+      "description": "Katalog benefit yang dapat di-redeem atau benefit berdasarkan level",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "name": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "description": { "type": "string", "maxLength": 600 },
+        "imageUrl": { "type": "string", "maxLength": 500 },
+        "xpCost": { "type": "integer" },
+        "levelRequirement": { "type": "string", "enum": ["BRONZE", "SILVER", "JURAGAN", "SULTAN"] },
+        "claimable": { "type": "boolean" },
+        "redeemable": { "type": "boolean" },
+        "terms": { "type": "string", "maxLength": 600 },
+        "active": { "type": "boolean" },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "integer" },
+        "updatedAt": { "type": "integer" }
+      },
+      "required": ["id", "name", "description", "xpCost", "levelRequirement", "claimable", "redeemable", "terms", "active", "createdBy", "createdAt", "updatedAt"]
+    },
+    "CampaignItem": {
+      "title": "CampaignItem",
+      "description": "Challenge, Event, atau Promo XP PLAY",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "type": { "type": "string", "enum": ["CHALLENGE", "EVENT", "PROMO"] },
+        "title": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "startAt": { "type": "integer" },
+        "endAt": { "type": "integer" },
+        "xpReward": { "type": "integer" },
+        "imageUrl": { "type": "string", "maxLength": 500 },
+        "terms": { "type": "string", "maxLength": 600 },
+        "maxClaimsPerMember": { "type": "integer" },
+        "claimsCount": { "type": "integer" },
+        "active": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["DRAFT", "ACTIVE", "EXPIRED", "DISABLED"] },
+        "requiresEvidence": { "type": "boolean" },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "integer" },
+        "updatedAt": { "type": "integer" }
+      },
+      "required": ["id", "type", "title", "description", "startAt", "endAt", "xpReward", "terms", "maxClaimsPerMember", "claimsCount", "active", "status", "requiresEvidence", "createdBy", "createdAt", "updatedAt"]
+    },
+    "ClaimRecord": {
+      "title": "ClaimRecord",
+      "description": "Pengajuan claim XP untuk Challenge/Event/Promo",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberId": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "memberUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberUsername": { "type": "string", "minLength": 3, "maxLength": 24 },
+        "campaignId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "campaignTitle": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "campaignType": { "type": "string", "enum": ["CHALLENGE", "EVENT", "PROMO"] },
+        "xpRewardSnapshot": { "type": "integer" },
+        "evidenceUrl": { "type": "string", "maxLength": 500 },
+        "evidencePath": { "type": "string", "maxLength": 300 },
+        "note": { "type": "string", "maxLength": 400 },
+        "status": { "type": "string", "enum": ["ON_PROCESS", "APPROVED", "DENIED"] },
+        "cycleId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "createdAt": { "type": "integer" }
+      },
+      "required": ["id", "memberId", "memberUid", "memberUsername", "campaignId", "campaignTitle", "campaignType", "xpRewardSnapshot", "evidenceUrl", "evidencePath", "note", "status", "cycleId", "createdAt"]
+    },
+    "RedemptionRecord": {
+      "title": "RedemptionRecord",
+      "description": "Pengajuan redeem XP Reward atau Level Benefit",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberId": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "memberUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberUsername": { "type": "string", "minLength": 3, "maxLength": 24 },
+        "benefitId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "benefitName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "xpCostSnapshot": { "type": "integer" },
+        "levelRequirement": { "type": "string", "enum": ["BRONZE", "SILVER", "JURAGAN", "SULTAN"] },
+        "redemptionKind": { "type": "string", "enum": ["XP_REWARD", "LEVEL_BENEFIT"] },
+        "status": { "type": "string", "enum": ["ON_PROCESS", "APPROVED", "DENIED"] },
+        "cycleId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "createdAt": { "type": "integer" }
+      },
+      "required": ["id", "memberId", "memberUid", "memberUsername", "benefitId", "benefitName", "xpCostSnapshot", "levelRequirement", "redemptionKind", "status", "cycleId", "createdAt"]
+    },
+    "NotificationCampaign": {
+      "title": "NotificationCampaign",
+      "description": "Kampanye notifikasi admin termasuk target member tidak aktif",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "message": { "type": "string", "minLength": 2, "maxLength": 600 },
+        "targetType": { "type": "string", "enum": ["ALL_MEMBERS", "SPECIFIC_MEMBER", "LEVEL", "BRANCH", "INACTIVE_MEMBERS"] },
+        "targetFilter": { "type": "string", "maxLength": 128 },
+        "startAt": { "type": "integer" },
+        "active": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["DRAFT", "ACTIVE", "EXPIRED"] },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "integer" }
+      },
+      "required": ["id", "title", "message", "targetType", "targetFilter", "startAt", "active", "status", "createdBy", "createdAt"]
+    },
+    "MemberNotification": {
+      "title": "MemberNotification",
+      "description": "Notifikasi individual milik member dengan status read/unread",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberId": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "memberUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "category": { "type": "string" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 600 },
+        "read": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["SENT", "READ"] },
+        "sentAt": { "type": "integer" },
+        "createdAt": { "type": "integer" }
+      },
+      "required": ["id", "memberId", "memberUid", "category", "title", "message", "read", "status", "sentAt", "createdAt"]
+    },
+    "MembershipCycle": {
+      "title": "MembershipCycle",
+      "description": "Periode/season membership untuk reset non-destruktif",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "name": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "startedAt": { "type": "integer" },
+        "status": { "type": "string", "enum": ["ACTIVE", "CLOSED"] },
+        "resetCount": { "type": "integer" },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "required": ["id", "name", "startedAt", "status", "resetCount", "createdBy"]
+    },
+    "CycleSnapshot": {
+      "title": "CycleSnapshot",
+      "description": "Snapshot saldo member sebelum reset cycle",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberId": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "memberUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberUsername": { "type": "string", "minLength": 3, "maxLength": 24 },
+        "cycleId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "nextCycleId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "previousXpProgress": { "type": "integer" },
+        "previousXpReward": { "type": "integer" },
+        "previousLevel": { "type": "string", "enum": ["BRONZE", "SILVER", "JURAGAN", "SULTAN"] },
+        "newXpProgress": { "type": "integer" },
+        "newXpReward": { "type": "integer" },
+        "newLevel": { "type": "string", "enum": ["BRONZE", "SILVER", "JURAGAN", "SULTAN"] },
+        "resetAt": { "type": "integer" },
+        "resetReason": { "type": "string", "maxLength": 240 },
+        "executedBy": { "type": "string", "minLength": 1, "maxLength": 128 }
+      },
+      "required": ["id", "memberId", "memberUid", "memberUsername", "cycleId", "nextCycleId", "previousXpProgress", "previousXpReward", "previousLevel", "newXpProgress", "newXpReward", "newLevel", "resetAt", "resetReason", "executedBy"]
+    },
+    "AuditLogRecord": {
+      "title": "AuditLogRecord",
+      "description": "Audit log immutable untuk seluruh aktivitas penting",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actorId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "actorRole": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "action": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "targetType": { "type": "string", "minLength": 2, "maxLength": 60 },
+        "targetId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "timestamp": { "type": "integer" }
+      },
+      "required": ["id", "actorId", "actorRole", "action", "targetType", "targetId", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/branches/{branchId}": {
+      "schema": { "$ref": "#/entities/Branch" },
+      "description": "Daftar cabang resmi XP PLAY (DEMANG dan SEKIP)"
+    },
+    "/levels/{levelId}": {
+      "schema": { "$ref": "#/entities/LevelConfig" },
+      "description": "Konfigurasi tier level member dan threshold XP Progress"
+    },
+    "/systemSettings/{settingId}": {
+      "schema": { "$ref": "#/entities/SystemSettings" },
+      "description": "Pengaturan global sistem XP, bonus, dan reset cycle"
+    },
+    "/admins/{uid}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Daftar administrator dan staff beserta role RBAC"
+    },
+    "/members/{uid}": {
+      "schema": { "$ref": "#/entities/MemberProfile" },
+      "description": "Dokumen profil member dan saldo XP Progress / XP Reward"
+    },
+    "/identityIndex/{indexKey}": {
+      "schema": { "$ref": "#/entities/IdentityIndex" },
+      "description": "Index unik internal username dan WhatsApp (server-only)"
+    },
+    "/authIndex/{hashId}": {
+      "schema": { "$ref": "#/entities/AuthIndex" },
+      "description": "Index SHA-256 zero-PII untuk lookup login username/WhatsApp tanpa list query"
+    },
+    "/xpProgressLedger/{entryId}": {
+      "schema": { "$ref": "#/entities/XpLedgerEntry" },
+      "description": "Buku besar riwayat XP Progress"
+    },
+    "/xpRewardLedger/{entryId}": {
+      "schema": { "$ref": "#/entities/XpLedgerEntry" },
+      "description": "Buku besar riwayat XP Reward"
+    },
+    "/transactions/{transactionId}": {
+      "schema": { "$ref": "#/entities/TransactionRecord" },
+      "description": "Riwayat transaksi nominal IDR di cabang"
+    },
+    "/referrals/{referralId}": {
+      "schema": { "$ref": "#/entities/ReferralRecord" },
+      "description": "Riwayat referral valid antar member"
+    },
+    "/levelHistory/{historyId}": {
+      "schema": { "$ref": "#/entities/LevelHistoryRecord" },
+      "description": "Riwayat kenaikan/perubahan level member"
+    },
+    "/benefits/{benefitId}": {
+      "schema": { "$ref": "#/entities/BenefitItem" },
+      "description": "Katalog benefit XP dan level benefit"
+    },
+    "/campaigns/{campaignId}": {
+      "schema": { "$ref": "#/entities/CampaignItem" },
+      "description": "Daftar Challenge, Event, dan Promo"
+    },
+    "/claims/{claimId}": {
+      "schema": { "$ref": "#/entities/ClaimRecord" },
+      "description": "Pengajuan claim XP member untuk Challenge/Event/Promo"
+    },
+    "/redemptions/{redemptionId}": {
+      "schema": { "$ref": "#/entities/RedemptionRecord" },
+      "description": "Pengajuan redemption benefit oleh member"
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/NotificationCampaign" },
+      "description": "Kampanye notifikasi dan target inactivity dari Admin"
+    },
+    "/memberNotifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/MemberNotification" },
+      "description": "Inbox notifikasi per member"
+    },
+    "/membershipCycles/{cycleId}": {
+      "schema": { "$ref": "#/entities/MembershipCycle" },
+      "description": "Daftar season / membership cycle"
+    },
+    "/cycleSnapshots/{snapshotId}": {
+      "schema": { "$ref": "#/entities/CycleSnapshot" },
+      "description": "Snapshot saldo member sebelum reset cycle"
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLogRecord" },
+      "description": "Audit log immutable untuk seluruh operasi penting"
+    }
+  }
+}

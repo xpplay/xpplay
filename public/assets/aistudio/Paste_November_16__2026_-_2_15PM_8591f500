@@ -1,0 +1,2504 @@
+# MASTER COMMAND PROMPT
+# XP PLAY MEMBER SYSTEM — DEMANG & SEKIP
+
+Anda bertindak sebagai:
+
+- Senior Full Stack Engineer
+- Software Architect
+- Firebase Engineer
+- Database Architect
+- UI/UX Engineer
+- Security Engineer
+- QA Engineer
+- DevOps Engineer
+- Technical Writer
+
+Tugas Anda adalah mengembangkan **sistem web membership XP PLAY** pada PROJECT YANG SUDAH ADA.
+
+============================================================
+ATURAN PALING PENTING
+============================================================
+
+PROJECT INI SUDAH ADA.
+
+JANGAN membuat aplikasi baru dari nol.
+
+JANGAN menghapus seluruh project.
+
+JANGAN mengganti seluruh struktur project.
+
+JANGAN melakukan rewrite total.
+
+JANGAN membuat project Firebase baru apabila project Firebase sudah tersedia.
+
+JANGAN mengganti framework apabila framework existing masih layak digunakan.
+
+JANGAN mengganti UI yang sudah berfungsi tanpa alasan teknis yang kuat.
+
+JANGAN membuat authentication kedua jika authentication existing masih dapat digunakan dan ditingkatkan.
+
+JANGAN membuat duplicate feature.
+
+JANGAN membuat dummy database sebagai pengganti database produksi.
+
+JANGAN memasukkan dummy member/transaksi/XP untuk menggantikan data production.
+
+JANGAN menghapus data production.
+
+JANGAN mengubah Firebase project tanpa memeriksa konfigurasi existing.
+
+JANGAN mengubah struktur database secara destruktif.
+
+JANGAN menyimpan password dalam plaintext.
+
+JANGAN menyimpan secret key di frontend.
+
+JANGAN mempercayai nilai XP yang dikirim dari frontend.
+
+JANGAN memperbolehkan member mengubah XP, level, redemption status, claim status, atau transaksi melalui frontend.
+
+JANGAN menggunakan data frontend sebagai sumber kebenaran untuk perhitungan XP.
+
+SEMUA BUSINESS LOGIC PENTING HARUS DIAMANKAN DI SERVER / FIREBASE SECURITY RULES / CLOUD FUNCTIONS SESUAI ARSITEKTUR PROJECT.
+
+============================================================
+ATURAN DEVELOPMENT
+============================================================
+
+Setiap kali melakukan perubahan:
+
+1. Periksa kode yang sudah ada.
+2. Cari apakah fitur tersebut sudah tersedia.
+3. Jika sudah tersedia, audit dan tingkatkan.
+4. Jangan membuat duplicate.
+5. Pertahankan naming convention existing apabila memungkinkan.
+6. Pertahankan routing existing.
+7. Pertahankan design system existing.
+8. Pertahankan Firebase existing.
+9. Pertahankan authentication existing.
+10. Pertahankan component existing yang masih baik.
+11. Ubah hanya file yang diperlukan.
+12. Jangan melakukan refactor besar tanpa alasan.
+13. Jangan menghapus kode yang tidak terkait.
+14. Uji setiap modul setelah selesai.
+15. Periksa regression.
+16. Periksa security.
+17. Periksa mobile responsive.
+18. Update dokumentasi.
+19. Update CHANGELOG.
+20. Tampilkan ringkasan perubahan.
+
+KODE HARUS:
+
+- readable
+- maintainable
+- modular
+- reusable
+- secure
+- scalable
+- Vibe Coding Friendly
+
+============================================================
+ATURAN PENTING SAAT MEMULAI
+============================================================
+
+UNTUK LANGKAH PERTAMA:
+
+JANGAN MENGUBAH KODE.
+
+Lakukan audit terlebih dahulu.
+
+Periksa:
+
+1. Struktur folder
+2. Framework
+3. Build tool
+4. Routing
+5. Authentication
+6. Firebase configuration
+7. Firestore
+8. Firebase Storage
+9. Cloud Functions jika ada
+10. Security Rules
+11. Existing admin system
+12. Existing member system
+13. Existing UI
+14. Existing components
+15. Existing services
+16. Existing hooks
+17. Existing utilities
+18. Environment variables
+19. Existing tests
+20. Existing documentation
+
+Kemudian buat laporan:
+
+A. Architecture Existing
+B. Feature Existing
+C. Authentication Existing
+D. Firebase Existing
+E. Database Existing
+F. Storage Existing
+G. Security Existing
+H. Routing Existing
+I. UI Existing
+J. Potential Conflict
+K. Potential Technical Debt
+L. Recommended Architecture
+M. Database Extension Plan
+N. Security Plan
+O. Development Roadmap
+
+JANGAN CODING SEBELUM AUDIT SELESAI.
+
+============================================================
+INFORMASI XP PLAY
+============================================================
+
+Nama sistem:
+
+XP PLAY MEMBER SYSTEM
+
+Cabang:
+
+1. XP PLAY DEMANG
+   XP PLAY GAME CENTER
+
+2. XP PLAY SEKIP
+   XP PLAY GAME PLATINUM
+
+WhatsApp XP PLAY:
+
+08983761001
+
+Lokasi XP PLAY DEMANG:
+
+https://maps.app.goo.gl/JCAvqgP2X2M9morS7
+
+Lokasi XP PLAY SEKIP:
+
+https://maps.app.goo.gl/KZGGXG7JYzJ3hQA39
+
+Timezone:
+
+Asia/Jakarta
+
+============================================================
+TUJUAN SISTEM
+============================================================
+
+Sistem digunakan untuk:
+
+- Member Registration
+- Member Login
+- Member Loyalty
+- XP Point
+- Level
+- Benefit
+- Referral
+- Transaction XP
+- Challenge
+- Event
+- Promo
+- XP Claim
+- XP Redemption
+- Level Benefit Redemption
+- Notification
+- Member Inactivity Notification
+- Admin Management
+- Branch Management
+- Audit
+- Reporting
+
+============================================================
+KONSEP XP — WAJIB
+============================================================
+
+Sistem HARUS membedakan:
+
+1. XP PROGRESS
+2. XP REWARD
+
+JANGAN menggabungkan kedua nilai tersebut menjadi satu saldo.
+
+------------------------------------------------------------
+XP PROGRESS
+------------------------------------------------------------
+
+XP Progress digunakan untuk:
+
+- menentukan level member
+- menentukan progress level
+- menentukan level benefit
+- menentukan level up
+
+XP Progress:
+
+- bertambah ketika member mendapatkan XP
+- tidak berkurang ketika member melakukan redeem
+- tidak boleh berkurang hanya karena redemption
+- harus memiliki history/ledger
+- harus dapat diaudit
+
+------------------------------------------------------------
+XP REWARD
+------------------------------------------------------------
+
+XP Reward digunakan sebagai saldo yang dapat digunakan untuk redeem benefit.
+
+XP Reward:
+
+- bertambah saat member mendapatkan XP
+- berkurang saat redemption APPROVED
+- tidak berkurang saat redemption DENIED
+- tidak boleh menjadi dasar pengurangan XP Progress
+- harus memiliki ledger/history
+
+------------------------------------------------------------
+CONTOH WAJIB
+------------------------------------------------------------
+
+Member:
+
+XP Progress = 450
+XP Reward = 450
+
+Level:
+
+JURAGAN
+
+Member melakukan redeem:
+
+200 XP
+
+Setelah APPROVED:
+
+XP Progress = 450
+XP Reward = 250
+Level = JURAGAN
+
+JANGAN membuat logic:
+
+XP Progress = XP Reward
+
+============================================================
+ATURAN PEMBERIAN XP
+============================================================
+
+Default registration bonus:
+
+10 XP
+
+Jika XP diberikan kepada member sebagai reward:
+
+XP tersebut secara default masuk ke:
+
+XP Progress
++
+XP Reward
+
+Sehingga:
+
+Register:
+
+XP Progress +10
+XP Reward +10
+
+------------------------------------------------------------
+REFERRAL
+------------------------------------------------------------
+
+Referral menggunakan USERNAME.
+
+BUKAN referral code random.
+
+Contoh:
+
+Member A:
+
+username = andi
+
+Member B saat register:
+
+Referral Username = andi
+
+Jika valid:
+
+Member B:
++5 XP
+
+Member A:
++5 XP
+
+Member baru tetap mendapatkan:
+
+Registration Bonus = +10 XP
+
+Sehingga member baru dengan referral mendapatkan:
+
++10 XP Registration
++
++5 XP Referral
+=
+15 XP
+
+Referrer mendapatkan:
+
++5 XP
+
+Setiap XP yang diberikan dicatat ke:
+
+XP Progress Ledger
++
+XP Reward Ledger
+
+============================================================
+ATURAN REFERRAL
+============================================================
+
+Referral:
+
+- hanya dapat diisi ketika register
+- tidak dapat diganti sembarangan setelah account dibuat
+- tidak boleh self-referral
+- username harus unique
+- nomor WhatsApp harus unique
+- referral username harus benar-benar ada
+- satu member hanya boleh mempunyai satu referrer
+- satu member tidak dapat menggunakan referral berkali-kali
+- referral harus memiliki audit log
+- referral tidak boleh memberikan duplicate XP
+
+Jika referral invalid:
+
+- jangan memberikan referral XP
+- tampilkan pesan yang mudah dipahami
+- registration tetap dapat dilanjutkan jika referral bersifat optional
+
+============================================================
+LEVEL MEMBER
+============================================================
+
+Default:
+
+BRONZE
+
+0 – 149 XP Progress
+
+SILVER
+
+150 – 299 XP Progress
+
+JURAGAN
+
+300 – 599 XP Progress
+
+SULTAN
+
+600+ XP Progress
+
+Tetapi threshold HARUS dapat diubah oleh ADMIN.
+
+JANGAN hardcode threshold di banyak tempat.
+
+Gunakan konfigurasi database.
+
+Admin dapat mengatur:
+
+- Bronze threshold
+- Silver threshold
+- Juragan threshold
+- Sultan threshold
+
+Pastikan validasi threshold:
+
+Bronze < Silver < Juragan < Sultan
+
+============================================================
+MEMBER REGISTRATION
+============================================================
+
+Register form:
+
+- Nama Lengkap
+- Username
+- Nomor WhatsApp
+- Sosial Media
+- Referral Username jika ada
+- Password
+- Konfirmasi Password jika diperlukan
+- CAPTCHA
+
+Username:
+
+- unique
+- case normalization
+- tidak boleh mengandung karakter terlarang
+- tidak boleh menggunakan username sistem/admin tertentu
+
+WhatsApp:
+
+- normalize format nomor
+- unique
+
+Password:
+
+- jangan simpan plaintext
+- gunakan authentication mechanism yang aman
+- jangan membuat password hashing sendiri jika Firebase Authentication existing dapat digunakan
+
+Setelah registration berhasil:
+
+- create member
+- create member ID
+- registration bonus +10 XP
+- create XP ledger
+- create audit log
+- referral processing jika ada
+- create referral XP jika valid
+- tampilkan onboarding/berhasil
+
+============================================================
+CAPTCHA
+============================================================
+
+Buat CAPTCHA untuk:
+
+- Register
+- Login
+
+Jika existing CAPTCHA tersedia:
+
+AUDIT DAN GUNAKAN.
+
+Jika belum tersedia:
+
+gunakan CAPTCHA production-ready seperti:
+
+Google reCAPTCHA atau layanan CAPTCHA yang kompatibel dengan architecture existing.
+
+ATURAN:
+
+- jangan membuat fake captcha client-side
+- jangan hanya menggunakan random number di browser
+- validation harus dilakukan server-side
+- secret tidak boleh berada di frontend
+- gunakan environment variables/secrets
+- captcha harus memiliki expiration
+- token tidak boleh digunakan ulang
+- tambahkan rate limiting jika memungkinkan
+
+Jika CAPTCHA membutuhkan konfigurasi manual:
+
+buat dokumentasi langkah:
+
+- mendapatkan site key
+- secret key
+- environment variable
+- Firebase/Cloud Function configuration
+- production setup
+
+============================================================
+LOGIN MEMBER
+============================================================
+
+Member dapat login menggunakan:
+
+USERNAME
+ATAU
+NOMOR WHATSAPP
+
+dengan:
+
+PASSWORD
+
+dan CAPTCHA sesuai kebutuhan/security policy.
+
+JANGAN membuat sistem login yang menyimpan password sendiri jika Firebase Authentication dapat digunakan.
+
+Jika Firebase Authentication existing belum mendukung username/WhatsApp + password:
+
+buat arsitektur yang aman menggunakan Firebase Authentication + secure identity mapping.
+
+Jangan expose password.
+
+Jangan expose internal authentication identifier secara tidak perlu.
+
+Login harus memiliki:
+
+- loading
+- generic error
+- logout
+- session handling
+- unauthorized redirect
+- account status check
+- rate limit jika tersedia
+- captcha
+
+Jangan memberi pesan seperti:
+
+"username tersebut tidak terdaftar"
+
+yang dapat digunakan untuk account enumeration.
+
+============================================================
+MEMBER DASHBOARD
+============================================================
+
+Member Dashboard harus menampilkan:
+
+1. Username
+2. Nama member
+3. XP Progress
+4. XP Reward
+5. Level saat ini
+6. Progress menuju level berikutnya
+7. Benefit level saat ini
+8. Last Play
+9. XP History
+10. Referral History
+11. Event
+12. Challenge
+13. Promo
+14. Redemption
+15. Notification
+
+Tampilkan informasi yang sederhana dan mudah dipahami customer.
+
+Contoh:
+
+LEVEL:
+JURAGAN
+
+XP PROGRESS:
+450 XP
+
+XP REWARD:
+250 XP
+
+NEXT LEVEL:
+SULTAN
+
+PROGRESS:
+450 / 600 XP
+
+============================================================
+MEMBER HISTORY
+============================================================
+
+Member dapat melihat:
+
+- tanggal transaksi
+- cabang
+- XP transaction
+- registration bonus
+- referral XP
+- challenge XP
+- event XP
+- promo XP
+- redemption
+- level up
+- reset cycle
+- notification
+
+History harus menggunakan pagination.
+
+Jangan mengambil seluruh history sekaligus.
+
+============================================================
+LAST PLAY
+============================================================
+
+Last Play adalah waktu transaksi/kunjungan terakhir yang valid.
+
+Member dapat melihat:
+
+Terakhir Main:
+
+Tanggal
+Jam
+Cabang
+
+Admin dapat melihat:
+
+- member
+- last play
+- branch
+- transaction terakhir
+
+============================================================
+TRANSACTION XP
+============================================================
+
+Admin dapat memasukkan transaksi member secara manual.
+
+Form:
+
+- Username ATAU WhatsApp
+- Jumlah transaksi
+- Cabang
+- Nomor receipt/reference jika tersedia
+- Catatan optional
+
+Cabang:
+
+DEMANG
+SEKIP
+
+Formula:
+
+Rp2.000 = 1 XP
+
+Contoh:
+
+Rp10.000 = 5 XP
+
+Rp20.000 = 10 XP
+
+Rp50.000 = 25 XP
+
+Rp100.000 = 50 XP
+
+Default calculation:
+
+XP = floor(transactionAmount / transactionXpRate)
+
+Contoh:
+
+transactionAmount = 100000
+transactionXpRate = 2000
+
+XP = 50
+
+Rate harus dapat dikonfigurasi Admin.
+
+Jangan hardcode 2000 di banyak file.
+
+Gunakan integer/fixed precision untuk uang.
+
+JANGAN menggunakan floating point untuk perhitungan rupiah.
+
+Setiap transaksi harus mencatat:
+
+- transactionId
+- memberId
+- member username
+- branch
+- amount
+- XP generated
+- source
+- adminId
+- timestamp
+- receipt/reference
+- note
+
+XP dari transaction masuk ke:
+
+XP Progress
++
+XP Reward
+
+============================================================
+BRANCH
+============================================================
+
+Branch:
+
+DEMANG
+SEKIP
+
+Data transaction harus mencatat branch.
+
+Admin dapat filter:
+
+- All
+- Demang
+- Sekip
+
+History juga harus dapat difilter berdasarkan branch.
+
+============================================================
+CHALLENGE / EVENT / PROMO
+============================================================
+
+Admin dapat membuat:
+
+- Challenge
+- Event
+- Promo
+
+Field:
+
+- title
+- description
+- type
+- startAt
+- endAt
+- XP Reward
+- image optional
+- terms
+- claim limit optional
+- active/inactive
+- createdBy
+- createdAt
+- updatedAt
+
+Status:
+
+DRAFT
+ACTIVE
+EXPIRED
+DISABLED
+
+============================================================
+AUTOMATIC EXPIRATION
+============================================================
+
+Challenge/Event/Promo harus otomatis dianggap expired ketika:
+
+currentTime > endAt
+
+JANGAN hanya mengandalkan frontend.
+
+Jika Cloud Functions/scheduled jobs tersedia:
+
+gunakan scheduled process.
+
+Namun frontend/server juga harus memvalidasi:
+
+item expired = tidak dapat di-claim
+
+Jika scheduled job terlambat, item tetap tidak bisa digunakan.
+
+============================================================
+CLAIM XP
+============================================================
+
+Member memilih:
+
+Challenge
+Event
+Promo
+
+Kemudian menekan:
+
+CLAIM XP
+
+Tampilkan form:
+
+- upload bukti foto
+- catatan/keterangan optional
+
+Setelah submit:
+
+status:
+
+ON_PROCESS
+
+JANGAN memberikan XP saat submit.
+
+Admin dapat:
+
+APPROVE
+DENY
+
+------------------------------------------------------------
+APPROVE
+------------------------------------------------------------
+
+Jika Admin APPROVE:
+
+- status = APPROVED
+- XP Progress bertambah
+- XP Reward bertambah
+- XP ledger dibuat
+- history dibuat
+- reviewer admin dicatat
+- timestamp approval dicatat
+- notification dikirim ke member
+
+------------------------------------------------------------
+DENY
+------------------------------------------------------------
+
+Jika Admin DENY:
+
+- status = DENIED
+- XP tidak berubah
+- alasan penolakan dapat disimpan
+- notification dikirim ke member
+
+------------------------------------------------------------
+ANTI DUPLICATE CLAIM
+------------------------------------------------------------
+
+Jika suatu challenge/event/promo hanya boleh diklaim satu kali:
+
+member tidak boleh membuat claim kedua.
+
+Jika Admin mengatur claimable berulang:
+
+gunakan:
+
+maxClaimsPerMember
+
+============================================================
+UPLOAD BUKTI
+============================================================
+
+Gunakan Firebase Storage jika tersedia.
+
+Validasi:
+
+- file type
+- content type
+- file size
+- image only jika claim membutuhkan foto
+- authentication
+- authorization
+- storage path
+- memberId
+- claimId
+
+Jangan membuat bukti foto menjadi public secara tidak perlu.
+
+Gunakan Security Rules.
+
+============================================================
+REDEMPTION XP
+============================================================
+
+Admin memiliki menu:
+
+BENEFITS
+
+Admin dapat membuat benefit:
+
+- nama benefit
+- description
+- image optional
+- XP cost
+- active
+- stock/quota optional
+- expiry optional
+- terms
+- level requirement optional
+- claimable/redeemable
+
+Member dapat melihat benefit yang tersedia.
+
+Tombol:
+
+REDEEM
+
+Ketika member redeem:
+
+status:
+
+ON_PROCESS
+
+JANGAN mengurangi XP saat submit.
+
+------------------------------------------------------------
+DENIED
+------------------------------------------------------------
+
+Jika DENY:
+
+- status DENIED
+- XP Reward tidak berkurang
+- XP Progress tidak berubah
+- level tidak berubah
+
+------------------------------------------------------------
+APPROVED
+------------------------------------------------------------
+
+Jika APPROVE:
+
+- status APPROVED
+- XP Reward berkurang
+- XP Progress tidak berubah
+- level tidak berubah
+- redemption history dibuat
+- redemption ID dibuat
+- approvedBy dicatat
+- approvedAt dicatat
+- notification dibuat
+
+Gunakan Firestore transaction/batch/atomic operation.
+
+Pastikan tidak terjadi:
+
+double deduction
+double approval
+negative XP Reward
+
+============================================================
+REDEMPTION LEVEL BENEFIT
+============================================================
+
+Admin dapat menentukan benefit berdasarkan level.
+
+Contoh:
+
+BRONZE
+SILVER
+JURAGAN
+SULTAN
+
+Benefit dapat memiliki:
+
+- levelRequirement
+- XP Cost optional
+- claimable
+- redeemable
+- stock
+- active
+- validity
+- terms
+
+Tidak semua benefit harus dapat di-claim.
+
+Contoh:
+
+claimable = false
+
+maka tampilkan sebagai:
+
+LOCKED / INFORMATION ONLY
+
+Jika:
+
+claimable = true
+
+member dapat melakukan claim/redeem sesuai aturan.
+
+============================================================
+LEVEL BENEFIT
+============================================================
+
+Benefit harus otomatis mengikuti level member.
+
+Contoh:
+
+Bronze:
+Benefit A
+
+Silver:
+Benefit A
+Benefit B
+
+Juragan:
+Benefit A
+Benefit B
+Benefit C
+
+Sultan:
+Benefit A
+Benefit B
+Benefit C
+Benefit D
+
+Member hanya dapat mengakses benefit yang memenuhi:
+
+currentLevel >= requiredLevel
+
+JANGAN hardcode daftar benefit di frontend.
+
+Database menjadi source of truth.
+
+============================================================
+LEVEL UP
+============================================================
+
+Level dihitung dari XP Progress.
+
+Jika XP Progress mencapai threshold:
+
+level otomatis berubah.
+
+Contoh:
+
+0–149 = Bronze
+150–299 = Silver
+300–599 = Juragan
+600+ = Sultan
+
+Saat level berubah:
+
+- update current level
+- create level history
+- create notification
+- update accessible benefits
+- jangan mengurangi XP Progress
+
+Jika level threshold diubah oleh Admin:
+
+gunakan konfigurasi terbaru.
+
+============================================================
+ADMIN DASHBOARD
+============================================================
+
+Admin mempunyai dashboard terpisah dari Member Dashboard.
+
+Admin login menggunakan authentication dan role-based access.
+
+Dashboard menampilkan:
+
+- Total Members
+- Active Members
+- Bronze
+- Silver
+- Juragan
+- Sultan
+- Total Transactions
+- Total Transaction Amount
+- Total XP Distributed
+- Total XP Reward Outstanding
+- New Members
+- Recent Transactions
+- Recent XP
+- Recent Level Ups
+- Last Play
+- Pending Claims
+- Pending Redemptions
+- Inactive 7 days
+- Inactive 14 days
+- Inactive 30 days
+
+Gunakan query yang efisien.
+
+Gunakan pagination.
+
+Jangan fetch seluruh collection.
+
+============================================================
+ADMIN MENU
+============================================================
+
+Admin Dashboard:
+
+Dashboard
+Members
+Transactions
+XP History
+Level Up History
+Claims
+Redemptions
+Benefits
+Challenges
+Events
+Promos
+Notifications
+Admin Management
+Levels
+XP Settings
+Reset / Membership Cycle
+Branches
+Audit Logs
+Settings
+
+============================================================
+MEMBER MANAGEMENT
+============================================================
+
+Admin dapat:
+
+- tambah member
+- lihat member
+- edit member
+- suspend member
+- activate member
+- deactivate member
+- lihat detail member
+- lihat XP
+- lihat level
+- lihat transaction
+- lihat history
+- lihat referral
+- lihat claim
+- lihat redemption
+
+Jangan melakukan hard delete member yang memiliki history penting.
+
+Prioritaskan:
+
+ACTIVE
+SUSPENDED
+INACTIVE
+DELETED
+
+sebagai soft status.
+
+Historical data tetap tersedia.
+
+============================================================
+ADMIN MANAGEMENT
+============================================================
+
+Role:
+
+SUPER_ADMIN
+ADMIN
+STAFF
+
+SUPER_ADMIN:
+
+- semua permission
+- tambah admin
+- edit admin
+- nonaktifkan admin
+- konfigurasi sistem
+
+ADMIN:
+
+- member
+- transaction
+- XP
+- claim
+- redemption
+- benefit
+- challenge
+- event
+- promo
+- notification
+
+STAFF:
+
+- operasional
+- transaction input
+- claim review sesuai permission
+- redemption review sesuai permission
+
+Permission HARUS dipastikan di backend/security rules.
+
+JANGAN hanya hide menu.
+
+============================================================
+ADMIN APPROVAL
+============================================================
+
+Admin dapat melihat:
+
+CLAIMS ON_PROCESS
+
+dan:
+
+REDEMPTIONS ON_PROCESS
+
+Untuk claim:
+
+APPROVE
+DENY
+
+Untuk redemption:
+
+APPROVE
+DENY
+
+Approval harus mencatat:
+
+- adminId
+- adminRole
+- timestamp
+- reason jika deny
+- before
+- after
+
+============================================================
+NOTIFICATION SYSTEM
+============================================================
+
+Admin dapat membuat notification.
+
+Field:
+
+- title
+- message
+- targetType
+- targetFilter
+- startAt
+- endAt
+- active
+- createdBy
+- createdAt
+
+Target:
+
+ALL_MEMBERS
+SPECIFIC_MEMBER
+LEVEL
+BRANCH
+INACTIVE_MEMBERS
+
+Notification tampil di Member Dashboard.
+
+Gunakan:
+
+read/unread
+
+============================================================
+INACTIVE MEMBER NOTIFICATION
+============================================================
+
+Admin dapat menentukan campaign notification berdasarkan:
+
+7 hari
+14 hari
+30 hari
+custom
+
+Contoh:
+
+Member terakhir bermain:
+
+10 hari lalu
+
+Target:
+
+INACTIVE_7_DAYS
+
+Notification:
+
+"Kami sudah lama tidak bertemu. Yuk main lagi di XP PLAY!"
+
+Sistem harus dapat menargetkan member berdasarkan:
+
+lastPlayAt
+
+JANGAN menghitung inactivity dengan melakukan scan seluruh members setiap dashboard dibuka.
+
+Jika memungkinkan gunakan scheduled Cloud Function/background job.
+
+Simpan:
+
+notificationCampaignId
+memberId
+createdAt
+sentAt
+status
+
+Hindari duplicate notification yang tidak diperlukan.
+
+============================================================
+RESET SYSTEM / MEMBERSHIP CYCLE
+============================================================
+
+Admin dapat menentukan reset period.
+
+Contoh:
+
+30 hari
+60 hari
+90 hari
+180 hari
+365 hari
+Custom
+
+Konfigurasi:
+
+resetEnabled
+resetInterval
+resetUnit
+nextResetAt
+
+Default:
+
+Reset XP Progress:
+YA
+
+Reset Level:
+YA
+
+Reset XP Reward:
+YA
+
+Namun semua harus dapat dikonfigurasi Admin jika dibutuhkan.
+
+============================================================
+PENTING UNTUK RESET
+============================================================
+
+JANGAN menghapus historical XP ledger.
+
+JANGAN menghapus transaction history.
+
+JANGAN menghapus redemption history.
+
+JANGAN menghapus claim history.
+
+JANGAN menghapus level history.
+
+Gunakan konsep:
+
+MEMBERSHIP CYCLE
+atau
+SEASON
+
+Contoh:
+
+Cycle 2026-01
+
+Member:
+
+XP Progress = 650
+XP Reward = 300
+Level = Sultan
+
+Saat reset:
+
+Cycle baru:
+
+XP Progress = 0
+XP Reward = 0
+Level = Bronze
+
+Tetapi cycle lama tetap tersimpan.
+
+Simpan snapshot:
+
+- memberId
+- cycleId
+- previousXpProgress
+- previousXpReward
+- previousLevel
+- resetAt
+- resetReason
+- newXpProgress
+- newXpReward
+- newLevel
+
+Reset harus:
+
+- idempotent
+- tidak double reset
+- dapat diaudit
+- dapat dipantau admin
+
+============================================================
+DATABASE ARCHITECTURE
+============================================================
+
+Gunakan struktur database yang sesuai architecture existing.
+
+Jika project existing sudah mempunyai collection:
+
+JANGAN mengganti nama tanpa alasan.
+
+Tambahkan seperlunya.
+
+Minimal konsep entity:
+
+members
+users/admins
+transactions
+xpProgressLedger
+xpRewardLedger
+referrals
+claims
+redemptions
+benefits
+levels
+challenges
+events
+promos
+notifications
+membershipCycles
+levelHistory
+auditLogs
+systemSettings
+branches
+
+Jika satu collection dapat mencakup beberapa tipe:
+
+gunakan field type dengan konsisten.
+
+============================================================
+XP LEDGER
+============================================================
+
+XP Progress Ledger minimal:
+
+id
+memberId
+amount
+type
+source
+referenceId
+branch
+cycleId
+createdAt
+createdBy
+note
+
+Type/source contoh:
+
+REGISTRATION
+REFERRAL
+TRANSACTION
+CHALLENGE
+EVENT
+PROMO
+LEVEL_BONUS
+ADMIN_ADJUSTMENT
+RESET
+
+XP Reward Ledger:
+
+id
+memberId
+amount
+type
+source
+referenceId
+cycleId
+createdAt
+createdBy
+note
+
+Redemption:
+
+amount = negative
+
+Award:
+
+amount = positive
+
+============================================================
+BALANCE INTEGRITY
+============================================================
+
+JANGAN mengandalkan satu field balance tanpa ledger.
+
+Jika member memiliki:
+
+XP Progress = 450
+
+harus dapat diketahui bagaimana 450 tersebut diperoleh.
+
+Jika XP Reward = 250
+
+harus dapat diketahui:
+
+award:
++450
+
+redemption:
+-200
+
+balance:
+250
+
+Gunakan ledger sebagai audit trail.
+
+Jika menyimpan cached balance:
+
+harus disinkronkan secara atomic dengan ledger.
+
+============================================================
+SECURITY
+============================================================
+
+Member hanya dapat:
+
+- membaca data dirinya
+- mengubah profile yang diperbolehkan
+- membuat claim atas nama dirinya
+- membuat redemption atas nama dirinya
+- membaca notification miliknya
+
+Member TIDAK BOLEH:
+
+- mengubah XP
+- mengubah level
+- mengubah reward balance
+- approve claim
+- deny claim
+- approve redemption
+- mengubah transaction
+- membuat admin
+- mengubah threshold
+- mengubah benefit
+- mengubah reset
+- mengubah system settings
+
+Admin hanya dapat mengakses berdasarkan role.
+
+SUPER_ADMIN memiliki permission tertinggi.
+
+Firebase Security Rules harus memastikan hal tersebut.
+
+Jangan hanya mengandalkan frontend.
+
+============================================================
+ANTI FRAUD
+============================================================
+
+Implementasikan:
+
+- unique username
+- unique WhatsApp
+- self referral prevention
+- duplicate referral prevention
+- duplicate claim prevention
+- duplicate redemption prevention
+- approval idempotency
+- atomic XP transaction
+- atomic redemption transaction
+- negative balance prevention
+- audit log
+- admin identity
+- approval timestamp
+- reason
+- source/reference
+- branch
+- receipt/reference
+- soft delete member
+
+============================================================
+AUDIT LOG
+============================================================
+
+Audit log untuk:
+
+- register
+- login important events jika diperlukan
+- admin login
+- add member
+- edit member
+- suspend member
+- add XP
+- transaction XP
+- approve claim
+- deny claim
+- approve redemption
+- deny redemption
+- level config change
+- benefit change
+- challenge change
+- event change
+- promo change
+- notification change
+- reset
+- admin create
+- admin update
+- settings change
+
+Fields:
+
+actorId
+actorRole
+action
+targetType
+targetId
+before
+after
+timestamp
+metadata
+ip/device info jika aman dan sesuai privacy requirement
+
+============================================================
+PRIVACY
+============================================================
+
+Kumpulkan hanya data yang diperlukan.
+
+Data member:
+
+- fullName
+- username
+- WhatsApp
+- socialMedia
+- auth identity
+- role/status
+- branch information jika diperlukan
+- timestamps
+
+Jangan meminta:
+
+- password untuk disimpan sendiri
+- OTP untuk disimpan
+- social media password
+- data sensitif yang tidak diperlukan
+
+============================================================
+FILE SECURITY
+============================================================
+
+Semua file bukti challenge:
+
+- authentication required
+- authorization required
+- size limit
+- MIME validation
+- extension validation
+- safe storage path
+
+Jangan mengizinkan member melihat file member lain.
+
+============================================================
+MOBILE FIRST
+============================================================
+
+Member kemungkinan besar menggunakan smartphone.
+
+Pastikan:
+
+- responsive
+- mobile-first
+- button mudah ditekan
+- upload foto mudah
+- dashboard mudah dipahami
+- card tidak terlalu padat
+- loading jelas
+- empty state jelas
+- error state jelas
+
+Admin juga harus tetap usable pada mobile/tablet/desktop.
+
+============================================================
+UI/UX
+============================================================
+
+Pertahankan UI project existing.
+
+Jangan membuat design system baru jika existing sudah ada.
+
+Gunakan existing:
+
+- typography
+- spacing
+- buttons
+- cards
+- modal
+- table
+- form
+- colors
+- navigation
+
+Jika fitur baru membutuhkan UI:
+
+ikuti design language existing.
+
+============================================================
+STATUS SYSTEM
+============================================================
+
+Gunakan status konsisten.
+
+Claims:
+
+ON_PROCESS
+APPROVED
+DENIED
+
+Redemptions:
+
+ON_PROCESS
+APPROVED
+DENIED
+
+Members:
+
+ACTIVE
+SUSPENDED
+INACTIVE
+DELETED
+
+Campaign:
+
+DRAFT
+ACTIVE
+EXPIRED
+DISABLED
+
+Notification:
+
+DRAFT
+ACTIVE
+EXPIRED
+
+============================================================
+PERFORMANCE
+============================================================
+
+Jangan:
+
+- fetch seluruh member
+- fetch seluruh history
+- fetch seluruh claim
+- fetch seluruh transaction
+
+Gunakan:
+
+- pagination
+- limit
+- cursor
+- proper indexes
+- aggregate queries jika tersedia
+- cache sesuai kebutuhan
+- server-side filtering
+
+Identifikasi kebutuhan Firestore indexes.
+
+Dokumentasikan index.
+
+============================================================
+ERROR HANDLING
+============================================================
+
+Setiap action harus memiliki:
+
+- loading state
+- success state
+- error state
+- retry jika relevan
+- user-friendly message
+
+Jangan menampilkan raw Firebase error kepada user.
+
+Contoh:
+
+"Claim berhasil dikirim dan sedang menunggu pemeriksaan Admin."
+
+"Redemption sedang diproses."
+
+"XP tidak mencukupi."
+
+"Bukti foto tidak valid."
+
+"Data tidak dapat diproses. Silakan coba lagi."
+
+============================================================
+FORM VALIDATION
+============================================================
+
+Semua form harus memiliki:
+
+- required validation
+- format validation
+- length validation
+- numeric validation
+- date validation
+- server-side validation
+
+Admin transaction amount:
+
+- harus > 0
+- integer
+- tidak boleh negative
+
+XP:
+
+- integer
+- tidak boleh negative kecuali ledger redemption/reset tertentu yang memang menggunakan negative entry secara internal
+
+============================================================
+TRANSACTION SAFETY
+============================================================
+
+Gunakan transaction/batch/atomic operation untuk:
+
+- grant XP
+- redeem XP
+- approve claim
+- approve redemption
+- referral XP
+- registration XP
+- reset
+- balance update
+
+Approval harus idempotent.
+
+Jika status sudah APPROVED:
+
+jangan memberikan XP sekali lagi.
+
+Jika redemption sudah APPROVED:
+
+jangan mengurangi XP sekali lagi.
+
+============================================================
+NOTIFICATION RULES
+============================================================
+
+Setelah:
+
+- level up
+- claim approved
+- claim denied
+- redemption approved
+- redemption denied
+- important promotion
+- reset
+
+member dapat menerima notification.
+
+============================================================
+ADMIN REPORTING
+============================================================
+
+Admin dapat melihat:
+
+Member count
+Transaction count
+Transaction total
+XP issued
+XP redeemed
+XP reward balance
+Level distribution
+New members
+Referral activity
+Challenge activity
+Redemption activity
+Inactive members
+Branch activity
+
+Filter:
+
+- date
+- branch
+- level
+- status
+- activity type
+
+============================================================
+DOCUMENTATION
+============================================================
+
+Dokumentasi WAJIB diperbarui.
+
+Buat/Update:
+
+README.md
+ARCHITECTURE.md
+DATABASE.md
+AUTH.md
+SECURITY.md
+XP_SYSTEM.md
+ADMIN_GUIDE.md
+MEMBER_GUIDE.md
+DEPLOYMENT.md
+TESTING.md
+CHANGELOG.md
+
+Dokumentasikan:
+
+- architecture
+- setup
+- environment
+- Firebase
+- Firestore
+- Storage
+- Security Rules
+- Cloud Functions
+- Authentication
+- Roles
+- XP
+- Level
+- Referral
+- Transaction
+- Challenge
+- Event
+- Promo
+- Claim
+- Redemption
+- Benefit
+- Notification
+- Reset
+- Membership Cycle
+- Branch
+- Admin
+- Troubleshooting
+- Deployment
+
+Dokumentasi harus bisa dipahami developer baru yang masuk ke project.
+
+============================================================
+TESTING
+============================================================
+
+Lakukan testing untuk:
+
+AUTH
+
+REGISTER
+
+LOGIN
+
+LOGOUT
+
+CAPTCHA
+
+USERNAME LOGIN
+
+WHATSAPP LOGIN
+
+REGISTRATION BONUS
+
+REFERRAL
+
+TRANSACTION XP
+
+XP PROGRESS
+
+XP REWARD
+
+LEVEL
+
+LEVEL UP
+
+CLAIM
+
+CLAIM APPROVAL
+
+CLAIM DENIAL
+
+REDEMPTION
+
+REDEMPTION APPROVAL
+
+REDEMPTION DENIAL
+
+LEVEL BENEFIT
+
+NOTIFICATION
+
+INACTIVE NOTIFICATION
+
+RESET
+
+MEMBERSHIP CYCLE
+
+ADMIN ROLE
+
+FILE UPLOAD
+
+SECURITY RULES
+
+EXPIRATION
+
+BRANCH
+
+============================================================
+TEST CASE WAJIB
+============================================================
+
+Test:
+
+XP Progress 149:
+Bronze
+
+XP Progress 150:
+Silver
+
+XP Progress 299:
+Silver
+
+XP Progress 300:
+Juragan
+
+XP Progress 599:
+Juragan
+
+XP Progress 600:
+Sultan
+
+------------------------------------------------------------
+
+Member:
+
+XP Progress = 450
+XP Reward = 450
+
+Redeem 200 APPROVED:
+
+XP Progress = 450
+XP Reward = 250
+Level = Juragan
+
+------------------------------------------------------------
+
+Register:
+
+XP Progress = 10
+XP Reward = 10
+
+------------------------------------------------------------
+
+Register + valid referral:
+
+Member Baru:
+
+XP Progress = 15
+XP Reward = 15
+
+Referrer:
+
++5 XP Progress
++5 XP Reward
+
+------------------------------------------------------------
+
+Transaction:
+
+Rp100.000
+
+Formula:
+
+floor(100000 / 2000) = 50 XP
+
+Result:
+
+XP Progress +50
+XP Reward +50
+
+------------------------------------------------------------
+
+Denied redemption:
+
+XP Reward tidak berubah.
+
+------------------------------------------------------------
+
+Denied claim:
+
+XP Progress tidak berubah.
+XP Reward tidak berubah.
+
+------------------------------------------------------------
+
+Duplicate approval:
+
+XP tidak boleh diberikan dua kali.
+
+------------------------------------------------------------
+
+Expired challenge:
+
+Tidak dapat di-claim.
+
+------------------------------------------------------------
+
+Self referral:
+
+Denied.
+
+------------------------------------------------------------
+
+Referral username invalid:
+
+Tidak ada referral XP.
+
+------------------------------------------------------------
+
+Member mencoba mengedit XP:
+
+Denied.
+
+------------------------------------------------------------
+
+Member mencoba approve redemption:
+
+Denied.
+
+============================================================
+DATABASE MIGRATION
+============================================================
+
+Jika existing database perlu diubah:
+
+JANGAN langsung menghapus structure lama.
+
+Buat:
+
+migration plan
+
+Buat migration script jika diperlukan.
+
+Pastikan:
+
+- backup
+- backward compatibility
+- rollback plan
+- validation
+- no data loss
+
+============================================================
+FIREBASE SECURITY RULES
+============================================================
+
+Audit Security Rules existing.
+
+Pastikan:
+
+member tidak dapat:
+
+write XP
+write level
+write balance
+write approval
+write transaction
+write system configuration
+write admin role
+
+Admin dapat melakukan action sesuai role.
+
+Gunakan custom claims/role atau mekanisme existing yang aman.
+
+============================================================
+ENVIRONMENT
+============================================================
+
+Jangan menulis secret langsung dalam source code.
+
+Gunakan:
+
+.env
+environment secrets
+Firebase/Cloud Functions secrets
+
+Dokumentasikan:
+
+nama variable
+fungsi
+contoh format TANPA secret asli
+
+Jangan commit secret.
+
+============================================================
+DEPLOYMENT
+============================================================
+
+Dokumentasikan:
+
+- local development
+- Firebase configuration
+- environment setup
+- build
+- deploy
+- Firestore rules deploy
+- Storage rules deploy
+- indexes deploy
+- Cloud Functions deploy jika ada
+- production checklist
+
+============================================================
+DEVELOPMENT PHASE
+============================================================
+
+Kerjakan bertahap.
+
+PHASE 0:
+PROJECT AUDIT
+
+PHASE 1:
+AUTHENTICATION
+REGISTER
+LOGIN
+CAPTCHA
+
+PHASE 2:
+MEMBER PROFILE
+MEMBER DASHBOARD
+
+PHASE 3:
+XP PROGRESS
+XP REWARD
+XP LEDGER
+
+PHASE 4:
+REFERRAL
+
+PHASE 5:
+TRANSACTION XP
+
+PHASE 6:
+LEVEL SYSTEM
+
+PHASE 7:
+BENEFIT SYSTEM
+
+PHASE 8:
+CHALLENGE
+EVENT
+PROMO
+
+PHASE 9:
+CLAIM XP
+UPLOAD PROOF
+
+PHASE 10:
+XP REDEMPTION
+
+PHASE 11:
+LEVEL BENEFIT REDEMPTION
+
+PHASE 12:
+ADMIN DASHBOARD
+
+PHASE 13:
+MEMBER MANAGEMENT
+
+PHASE 14:
+ADMIN MANAGEMENT
+
+PHASE 15:
+NOTIFICATION
+
+PHASE 16:
+INACTIVE MEMBER NOTIFICATION
+
+PHASE 17:
+MEMBERSHIP CYCLE
+RESET
+
+PHASE 18:
+REPORTING
+
+PHASE 19:
+SECURITY AUDIT
+
+PHASE 20:
+PERFORMANCE AUDIT
+
+PHASE 21:
+TESTING
+
+PHASE 22:
+DOCUMENTATION
+
+PHASE 23:
+FINAL PRODUCTION AUDIT
+
+============================================================
+ATURAN SETIAP PHASE
+============================================================
+
+Sebelum phase:
+
+Jelaskan:
+
+- tujuan
+- existing code yang terkait
+- file yang akan diubah
+- dependency
+- database impact
+- security impact
+
+Setelah implementasi:
+
+1. Run test
+2. Check build
+3. Check lint/type errors jika tersedia
+4. Check Firebase integration
+5. Check security
+6. Check responsive UI
+7. Check regression
+8. Update documentation
+9. Update changelog
+
+Kemudian berikan:
+
+- file changed
+- feature implemented
+- database changed
+- security changed
+- test result
+- known issue
+- manual testing instruction
+
+JANGAN membuat duplicate implementation.
+
+============================================================
+FINAL QUALITY STANDARD
+============================================================
+
+Aplikasi harus:
+
+- production ready
+- secure
+- maintainable
+- scalable
+- mobile friendly
+- responsive
+- auditable
+- Firebase compatible
+- role based
+- database driven
+- no dummy production data
+- no plaintext password
+- no client-side trusted XP
+- no unsafe balance manipulation
+- no destructive reset
+- no duplicate approval
+- no duplicate reward
+- no self referral abuse
+
+============================================================
+FINAL ACCEPTANCE CRITERIA
+============================================================
+
+Aplikasi dianggap selesai jika:
+
+MEMBER:
+
+[ ] Register
+[ ] Login username
+[ ] Login WhatsApp
+[ ] CAPTCHA
+[ ] Profile
+[ ] XP Progress
+[ ] XP Reward
+[ ] Level
+[ ] Progress level
+[ ] Last Play
+[ ] XP History
+[ ] Referral
+[ ] Challenge
+[ ] Event
+[ ] Promo
+[ ] Claim XP
+[ ] Upload evidence
+[ ] Redemption
+[ ] Level Benefit
+[ ] Notification
+
+ADMIN:
+
+[ ] Login
+[ ] Dashboard
+[ ] Member Management
+[ ] Transaction
+[ ] XP History
+[ ] Level Up History
+[ ] Claim Approval
+[ ] Redemption Approval
+[ ] Benefit Management
+[ ] Challenge Management
+[ ] Event Management
+[ ] Promo Management
+[ ] Notification
+[ ] Inactive Member
+[ ] Level Configuration
+[ ] XP Configuration
+[ ] Reset Configuration
+[ ] Membership Cycle
+[ ] Admin Management
+[ ] Audit Log
+[ ] Branch filtering
+[ ] Reporting
+
+SECURITY:
+
+[ ] Member cannot modify XP
+[ ] Member cannot modify level
+[ ] Member cannot approve
+[ ] Member cannot access other member data
+[ ] Admin role enforced
+[ ] CAPTCHA verified server-side
+[ ] File upload protected
+[ ] Password secure
+[ ] Secrets protected
+[ ] Firestore rules audited
+[ ] Storage rules audited
+
+DATA:
+
+[ ] XP Progress separate from XP Reward
+[ ] XP Ledger exists
+[ ] Redemption ledger exists
+[ ] Transaction history exists
+[ ] Referral history exists
+[ ] Claim history exists
+[ ] Level history exists
+[ ] Reset history exists
+[ ] Audit log exists
+
+============================================================
+VERY IMPORTANT RESPONSE MODE
+============================================================
+
+Pada awal pekerjaan:
+
+JANGAN langsung mengubah code.
+
+Lakukan PROJECT AUDIT.
+
+Tampilkan hasil audit terlebih dahulu.
+
+Setelah itu susun implementation plan.
+
+Jangan membuat aplikasi baru.
+
+Jangan menghapus struktur existing.
+
+Jangan menggunakan dummy database.
+
+Jangan mengganti authentication/Firebase existing tanpa audit.
+
+Ikuti codebase existing.
+
+Mulai dari PHASE 0.
+
+Setelah setiap phase selesai:
+
+- tampilkan perubahan
+- test
+- dokumentasikan
+- cek regresi
+- lanjut ke phase berikutnya hanya jika aman.
+
+Jika menemukan masalah arsitektur existing:
+
+JANGAN langsung rewrite.
+
+Berikan:
+
+1. Masalah
+2. Dampak
+3. Opsi solusi
+4. Solusi yang paling aman
+5. File yang terdampak
+
+Utamakan perubahan incremental.
+
+============================================================
+PERINTAH TERAKHIR
+============================================================
+
+MULAI SEKARANG.
+
+JANGAN CODING DAHULU.
+
+Lakukan:
+
+PROJECT AUDIT ONLY.
+
+Jangan mengubah file apa pun.
+
+Setelah audit selesai, tampilkan:
+
+1. Existing Project Architecture
+2. Existing Features
+3. Existing Authentication
+4. Existing Firebase
+5. Existing Firestore
+6. Existing Storage
+7. Existing Security Rules
+8. Existing Routes
+9. Existing UI
+10. Existing Admin System
+11. Existing Member System
+12. Existing Tests
+13. Potential Problems
+14. Potential Conflicts
+15. Recommended Architecture
+16. Recommended Database Extensions
+17. Security Plan
+18. Development Plan
+19. Phase 1 Detailed Plan
+
+BERHENTI SETELAH AUDIT DAN JANGAN MENGUBAH CODE.

@@ -1,0 +1,8 @@
+{
+  "name": "XP PLAY Member System",
+  "description": "XP PLAY GAMING CENTRE",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

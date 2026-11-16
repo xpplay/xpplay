@@ -1,0 +1,29 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidImageUpload() {
+      return request.resource != null
+        && request.resource.size > 0
+        && request.resource.size <= 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/(jpeg|png|webp)');
+    }
+
+    // Claim evidence files: isolated per memberUid/claimId
+    match /claims/{memberUid}/{claimId}/{fileName} {
+      allow read: if isSignedIn() && request.auth.uid == memberUid;
+      allow write: if isSignedIn()
+        && request.auth.uid == memberUid
+        && fileName.size() <= 128
+        && fileName.matches('^[a-zA-Z0-9_.\\-]+\\.(jpg|jpeg|png|webp)$')
+        && isValidImageUpload();
+    }
+  }
+}
