@@ -34,7 +34,7 @@ import {
   isCampaignClaimable,
   isLevelEligible,
   resolveCampaignStatus,
-  resolveLevelFromXp,
+  resolveEffectiveMemberLevel,
 } from '../shared/xpLogic.ts';
 import type {
   BenefitItem,
@@ -54,7 +54,8 @@ type MemberTab = 'overview' | 'programs' | 'benefits' | 'history' | 'profile';
 type HistoryKind = 'xpProgress' | 'xpReward' | 'transactions' | 'referrals' | 'levels';
 
 export function MemberDashboardPage() {
-  const { memberProfile, levels, branches, systemSettings, logout, refreshProfiles } = useAuth();
+  const { memberProfile, levels, branches, systemSettings, restoreLock, logout, refreshProfiles } = useAuth();
+  const isMaintenance = Boolean(restoreLock?.locked);
   const [activeTab, setActiveTab] = useState<MemberTab>('overview');
 
   // Programs & Benefits
@@ -82,6 +83,9 @@ export function MemberDashboardPage() {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const historySeqRef = useRef(0);
 
+  // Redemption submitting guard
+  const [redeemingId, setRedeemingId] = useState<string | null>(null);
+
   // Profile edit state
   const [editFullName, setEditFullName] = useState('');
   const [editSocial, setEditSocial] = useState('');
@@ -97,7 +101,7 @@ export function MemberDashboardPage() {
       setEditSocial(memberProfile.socialMedia || '');
       setEditBranch(memberProfile.preferredBranch || 'DEMANG');
     }
-  }, [memberProfile]);
+  }, [memberProfile?.uid]);
 
   const loadMemberFeeds = async () => {
     if (!memberProfile) return;
@@ -109,7 +113,7 @@ export function MemberDashboardPage() {
         fetchPaginatedCollection<ClaimRecord>({
           collectionName: 'claims',
           constraints: [where('memberUid', '==', memberProfile.uid)],
-          pageSize: 15,
+          pageSize: 30,
         }),
         fetchPaginatedCollection<RedemptionRecord>({
           collectionName: 'redemptions',
@@ -225,11 +229,11 @@ export function MemberDashboardPage() {
     );
   }
 
-  const levelEval = resolveLevelFromXp(memberProfile.xpProgress, levels);
+  const effectiveLevel = resolveEffectiveMemberLevel(memberProfile, levels);
   const unreadNotifs = notifications.filter((n) => !n.read).length;
 
   const unlockedBenefits = benefits.filter(
-    (b) => isLevelEligible(levelEval.current.id, b.levelRequirement, levels)
+    (b) => isLevelEligible(effectiveLevel.id, b.levelRequirement, levels)
   );
 
   const handleClaimSubmit = async (e: FormEvent) => {
@@ -273,6 +277,15 @@ export function MemberDashboardPage() {
   };
 
   const handleRedeem = async (benefit: BenefitItem) => {
+    if (isMaintenance) {
+      setFeedback({
+        type: 'error',
+        text: restoreLock?.message || 'XP PLAY sedang melakukan maintenance sistem. Silakan kembali beberapa saat lagi.',
+      });
+      return;
+    }
+    if (redeemingId) return;
+    setRedeemingId(benefit.id);
     setFeedback(null);
     try {
       await submitRedemptionForMember({
@@ -287,11 +300,29 @@ export function MemberDashboardPage() {
       await loadMemberFeeds();
     } catch (err) {
       setFeedback({ type: 'error', text: mapFriendlyError(err) });
+    } finally {
+      setRedeemingId(null);
+    }
+  };
+
+  const handleMarkNotifRead = async (notifId: string) => {
+    try {
+      await markMemberNotificationRead(notifId);
+      await loadMemberFeeds();
+    } catch (err) {
+      setFeedback({ type: 'error', text: mapFriendlyError(err) });
     }
   };
 
   const handleSaveProfile = async (e: FormEvent) => {
     e.preventDefault();
+    if (isMaintenance) {
+      setFeedback({
+        type: 'error',
+        text: restoreLock?.message || 'XP PLAY sedang melakukan maintenance sistem. Silakan kembali beberapa saat lagi.',
+      });
+      return;
+    }
     setSavingProfile(true);
     setFeedback(null);
     try {
@@ -312,6 +343,44 @@ export function MemberDashboardPage() {
   const filteredCampaigns = campaigns.filter(
     (c) => campaignFilter === 'ALL' || c.type === campaignFilter
   );
+
+  if (isMaintenance) {
+    return (
+      <div className="min-h-screen gaming-canvas text-slate-100 flex items-center justify-center px-4">
+        <div className="max-w-lg w-full rounded-2xl bg-[#0B1124] border border-amber-500/40 p-8 text-center space-y-5 shadow-2xl">
+          <div className="font-display text-xl font-extrabold tracking-tight bg-gradient-to-r from-sky-300 via-blue-300 to-purple-300 bg-clip-text text-transparent">
+            XP PLAY
+          </div>
+          <h1 className="font-display text-2xl font-bold text-white">
+            Maintenance Sistem Sedang Berlangsung
+          </h1>
+          <p className="text-sm text-amber-200 leading-relaxed">
+            {restoreLock?.message ||
+              'XP PLAY sedang melakukan maintenance sistem. Silakan kembali beberapa saat lagi.'}
+          </p>
+          <p className="text-xs text-slate-400">
+            Pengajuan claim, penukaran reward, dan perubahan profil dinonaktifkan sementara demi menjaga integritas data akun Anda.
+          </p>
+          <div className="pt-2 flex flex-wrap justify-center gap-3">
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="px-4 py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-semibold transition-colors whitespace-nowrap"
+            >
+              Periksa Status Kembali
+            </button>
+            <button
+              type="button"
+              onClick={() => void logout()}
+              className="px-4 py-2.5 rounded-lg border border-indigo-400/30 text-slate-200 hover:text-white text-xs font-medium transition-colors whitespace-nowrap"
+            >
+              Keluar
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen gaming-canvas text-slate-100 pb-24 md:pb-10 overflow-x-hidden">
@@ -396,6 +465,8 @@ export function MemberDashboardPage() {
               xpProgress={memberProfile.xpProgress}
               xpReward={memberProfile.xpReward}
               levels={levels}
+              currentLevel={memberProfile.currentLevel}
+              levelMode={memberProfile.levelMode}
               lastPlayAt={memberProfile.lastPlayAt}
               lastPlayBranch={memberProfile.lastPlayBranch}
               referralCount={memberProfile.referralCount}
@@ -407,7 +478,7 @@ export function MemberDashboardPage() {
               <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 sm:p-6 space-y-4">
                 <div className="flex items-center justify-between gap-3">
                   <h2 className="font-display text-lg font-bold text-white">
-                    Benefit Level {levelEval.current.name}
+                    Benefit Level {effectiveLevel.name}
                   </h2>
                   <button
                     type="button"
@@ -473,9 +544,7 @@ export function MemberDashboardPage() {
                         {!n.read && (
                           <button
                             type="button"
-                            onClick={() =>
-                              void markMemberNotificationRead(n.id).then(() => loadMemberFeeds())
-                            }
+                            onClick={() => void handleMarkNotifRead(n.id)}
                             className="text-xs font-semibold text-sky-300 hover:underline shrink-0 min-h-[36px]"
                           >
                             Tandai dibaca
@@ -635,7 +704,11 @@ export function MemberDashboardPage() {
                 <p className="text-sm text-slate-300">
                   Saldo XP Reward tersedia:{' '}
                   <strong className="font-mono text-purple-300 tabular-nums">{memberProfile.xpReward} XP</strong>{' '}
-                  · Level Anda: <strong className="text-sky-300">{levelEval.current.name}</strong>
+                  · Level Anda:{' '}
+                  <strong className="text-sky-300">
+                    {effectiveLevel.name}
+                    {memberProfile.levelMode === 'MANUAL_OVERRIDE' ? ' (Manual Override)' : ''}
+                  </strong>
                 </p>
               </div>
             </div>
@@ -647,7 +720,7 @@ export function MemberDashboardPage() {
             ) : (
               <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-5">
                 {benefits.map((b) => {
-                  const eligibleLevel = isLevelEligible(levelEval.current.id, b.levelRequirement, levels);
+                  const eligibleLevel = isLevelEligible(effectiveLevel.id, b.levelRequirement, levels);
                   const enoughXp = memberProfile.xpReward >= b.xpCost;
                   const outOfStock = b.stock !== null && b.stock <= 0;
                   const expired = Boolean(b.expiryAt && Date.now() > b.expiryAt);
@@ -687,11 +760,11 @@ export function MemberDashboardPage() {
 
                       <button
                         type="button"
-                        disabled={!canRedeem}
+                        disabled={!canRedeem || redeemingId !== null}
                         onClick={() => void handleRedeem(b)}
                         className="w-full h-[46px] rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 text-sm font-semibold text-white hover:from-blue-500 hover:to-purple-500 disabled:bg-none disabled:bg-slate-800 disabled:text-slate-500 transition-all"
                       >
-                        {buttonLabel}
+                        {redeemingId === b.id ? 'Memproses Redeem...' : buttonLabel}
                       </button>
                     </div>
                   );
@@ -847,11 +920,17 @@ export function MemberDashboardPage() {
                       );
                     }
                     const lh = item as LevelHistoryRecord;
+                    const transitionPrefix =
+                      lh.source === 'ADMIN_MANUAL_OVERRIDE'
+                        ? 'Override Level'
+                        : lh.source === 'ADMIN_RECALCULATE'
+                          ? 'Rekalkulasi Level'
+                          : 'Perubahan Level';
                     return (
                       <div key={lh.id || idx} className="p-4 flex items-center justify-between gap-4">
                         <div>
                           <p className="text-sm font-semibold text-white">
-                            Naik dari {lh.fromLevel} ke {lh.toLevel}
+                            {transitionPrefix}: {lh.fromLevel} → {lh.toLevel}
                           </p>
                           <p className="text-xs text-slate-400">
                             XP Progress: {lh.xpProgressAtEvent} XP · {formatJakartaDateTime(lh.createdAt)} WIB
@@ -906,9 +985,7 @@ export function MemberDashboardPage() {
                       {!n.read && (
                         <button
                           type="button"
-                          onClick={() =>
-                            void markMemberNotificationRead(n.id).then(() => loadMemberFeeds())
-                          }
+                          onClick={() => void handleMarkNotifRead(n.id)}
                           className="min-h-[36px] rounded-lg border border-sky-400/35 px-3 py-1 text-xs font-medium text-sky-300 hover:bg-sky-500/15 shrink-0"
                         >
                           Baca
@@ -988,7 +1065,7 @@ export function MemberDashboardPage() {
                   <span>Referral &amp; Lokasi Cabang</span>
                 </h3>
                 <p className="text-xs text-slate-300 leading-relaxed">
-                  Bagikan username Anda (<strong className="font-mono text-sky-300">{memberProfile.username}</strong>) saat teman mendaftar agar keduanya memperoleh +5 XP!
+                  Bagikan username Anda (<strong className="font-mono text-sky-300">{memberProfile.username}</strong>) saat teman mendaftar agar keduanya memperoleh +{systemSettings.referralBonusXp} XP!
                 </p>
                 <div className="space-y-2 pt-2 border-t border-indigo-500/15">
                   {branches.map((br) => (
@@ -1027,8 +1104,9 @@ export function MemberDashboardPage() {
               </div>
               <button
                 type="button"
+                disabled={submittingClaim}
                 onClick={() => setClaimTarget(null)}
-                className="min-h-[36px] px-2 text-xs font-semibold text-slate-400 hover:text-white"
+                className="min-h-[36px] px-2 text-xs font-semibold text-slate-400 hover:text-white disabled:opacity-40"
               >
                 Tutup
               </button>
@@ -1071,8 +1149,9 @@ export function MemberDashboardPage() {
               <div className="flex items-center gap-3">
                 <button
                   type="button"
+                  disabled={submittingClaim}
                   onClick={() => setClaimTarget(null)}
-                  className="flex-1 h-[46px] rounded-xl border border-indigo-500/30 text-sm font-semibold text-slate-300 hover:text-white"
+                  className="flex-1 h-[46px] rounded-xl border border-indigo-500/30 text-sm font-semibold text-slate-300 hover:text-white disabled:opacity-40"
                 >
                   Batal
                 </button>

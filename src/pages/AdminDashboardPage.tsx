@@ -7,16 +7,22 @@ import {
   Building2,
   Calendar,
   CheckCircle2,
+  Clock,
   CreditCard,
+  Crown,
+  Database,
   FileCheck2,
   Gift,
+  Globe,
   History,
+  KeyRound,
   LayoutDashboard,
   LogOut,
   Menu,
   RefreshCw,
   Shield,
   Sliders,
+  SlidersHorizontal,
   Sparkles,
   Tag,
   Trophy,
@@ -25,6 +31,12 @@ import {
   X,
 } from 'lucide-react';
 import { where, type DocumentData, type QueryConstraint, type QueryDocumentSnapshot } from 'firebase/firestore';
+import { AdminBackupRestore } from '../components/AdminBackupRestore.tsx';
+import { AdminCmsEditor } from '../components/AdminCmsEditor.tsx';
+import { AdminInactiveMembers } from '../components/AdminInactiveMembers.tsx';
+import { AdminLevelOverride } from '../components/AdminLevelOverride.tsx';
+import { AdminPasswordManagement } from '../components/AdminPasswordManagement.tsx';
+import { AdminXpAdjustment } from '../components/AdminXpAdjustment.tsx';
 import { ProtectedImage } from '../components/ProtectedImage.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
 import { mapFriendlyError } from '../lib/firestoreError.ts';
@@ -48,6 +60,7 @@ import {
 } from '../services/xpService.ts';
 import {
   calculateTransactionXp,
+  formatDateTimeLocalInput,
   formatIdr,
   formatJakartaDateTime,
   getBranchLabel,
@@ -81,7 +94,11 @@ import type {
 type AdminMenu =
   | 'dashboard'
   | 'members'
+  | 'inactiveMembers'
+  | 'passwordManagement'
   | 'transactions'
+  | 'xpAdjustment'
+  | 'levelOverride'
   | 'xpHistory'
   | 'levelHistory'
   | 'claims'
@@ -96,13 +113,19 @@ type AdminMenu =
   | 'xpSettings'
   | 'resetCycle'
   | 'branches'
+  | 'cmsHomepage'
+  | 'backupRestore'
   | 'auditLogs'
   | 'settings';
 
 const MENU_ITEMS: { id: AdminMenu; label: string; icon: typeof LayoutDashboard; superOnly?: boolean }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'members', label: 'Members', icon: Users },
+  { id: 'inactiveMembers', label: 'Inactive Members', icon: Clock },
+  { id: 'passwordManagement', label: 'Password Member', icon: KeyRound },
   { id: 'transactions', label: 'Transactions', icon: CreditCard },
+  { id: 'xpAdjustment', label: 'XP Adjustment', icon: SlidersHorizontal },
+  { id: 'levelOverride', label: 'Level Override', icon: Crown },
   { id: 'xpHistory', label: 'XP History', icon: History },
   { id: 'levelHistory', label: 'Level Up History', icon: Trophy },
   { id: 'claims', label: 'Claims', icon: FileCheck2 },
@@ -112,6 +135,8 @@ const MENU_ITEMS: { id: AdminMenu; label: string; icon: typeof LayoutDashboard; 
   { id: 'events', label: 'Events', icon: Calendar },
   { id: 'promos', label: 'Promos', icon: Tag },
   { id: 'notifications', label: 'Notifications', icon: Bell },
+  { id: 'cmsHomepage', label: 'CMS Homepage', icon: Globe },
+  { id: 'backupRestore', label: 'Backup & Restore', icon: Database, superOnly: true },
   { id: 'adminManagement', label: 'Admin Management', icon: UserCog, superOnly: true },
   { id: 'levels', label: 'Levels', icon: Sliders, superOnly: true },
   { id: 'xpSettings', label: 'XP Settings', icon: Activity, superOnly: true },
@@ -122,7 +147,7 @@ const MENU_ITEMS: { id: AdminMenu; label: string; icon: typeof LayoutDashboard; 
 ];
 
 export function AdminDashboardPage() {
-  const { adminProfile, levels, branches, systemSettings, capabilities, logout, refreshProfiles } = useAuth();
+  const { adminProfile, levels, branches, systemSettings, restoreLock, capabilities, logout, refreshProfiles } = useAuth();
   const [menu, setMenu] = useState<AdminMenu>('dashboard');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -164,6 +189,9 @@ export function AdminDashboardPage() {
     socialMedia: '',
     preferredBranch: 'DEMANG' as BranchId,
   });
+  const [xpAdjustmentInitialMember, setXpAdjustmentInitialMember] = useState<MemberProfile | null>(null);
+  const [levelOverrideInitialMember, setLevelOverrideInitialMember] = useState<MemberProfile | null>(null);
+  const [passwordInitialMember, setPasswordInitialMember] = useState<MemberProfile | null>(null);
 
   // Forms: Transaction XP
   const [txForm, setTxForm] = useState({
@@ -179,6 +207,7 @@ export function AdminDashboardPage() {
   const [denyReason, setDenyReason] = useState('');
 
   // Forms: Benefit CRUD
+  const [benefitOriginalMeta, setBenefitOriginalMeta] = useState<{ createdAt: number; createdBy: string } | null>(null);
   const [benefitForm, setBenefitForm] = useState({
     id: '',
     name: '',
@@ -193,19 +222,26 @@ export function AdminDashboardPage() {
   });
 
   // Forms: Campaign CRUD (Challenge / Event / Promo)
-  const [campaignForm, setCampaignForm] = useState({
+  const [campaignOriginalMeta, setCampaignOriginalMeta] = useState<{
+    createdAt: number;
+    createdBy: string;
+    claimsCount: number;
+  } | null>(null);
+  const makeDefaultCampaignForm = () => ({
     id: '',
     title: '',
     description: '',
     xpReward: '25',
-    startAt: new Date().toISOString().slice(0, 16),
-    endAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16),
+    startAt: formatDateTimeLocalInput(Date.now()),
+    endAt: formatDateTimeLocalInput(Date.now() + 7 * 24 * 60 * 60 * 1000),
     terms: '',
     maxClaimsPerMember: '1',
+    totalClaimLimit: '',
     requiresEvidence: true,
     status: 'ACTIVE' as CampaignStatus,
     active: true,
   });
+  const [campaignForm, setCampaignForm] = useState(makeDefaultCampaignForm);
 
   // Forms: Notification & Inactivity
   const [notifForm, setNotifForm] = useState({
@@ -224,6 +260,7 @@ export function AdminDashboardPage() {
     nextCycleName: 'Season Baru 2026',
     resetReason: 'Reset periodik membership cycle',
   });
+  const [adminOriginalCreatedAt, setAdminOriginalCreatedAt] = useState<number | null>(null);
   const [adminForm, setAdminForm] = useState({
     uid: '',
     email: '',
@@ -257,7 +294,19 @@ export function AdminDashboardPage() {
   const activeRows = rowsOwnerKey === currentQueryKey ? rows : [];
 
   const loadMenuRows = async (reset: boolean) => {
-    if (menu === 'dashboard' || menu === 'levels' || menu === 'xpSettings' || menu === 'branches' || menu === 'settings') {
+    if (
+      menu === 'dashboard' ||
+      menu === 'inactiveMembers' ||
+      menu === 'passwordManagement' ||
+      menu === 'xpAdjustment' ||
+      menu === 'levelOverride' ||
+      menu === 'levels' ||
+      menu === 'xpSettings' ||
+      menu === 'branches' ||
+      menu === 'settings' ||
+      menu === 'cmsHomepage' ||
+      menu === 'backupRestore'
+    ) {
       return;
     }
     const seq = ++fetchSeqRef.current;
@@ -271,6 +320,7 @@ export function AdminDashboardPage() {
     try {
       let colName = 'members';
       let orderByField = 'createdAt';
+      let orderDirection: 'asc' | 'desc' = 'desc';
       const constraints: QueryConstraint[] = [];
 
       if (menu === 'members') {
@@ -294,6 +344,7 @@ export function AdminDashboardPage() {
       } else if (menu === 'benefits') {
         colName = 'benefits';
         orderByField = 'xpCost';
+        orderDirection = 'asc';
       } else if (menu === 'challenges' || menu === 'events' || menu === 'promos') {
         colName = 'campaigns';
         const t: CampaignType = menu === 'challenges' ? 'CHALLENGE' : menu === 'events' ? 'EVENT' : 'PROMO';
@@ -315,6 +366,7 @@ export function AdminDashboardPage() {
         collectionName: colName,
         constraints,
         orderByField,
+        orderDirection,
         pageSize: 15,
         cursor: reset ? null : cursor,
       });
@@ -338,6 +390,11 @@ export function AdminDashboardPage() {
   };
 
   useEffect(() => {
+    setCampaignForm(makeDefaultCampaignForm());
+    setCampaignOriginalMeta(null);
+  }, [menu]);
+
+  useEffect(() => {
     if (menu === 'dashboard' || menu === 'settings') {
       void loadDashboardMetrics();
     } else {
@@ -347,6 +404,8 @@ export function AdminDashboardPage() {
 
   if (!adminProfile) return null;
   const isSuper = adminProfile.role === 'SUPER_ADMIN';
+  const canManageCatalog = isSuper || adminProfile.role === 'ADMIN';
+  const canManageMembers = isSuper || adminProfile.role === 'ADMIN' || Boolean(adminProfile.permissions?.manageMembers);
 
   const handleAddMember = async (e: FormEvent) => {
     e.preventDefault();
@@ -370,6 +429,20 @@ export function AdminDashboardPage() {
         referralUsername: '',
         preferredBranch: 'DEMANG',
       });
+      await loadMenuRows(true);
+    } catch (err) {
+      setFeedback({ type: 'error', text: mapFriendlyError(err) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleMemberStatusChange = async (uid: string, status: MemberStatus) => {
+    setBusy(true);
+    setFeedback(null);
+    try {
+      await updateMemberStatusByAdmin(uid, status, adminProfile);
+      setFeedback({ type: 'success', text: `Status member berhasil diubah ke ${status}.` });
       await loadMenuRows(true);
     } catch (err) {
       setFeedback({ type: 'error', text: mapFriendlyError(err) });
@@ -466,12 +539,29 @@ export function AdminDashboardPage() {
     }
   };
 
+  const resetBenefitForm = () => {
+    setBenefitOriginalMeta(null);
+    setBenefitForm({
+      id: '',
+      name: '',
+      description: '',
+      xpCost: '50',
+      levelRequirement: 'BRONZE',
+      claimable: true,
+      redeemable: true,
+      stock: '',
+      terms: '',
+      active: true,
+    });
+  };
+
   const handleSaveBenefit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setFeedback(null);
     try {
-      const id = benefitForm.id || `ben_${Date.now()}`;
+      const now = Date.now();
+      const id = benefitForm.id || `ben_${now}`;
       const item: BenefitItem = {
         id,
         name: benefitForm.name.trim(),
@@ -485,23 +575,12 @@ export function AdminDashboardPage() {
         expiryAt: null,
         terms: benefitForm.terms.trim(),
         active: benefitForm.active,
-        createdBy: adminProfile.uid,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+        createdBy: benefitOriginalMeta?.createdBy || adminProfile.uid,
+        createdAt: benefitOriginalMeta?.createdAt || now,
+        updatedAt: now,
       };
       await upsertBenefitByAdmin(item, adminProfile);
-      setBenefitForm({
-        id: '',
-        name: '',
-        description: '',
-        xpCost: '50',
-        levelRequirement: 'BRONZE',
-        claimable: true,
-        redeemable: true,
-        stock: '',
-        terms: '',
-        active: true,
-      });
+      resetBenefitForm();
       setFeedback({ type: 'success', text: `Benefit "${item.name}" berhasil disimpan.` });
       await loadMenuRows(true);
     } catch (err) {
@@ -521,7 +600,12 @@ export function AdminDashboardPage() {
       if (!Number.isFinite(startAt) || !Number.isFinite(endAt) || endAt < startAt) {
         throw new Error('Tanggal berakhir harus lebih besar atau sama dengan tanggal mulai.');
       }
-      const id = campaignForm.id || `camp_${Date.now()}`;
+      const totalClaimLimit =
+        campaignForm.totalClaimLimit.trim() === ''
+          ? null
+          : Math.max(1, Math.floor(Number(campaignForm.totalClaimLimit) || 1));
+      const now = Date.now();
+      const id = campaignForm.id || `camp_${now}`;
       const item: CampaignItem = {
         id,
         type,
@@ -533,18 +617,19 @@ export function AdminDashboardPage() {
         imageUrl: '',
         terms: campaignForm.terms.trim(),
         maxClaimsPerMember: Math.max(1, Math.floor(Number(campaignForm.maxClaimsPerMember) || 1)),
-        totalClaimLimit: null,
-        claimsCount: 0,
+        totalClaimLimit,
+        claimsCount: campaignOriginalMeta?.claimsCount ?? 0,
         active: campaignForm.status === 'ACTIVE',
         status: campaignForm.status,
         requiresEvidence: campaignForm.requiresEvidence,
-        createdBy: adminProfile.uid,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
+        createdBy: campaignOriginalMeta?.createdBy || adminProfile.uid,
+        createdAt: campaignOriginalMeta?.createdAt || now,
+        updatedAt: now,
       };
       await upsertCampaignByAdmin(item, adminProfile);
       setFeedback({ type: 'success', text: `${type} "${item.title}" berhasil disimpan.` });
-      setCampaignForm({ ...campaignForm, id: '', title: '', description: '', terms: '' });
+      setCampaignForm(makeDefaultCampaignForm());
+      setCampaignOriginalMeta(null);
       await loadMenuRows(true);
     } catch (err) {
       setFeedback({ type: 'error', text: mapFriendlyError(err) });
@@ -717,7 +802,9 @@ export function AdminDashboardPage() {
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             <button
               type="button"
-              onClick={() => (menu === 'dashboard' ? void loadDashboardMetrics() : void loadMenuRows(true))}
+              onClick={() =>
+                menu === 'dashboard' || menu === 'settings' ? void loadDashboardMetrics() : void loadMenuRows(true)
+              }
               className="min-h-[40px] rounded-xl border border-indigo-500/25 bg-[#0B1124] px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-sky-400/50 transition-colors"
             >
               Refresh
@@ -733,6 +820,29 @@ export function AdminDashboardPage() {
         </header>
 
         <main className="flex-1 p-4 sm:p-8 max-w-7xl w-full mx-auto space-y-6">
+          {restoreLock?.locked && (
+            <div
+              role="alert"
+              className="rounded-xl border border-amber-500/50 bg-amber-950/40 p-4 text-xs sm:text-sm text-amber-100 flex flex-wrap items-center justify-between gap-3"
+            >
+              <div>
+                <strong className="text-amber-300">RESTORE LOCK AKTIF:</strong>{' '}
+                {restoreLock.message ||
+                  'XP PLAY sedang melakukan maintenance sistem. Silakan kembali beberapa saat lagi.'}{' '}
+                Seluruh operasi tulis transaksi, XP, claim, dan redemption diblokir sementara.
+              </div>
+              {isSuper && (
+                <button
+                  type="button"
+                  onClick={() => setMenu('backupRestore')}
+                  className="px-3 py-1.5 rounded-lg bg-amber-500 text-slate-950 font-semibold text-xs whitespace-nowrap"
+                >
+                  Buka Backup & Restore
+                </button>
+              )}
+            </div>
+          )}
+
           {feedback && (
             <div
               role="alert"
@@ -850,16 +960,18 @@ export function AdminDashboardPage() {
                   placeholder="Filter cepat halaman ini (username / WA / nama)"
                   className="h-10 w-full sm:w-80 rounded-xl border border-indigo-500/30 bg-[#070B19] text-white px-3 text-sm"
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowAddMember((v) => !v)}
-                  className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-4 text-xs font-semibold text-white hover:from-blue-500 hover:to-purple-500 whitespace-nowrap"
-                >
-                  {showAddMember ? 'Tutup Form' : '+ Tambah Member'}
-                </button>
+                {canManageMembers && (
+                  <button
+                    type="button"
+                    onClick={() => setShowAddMember((v) => !v)}
+                    className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-4 text-xs font-semibold text-white hover:from-blue-500 hover:to-purple-500 whitespace-nowrap"
+                  >
+                    {showAddMember ? 'Tutup Form' : '+ Tambah Member'}
+                  </button>
+                )}
               </div>
 
-              {showAddMember && (
+              {showAddMember && canManageMembers && (
                 <form onSubmit={handleAddMember} className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 grid sm:grid-cols-3 gap-4">
                   <input
                     type="text"
@@ -913,7 +1025,9 @@ export function AdminDashboardPage() {
                       disabled={busy}
                       className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-5 text-xs font-semibold text-white hover:from-blue-500 hover:to-purple-500"
                     >
-                      {busy ? 'Menyimpan...' : 'Simpan Member (+10 XP)'}
+                      {busy
+                        ? 'Menyimpan...'
+                        : `Simpan Member (+${systemSettings.registrationBonusXp} XP)`}
                     </button>
                   </div>
                 </form>
@@ -934,22 +1048,36 @@ export function AdminDashboardPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-indigo-500/15">
-                    {(activeRows as MemberProfile[])
-                      .filter(
+                    {(() => {
+                      const filtered = (activeRows as MemberProfile[]).filter(
                         (m) =>
                           !memberSearch ||
                           (m.username || '').includes(memberSearch) ||
                           (m.fullName || '').toLowerCase().includes(memberSearch) ||
                           (m.whatsapp || '').includes(memberSearch)
-                      )
-                      .map((m, idx) => (
+                      );
+                      if (filtered.length === 0) {
+                        return (
+                          <tr>
+                            <td colSpan={8} className="p-8 text-center text-sm text-slate-400">
+                              {loadingRows ? 'Memuat data member...' : 'Belum ada data member yang sesuai.'}
+                            </td>
+                          </tr>
+                        );
+                      }
+                      return filtered.map((m, idx) => (
                         <tr key={m.uid || m.memberId || `mem-${idx}`}>
                           <td className="p-3">
                             <p className="font-semibold text-white">{m.fullName}</p>
                             <p className="text-xs font-mono text-slate-400">@{m.username} · {m.memberId}</p>
                           </td>
                           <td className="p-3 font-mono text-xs">{m.whatsapp}</td>
-                          <td className="p-3 text-xs font-semibold">{m.currentLevel}</td>
+                          <td className="p-3 text-xs font-semibold">
+                            <span>{m.currentLevel}</span>
+                            {m.levelMode === 'MANUAL_OVERRIDE' && (
+                              <span className="ml-1 font-mono text-[10px] text-amber-300">(Manual)</span>
+                            )}
+                          </td>
                           <td className="p-3 text-right font-mono tabular-nums">{m.xpProgress}</td>
                           <td className="p-3 text-right font-mono tabular-nums text-purple-300">{m.xpReward}</td>
                           <td className="p-3 text-xs text-slate-400">
@@ -957,61 +1085,97 @@ export function AdminDashboardPage() {
                           </td>
                           <td className="p-3 text-xs font-mono font-semibold">{m.status}</td>
                           <td className="p-3 text-right space-x-2 whitespace-nowrap">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditMemberTarget(m);
-                                setEditMemberPatch({
-                                  fullName: m.fullName,
-                                  socialMedia: m.socialMedia,
-                                  preferredBranch: m.preferredBranch || 'DEMANG',
-                                });
-                              }}
-                              className="text-xs font-semibold text-sky-300 hover:underline"
-                            >
-                              Edit
-                            </button>
-                            {m.status !== 'ACTIVE' ? (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  void updateMemberStatusByAdmin(m.uid, 'ACTIVE', adminProfile).then(() =>
-                                    loadMenuRows(true)
-                                  )
-                                }
-                                className="text-xs font-semibold text-emerald-400 hover:underline"
-                              >
-                                Activate
-                              </button>
+                            {canManageMembers ? (
+                              <>
+                                {canManageCatalog && (
+                                  <>
+                                    <button
+                                      type="button"
+                                      disabled={busy}
+                                      onClick={() => {
+                                        setXpAdjustmentInitialMember(m);
+                                        setMenu('xpAdjustment');
+                                      }}
+                                      className="text-xs font-semibold text-indigo-300 hover:underline disabled:opacity-50"
+                                    >
+                                      Adjust XP
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={busy}
+                                      onClick={() => {
+                                        setLevelOverrideInitialMember(m);
+                                        setMenu('levelOverride');
+                                      }}
+                                      className="text-xs font-semibold text-amber-300 hover:underline disabled:opacity-50"
+                                    >
+                                      Level
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={busy}
+                                      onClick={() => {
+                                        setPasswordInitialMember(m);
+                                        setMenu('passwordManagement');
+                                      }}
+                                      className="text-xs font-semibold text-purple-300 hover:underline disabled:opacity-50"
+                                    >
+                                      Password
+                                    </button>
+                                  </>
+                                )}
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() => {
+                                    setEditMemberTarget(m);
+                                    setEditMemberPatch({
+                                      fullName: m.fullName,
+                                      socialMedia: m.socialMedia,
+                                      preferredBranch: m.preferredBranch || 'DEMANG',
+                                    });
+                                  }}
+                                  className="text-xs font-semibold text-sky-300 hover:underline disabled:opacity-50"
+                                >
+                                  Edit
+                                </button>
+                                {m.status !== 'ACTIVE' ? (
+                                  <button
+                                    type="button"
+                                    disabled={busy}
+                                    onClick={() => void handleMemberStatusChange(m.uid, 'ACTIVE')}
+                                    className="text-xs font-semibold text-emerald-400 hover:underline disabled:opacity-50"
+                                  >
+                                    Activate
+                                  </button>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    disabled={busy}
+                                    onClick={() => void handleMemberStatusChange(m.uid, 'SUSPENDED')}
+                                    className="text-xs font-semibold text-purple-300 hover:underline disabled:opacity-50"
+                                  >
+                                    Suspend
+                                  </button>
+                                )}
+                                {m.status !== 'DELETED' && (
+                                  <button
+                                    type="button"
+                                    disabled={busy}
+                                    onClick={() => void handleMemberStatusChange(m.uid, 'DELETED')}
+                                    className="text-xs font-semibold text-rose-400 hover:underline disabled:opacity-50"
+                                  >
+                                    Soft Delete
+                                  </button>
+                                )}
+                              </>
                             ) : (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  void updateMemberStatusByAdmin(m.uid, 'SUSPENDED', adminProfile).then(() =>
-                                    loadMenuRows(true)
-                                  )
-                                }
-                                className="text-xs font-semibold text-purple-300 hover:underline"
-                              >
-                                Suspend
-                              </button>
-                            )}
-                            {m.status !== 'DELETED' && (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  void updateMemberStatusByAdmin(m.uid, 'DELETED', adminProfile).then(() =>
-                                    loadMenuRows(true)
-                                  )
-                                }
-                                className="text-xs font-semibold text-rose-400 hover:underline"
-                              >
-                                Soft Delete
-                              </button>
+                              <span className="text-xs text-slate-500">Read-only</span>
                             )}
                           </td>
                         </tr>
-                      ))}
+                      ));
+                    })()}
                   </tbody>
                 </table>
                 {hasMore && (
@@ -1119,16 +1283,24 @@ export function AdminDashboardPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-indigo-500/15">
-                      {(activeRows as TransactionRecord[]).map((t, idx) => (
-                        <tr key={t.id || `tx-${idx}`}>
-                          <td className="p-3 text-xs text-slate-400">{formatJakartaDateTime(t.createdAt)}</td>
-                          <td className="p-3 font-mono text-xs">@{t.memberUsername}</td>
-                          <td className="p-3 text-xs">{t.branch}</td>
-                          <td className="p-3 text-right font-mono tabular-nums">{formatIdr(t.amountIdr)}</td>
-                          <td className="p-3 text-right font-mono font-bold text-emerald-400 tabular-nums">+{t.xpGenerated}</td>
-                          <td className="p-3 font-mono text-xs text-slate-400">{t.receiptNumber || '-'}</td>
+                      {activeRows.length === 0 ? (
+                        <tr>
+                          <td colSpan={6} className="p-8 text-center text-sm text-slate-400">
+                            {loadingRows ? 'Memuat transaksi...' : 'Belum ada riwayat transaksi pada filter ini.'}
+                          </td>
                         </tr>
-                      ))}
+                      ) : (
+                        (activeRows as TransactionRecord[]).map((t, idx) => (
+                          <tr key={t.id || `tx-${idx}`}>
+                            <td className="p-3 text-xs text-slate-400">{formatJakartaDateTime(t.createdAt)}</td>
+                            <td className="p-3 font-mono text-xs">@{t.memberUsername}</td>
+                            <td className="p-3 text-xs">{t.branch}</td>
+                            <td className="p-3 text-right font-mono tabular-nums">{formatIdr(t.amountIdr)}</td>
+                            <td className="p-3 text-right font-mono font-bold text-emerald-400 tabular-nums">+{t.xpGenerated}</td>
+                            <td className="p-3 font-mono text-xs text-slate-400">{t.receiptNumber || '-'}</td>
+                          </tr>
+                        ))
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -1142,6 +1314,58 @@ export function AdminDashboardPage() {
               </div>
             </div>
           )}
+
+          {/* 3B. ADMIN XP ADJUSTMENT (PHASE B) */}
+          {menu === 'xpAdjustment' && (
+            <AdminXpAdjustment
+              adminProfile={adminProfile}
+              levels={levels}
+              adminSdkConfigured={capabilities.adminSdkConfigured}
+              initialMember={xpAdjustmentInitialMember}
+              onFeedback={setFeedback}
+            />
+          )}
+
+          {/* 3C. ADMIN LEVEL OVERRIDE (PHASE C) */}
+          {menu === 'levelOverride' && (
+            <AdminLevelOverride
+              adminProfile={adminProfile}
+              levels={levels}
+              adminSdkConfigured={capabilities.adminSdkConfigured}
+              initialMember={levelOverrideInitialMember}
+              onFeedback={setFeedback}
+            />
+          )}
+
+          {/* 3D. ADMIN PASSWORD MANAGEMENT (PHASE D) */}
+          {menu === 'passwordManagement' && (
+            <AdminPasswordManagement
+              adminProfile={adminProfile}
+              adminSdkConfigured={capabilities.adminSdkConfigured}
+              restoreLocked={Boolean(restoreLock?.locked)}
+              initialMember={passwordInitialMember}
+              onConsumeInitialMember={() => setPasswordInitialMember(null)}
+            />
+          )}
+
+          {/* 3E. INACTIVE MEMBERS (PHASE E) */}
+          {menu === 'inactiveMembers' && (
+            <AdminInactiveMembers
+              adminProfile={adminProfile}
+              restoreLocked={Boolean(restoreLock?.locked)}
+              onSelectForPassword={(m) => {
+                setPasswordInitialMember(m);
+                setMenu('passwordManagement');
+              }}
+              onSelectForXpAdjustment={(m) => {
+                setXpAdjustmentInitialMember(m);
+                setMenu('xpAdjustment');
+              }}
+            />
+          )}
+
+          {/* 3F. BACKUP, VERIFICATION, RESTORE & SYSTEM INTEGRITY (PHASES F-I & K) */}
+          {menu === 'backupRestore' && <AdminBackupRestore adminProfile={adminProfile} />}
 
           {/* 4. XP HISTORY & 5. LEVEL UP HISTORY */}
           {(menu === 'xpHistory' || menu === 'levelHistory') && (
@@ -1175,7 +1399,11 @@ export function AdminDashboardPage() {
                 )}
               </div>
               <div className="divide-y divide-indigo-500/15">
-                {menu === 'xpHistory'
+                {activeRows.length === 0 ? (
+                  <div className="p-8 text-center text-sm text-slate-400">
+                    {loadingRows ? 'Memuat riwayat...' : 'Belum ada catatan riwayat pada kategori ini.'}
+                  </div>
+                ) : menu === 'xpHistory'
                   ? (activeRows as XpLedgerEntry[]).map((e, idx) => (
                       <div key={e.id || `xp-${idx}`} className="p-3.5 flex items-center justify-between gap-4 text-sm">
                         <div>
@@ -1322,116 +1550,145 @@ export function AdminDashboardPage() {
           {/* 8. BENEFITS */}
           {menu === 'benefits' && (
             <div className="space-y-6">
-              <form onSubmit={handleSaveBenefit} className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-4">
-                <h2 className="font-display text-base font-bold text-white">Tambah / Ubah Benefit</h2>
-                <div className="grid sm:grid-cols-3 gap-3">
-                  <input
-                    type="text"
-                    required
-                    placeholder="Nama Benefit *"
-                    value={benefitForm.name}
-                    onChange={(e) => setBenefitForm({ ...benefitForm, name: e.target.value })}
-                    className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
-                  />
-                  <input
-                    type="number"
-                    min={0}
-                    placeholder="XP Cost (0 untuk Level Benefit)"
-                    value={benefitForm.xpCost}
-                    onChange={(e) => setBenefitForm({ ...benefitForm, xpCost: e.target.value })}
-                    className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm font-mono"
-                  />
-                  <select
-                    value={benefitForm.levelRequirement}
-                    onChange={(e) => setBenefitForm({ ...benefitForm, levelRequirement: e.target.value as LevelId })}
-                    className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
-                  >
-                    <option value="BRONZE">Min Level: BRONZE</option>
-                    <option value="SILVER">Min Level: SILVER</option>
-                    <option value="JURAGAN">Min Level: JURAGAN</option>
-                    <option value="SULTAN">Min Level: SULTAN</option>
-                  </select>
-                  <input
-                    type="text"
-                    placeholder="Deskripsi benefit"
-                    value={benefitForm.description}
-                    onChange={(e) => setBenefitForm({ ...benefitForm, description: e.target.value })}
-                    className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm sm:col-span-2"
-                  />
-                  <input
-                    type="number"
-                    min={0}
-                    placeholder="Kuota/Stok (kosong = unlimited)"
-                    value={benefitForm.stock}
-                    onChange={(e) => setBenefitForm({ ...benefitForm, stock: e.target.value })}
-                    className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm font-mono"
-                  />
-                  <input
-                    type="text"
-                    placeholder="Syarat & ketentuan"
-                    value={benefitForm.terms}
-                    onChange={(e) => setBenefitForm({ ...benefitForm, terms: e.target.value })}
-                    className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm sm:col-span-2"
-                  />
-                  <div className="flex items-center gap-4 text-xs">
-                    <label className="flex items-center gap-1.5">
-                      <input
-                        type="checkbox"
-                        checked={benefitForm.claimable}
-                        onChange={(e) => setBenefitForm({ ...benefitForm, claimable: e.target.checked, redeemable: e.target.checked })}
-                      />
-                      <span>Claimable/Redeemable</span>
-                    </label>
-                    <label className="flex items-center gap-1.5">
-                      <input
-                        type="checkbox"
-                        checked={benefitForm.active}
-                        onChange={(e) => setBenefitForm({ ...benefitForm, active: e.target.checked })}
-                      />
-                      <span>Aktif</span>
-                    </label>
+              {canManageCatalog ? (
+                <form onSubmit={handleSaveBenefit} className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <h2 className="font-display text-base font-bold text-white">
+                      {benefitForm.id ? 'Ubah Benefit' : 'Tambah Benefit Baru'}
+                    </h2>
+                    {benefitForm.id && (
+                      <button
+                        type="button"
+                        onClick={resetBenefitForm}
+                        className="text-xs font-semibold text-slate-300 hover:text-white underline"
+                      >
+                        Batal Edit
+                      </button>
+                    )}
                   </div>
+                  <div className="grid sm:grid-cols-3 gap-3">
+                    <input
+                      type="text"
+                      required
+                      placeholder="Nama Benefit *"
+                      value={benefitForm.name}
+                      onChange={(e) => setBenefitForm({ ...benefitForm, name: e.target.value })}
+                      className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                    />
+                    <input
+                      type="number"
+                      min={0}
+                      placeholder="XP Cost (0 untuk Level Benefit)"
+                      value={benefitForm.xpCost}
+                      onChange={(e) => setBenefitForm({ ...benefitForm, xpCost: e.target.value })}
+                      className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm font-mono"
+                    />
+                    <select
+                      value={benefitForm.levelRequirement}
+                      onChange={(e) => setBenefitForm({ ...benefitForm, levelRequirement: e.target.value as LevelId })}
+                      className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                    >
+                      <option value="BRONZE">Min Level: BRONZE</option>
+                      <option value="SILVER">Min Level: SILVER</option>
+                      <option value="JURAGAN">Min Level: JURAGAN</option>
+                      <option value="SULTAN">Min Level: SULTAN</option>
+                    </select>
+                    <input
+                      type="text"
+                      placeholder="Deskripsi benefit"
+                      value={benefitForm.description}
+                      onChange={(e) => setBenefitForm({ ...benefitForm, description: e.target.value })}
+                      className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm sm:col-span-2"
+                    />
+                    <input
+                      type="number"
+                      min={0}
+                      placeholder="Kuota/Stok (kosong = unlimited)"
+                      value={benefitForm.stock}
+                      onChange={(e) => setBenefitForm({ ...benefitForm, stock: e.target.value })}
+                      className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm font-mono"
+                    />
+                    <input
+                      type="text"
+                      placeholder="Syarat & ketentuan"
+                      value={benefitForm.terms}
+                      onChange={(e) => setBenefitForm({ ...benefitForm, terms: e.target.value })}
+                      className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm sm:col-span-2"
+                    />
+                    <div className="flex items-center gap-4 text-xs">
+                      <label className="flex items-center gap-1.5">
+                        <input
+                          type="checkbox"
+                          checked={benefitForm.claimable}
+                          onChange={(e) => setBenefitForm({ ...benefitForm, claimable: e.target.checked, redeemable: e.target.checked })}
+                        />
+                        <span>Claimable/Redeemable</span>
+                      </label>
+                      <label className="flex items-center gap-1.5">
+                        <input
+                          type="checkbox"
+                          checked={benefitForm.active}
+                          onChange={(e) => setBenefitForm({ ...benefitForm, active: e.target.checked })}
+                        />
+                        <span>Aktif</span>
+                      </label>
+                    </div>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={busy}
+                    className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-5 text-xs font-semibold text-white hover:from-blue-500 hover:to-purple-500 disabled:opacity-50"
+                  >
+                    {busy ? 'Menyimpan...' : benefitForm.id ? 'Simpan Perubahan Benefit' : 'Simpan Benefit'}
+                  </button>
+                </form>
+              ) : (
+                <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-200">
+                  Mode Read-Only: Role STAFF hanya dapat melihat daftar benefit. Penambahan/perubahan benefit dilakukan oleh ADMIN atau SUPER_ADMIN.
                 </div>
-                <button
-                  type="submit"
-                  disabled={busy}
-                  className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-5 text-xs font-semibold text-white hover:from-blue-500 hover:to-purple-500"
-                >
-                  Simpan Benefit
-                </button>
-              </form>
+              )}
 
               <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 divide-y divide-indigo-500/15">
-                {(activeRows as BenefitItem[]).map((b, idx) => (
-                  <div key={b.id || `ben-${idx}`} className="p-4 flex items-center justify-between gap-4">
-                    <div>
-                      <p className="text-sm font-bold text-white">{b.name}</p>
-                      <p className="text-xs text-slate-400">
-                        Level {b.levelRequirement} · {b.xpCost} XP · {b.claimable ? 'Redeemable' : 'Info Only'} · {b.active ? 'ACTIVE' : 'DISABLED'}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setBenefitForm({
-                          id: b.id,
-                          name: b.name,
-                          description: b.description,
-                          xpCost: String(b.xpCost),
-                          levelRequirement: b.levelRequirement,
-                          claimable: b.claimable,
-                          redeemable: b.redeemable,
-                          stock: b.stock === null ? '' : String(b.stock),
-                          terms: b.terms,
-                          active: b.active,
-                        })
-                      }
-                      className="text-xs font-semibold text-sky-300 hover:underline"
-                    >
-                      Edit
-                    </button>
+                {activeRows.length === 0 ? (
+                  <div className="p-8 text-center text-sm text-slate-400">
+                    {loadingRows ? 'Memuat daftar benefit...' : 'Belum ada benefit terdaftar.'}
                   </div>
-                ))}
+                ) : (
+                  (activeRows as BenefitItem[]).map((b, idx) => (
+                    <div key={b.id || `ben-${idx}`} className="p-4 flex items-center justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-bold text-white">{b.name}</p>
+                        <p className="text-xs text-slate-400">
+                          Level {b.levelRequirement} · {b.xpCost} XP · {b.claimable ? 'Redeemable' : 'Info Only'} · {b.stock !== null ? `Stok: ${b.stock} · ` : ''}{b.active ? 'ACTIVE' : 'DISABLED'}
+                        </p>
+                      </div>
+                      {canManageCatalog && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBenefitOriginalMeta({ createdAt: b.createdAt, createdBy: b.createdBy });
+                            setBenefitForm({
+                              id: b.id,
+                              name: b.name,
+                              description: b.description,
+                              xpCost: String(b.xpCost),
+                              levelRequirement: b.levelRequirement,
+                              claimable: b.claimable,
+                              redeemable: b.redeemable,
+                              stock: b.stock === null ? '' : String(b.stock),
+                              terms: b.terms,
+                              active: b.active,
+                            });
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
+                          }}
+                          className="text-xs font-semibold text-sky-300 hover:underline shrink-0"
+                        >
+                          Edit
+                        </button>
+                      )}
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           )}
@@ -1441,9 +1698,32 @@ export function AdminDashboardPage() {
             <div className="space-y-6">
               {(() => {
                 const cType: CampaignType = menu === 'challenges' ? 'CHALLENGE' : menu === 'events' ? 'EVENT' : 'PROMO';
+                if (!canManageCatalog) {
+                  return (
+                    <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-200">
+                      Mode Read-Only: Role STAFF hanya dapat melihat daftar {cType}. Pengelolaan program dilakukan oleh ADMIN atau SUPER_ADMIN.
+                    </div>
+                  );
+                }
                 return (
                   <form onSubmit={(e) => void handleSaveCampaign(e, cType)} className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-4">
-                    <h2 className="font-display text-base font-bold text-white">Buat / Edit {cType}</h2>
+                    <div className="flex items-center justify-between gap-2">
+                      <h2 className="font-display text-base font-bold text-white">
+                        {campaignForm.id ? `Ubah ${cType}` : `Buat ${cType} Baru`}
+                      </h2>
+                      {campaignForm.id && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCampaignForm(makeDefaultCampaignForm());
+                            setCampaignOriginalMeta(null);
+                          }}
+                          className="text-xs font-semibold text-slate-300 hover:text-white underline"
+                        >
+                          Batal Edit
+                        </button>
+                      )}
+                    </div>
                     <div className="grid sm:grid-cols-3 gap-3">
                       <input
                         type="text"
@@ -1499,6 +1779,21 @@ export function AdminDashboardPage() {
                         onChange={(e) => setCampaignForm({ ...campaignForm, description: e.target.value })}
                         className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm sm:col-span-2"
                       />
+                      <input
+                        type="number"
+                        min={1}
+                        placeholder="Kuota Total Claim (kosong = unlimited)"
+                        value={campaignForm.totalClaimLimit}
+                        onChange={(e) => setCampaignForm({ ...campaignForm, totalClaimLimit: e.target.value })}
+                        className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm font-mono"
+                      />
+                      <input
+                        type="text"
+                        placeholder="Syarat & Ketentuan (opsional)"
+                        value={campaignForm.terms}
+                        onChange={(e) => setCampaignForm({ ...campaignForm, terms: e.target.value })}
+                        className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm sm:col-span-2"
+                      />
                       <label className="flex items-center gap-2 text-xs">
                         <input
                           type="checkbox"
@@ -1511,46 +1806,61 @@ export function AdminDashboardPage() {
                     <button
                       type="submit"
                       disabled={busy}
-                      className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-5 text-xs font-semibold text-white hover:from-blue-500 hover:to-purple-500"
+                      className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-5 text-xs font-semibold text-white hover:from-blue-500 hover:to-purple-500 disabled:opacity-50"
                     >
-                      Simpan {cType}
+                      {busy ? 'Menyimpan...' : campaignForm.id ? `Simpan Perubahan ${cType}` : `Simpan ${cType}`}
                     </button>
                   </form>
                 );
               })()}
 
               <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 divide-y divide-indigo-500/15">
-                {(activeRows as CampaignItem[]).map((c, idx) => (
-                  <div key={c.id || `camp-${idx}`} className="p-4 flex items-center justify-between gap-4">
-                    <div>
-                      <p className="text-sm font-bold text-white">{c.title} (+{c.xpReward} XP)</p>
-                      <p className="text-xs text-slate-400">
-                        Status Efektif: <strong>{resolveCampaignStatus(c)}</strong> · Berakhir: {formatJakartaDateTime(c.endAt)}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setCampaignForm({
-                          id: c.id,
-                          title: c.title,
-                          description: c.description,
-                          xpReward: String(c.xpReward),
-                          startAt: new Date(c.startAt).toISOString().slice(0, 16),
-                          endAt: new Date(c.endAt).toISOString().slice(0, 16),
-                          terms: c.terms,
-                          maxClaimsPerMember: String(c.maxClaimsPerMember),
-                          requiresEvidence: c.requiresEvidence,
-                          status: c.status,
-                          active: c.active,
-                        })
-                      }
-                      className="text-xs font-semibold text-sky-300 hover:underline"
-                    >
-                      Edit
-                    </button>
+                {activeRows.length === 0 ? (
+                  <div className="p-8 text-center text-sm text-slate-400">
+                    {loadingRows ? 'Memuat program...' : 'Belum ada program pada kategori ini.'}
                   </div>
-                ))}
+                ) : (
+                  (activeRows as CampaignItem[]).map((c, idx) => (
+                    <div key={c.id || `camp-${idx}`} className="p-4 flex items-center justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-bold text-white">{c.title} (+{c.xpReward} XP)</p>
+                        <p className="text-xs text-slate-400">
+                          Status Efektif: <strong>{resolveCampaignStatus(c)}</strong> · Claim: {c.claimsCount}{c.totalClaimLimit !== null ? `/${c.totalClaimLimit}` : ''} · Berakhir: {formatJakartaDateTime(c.endAt)} WIB
+                        </p>
+                      </div>
+                      {canManageCatalog && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setCampaignOriginalMeta({
+                              createdAt: c.createdAt,
+                              createdBy: c.createdBy,
+                              claimsCount: c.claimsCount ?? 0,
+                            });
+                            setCampaignForm({
+                              id: c.id,
+                              title: c.title,
+                              description: c.description,
+                              xpReward: String(c.xpReward),
+                              startAt: formatDateTimeLocalInput(c.startAt),
+                              endAt: formatDateTimeLocalInput(c.endAt),
+                              terms: c.terms,
+                              maxClaimsPerMember: String(c.maxClaimsPerMember),
+                              totalClaimLimit: c.totalClaimLimit === null ? '' : String(c.totalClaimLimit),
+                              requiresEvidence: c.requiresEvidence,
+                              status: c.status,
+                              active: c.active,
+                            });
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
+                          }}
+                          className="text-xs font-semibold text-sky-300 hover:underline shrink-0"
+                        >
+                          Edit
+                        </button>
+                      )}
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           )}
@@ -1558,90 +1868,102 @@ export function AdminDashboardPage() {
           {/* 12. NOTIFICATIONS & INACTIVITY CAMPAIGN */}
           {menu === 'notifications' && (
             <div className="space-y-6">
-              <form onSubmit={handleDispatchNotification} className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-4">
-                <h2 className="font-display text-base font-bold text-white">Kirim Notifikasi / Kampanye Member Inaktif</h2>
-                <div className="grid sm:grid-cols-3 gap-3">
-                  <select
-                    value={notifForm.targetType}
-                    onChange={(e) =>
-                      setNotifForm({
-                        ...notifForm,
-                        targetType: e.target.value as NotificationCampaign['targetType'],
-                      })
-                    }
-                    className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
-                  >
-                    <option value="INACTIVE_MEMBERS">Member Tidak Aktif (Last Play)</option>
-                    <option value="ALL_MEMBERS">Semua Member Aktif</option>
-                    <option value="LEVEL">Berdasarkan Level</option>
-                    <option value="BRANCH">Berdasarkan Cabang Terakhir</option>
-                    <option value="SPECIFIC_MEMBER">Member Tertentu (Username)</option>
-                  </select>
-
-                  {notifForm.targetType === 'INACTIVE_MEMBERS' ? (
+              {canManageCatalog ? (
+                <form onSubmit={handleDispatchNotification} className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-4">
+                  <h2 className="font-display text-base font-bold text-white">Kirim Notifikasi / Kampanye Member Inaktif</h2>
+                  <div className="grid sm:grid-cols-3 gap-3">
                     <select
-                      value={notifForm.inactivityDays}
-                      onChange={(e) => setNotifForm({ ...notifForm, inactivityDays: e.target.value })}
+                      value={notifForm.targetType}
+                      onChange={(e) =>
+                        setNotifForm({
+                          ...notifForm,
+                          targetType: e.target.value as NotificationCampaign['targetType'],
+                        })
+                      }
                       className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
                     >
-                      <option value="7">Inaktif ≥ 7 Hari</option>
-                      <option value="14">Inaktif ≥ 14 Hari</option>
-                      <option value="30">Inaktif ≥ 30 Hari</option>
-                      <option value="60">Inaktif ≥ 60 Hari (Custom)</option>
+                      <option value="INACTIVE_MEMBERS">Member Tidak Aktif (Last Play)</option>
+                      <option value="ALL_MEMBERS">Semua Member Aktif</option>
+                      <option value="LEVEL">Berdasarkan Level</option>
+                      <option value="BRANCH">Berdasarkan Cabang Terakhir</option>
+                      <option value="SPECIFIC_MEMBER">Member Tertentu (Username)</option>
                     </select>
-                  ) : notifForm.targetType !== 'ALL_MEMBERS' ? (
+
+                    {notifForm.targetType === 'INACTIVE_MEMBERS' ? (
+                      <select
+                        value={notifForm.inactivityDays}
+                        onChange={(e) => setNotifForm({ ...notifForm, inactivityDays: e.target.value })}
+                        className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                      >
+                        <option value="7">Inaktif ≥ 7 Hari</option>
+                        <option value="14">Inaktif ≥ 14 Hari</option>
+                        <option value="30">Inaktif ≥ 30 Hari</option>
+                        <option value="60">Inaktif ≥ 60 Hari (Custom)</option>
+                      </select>
+                    ) : notifForm.targetType !== 'ALL_MEMBERS' ? (
+                      <input
+                        type="text"
+                        required
+                        placeholder={
+                          notifForm.targetType === 'LEVEL'
+                            ? 'BRONZE / SILVER / JURAGAN / SULTAN'
+                            : notifForm.targetType === 'BRANCH'
+                              ? 'DEMANG / SEKIP'
+                              : 'Username member'
+                        }
+                        value={notifForm.targetFilter}
+                        onChange={(e) => setNotifForm({ ...notifForm, targetFilter: e.target.value })}
+                        className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                      />
+                    ) : null}
+
                     <input
                       type="text"
                       required
-                      placeholder={
-                        notifForm.targetType === 'LEVEL'
-                          ? 'BRONZE / SILVER / JURAGAN / SULTAN'
-                          : notifForm.targetType === 'BRANCH'
-                            ? 'DEMANG / SEKIP'
-                            : 'Username member'
-                      }
-                      value={notifForm.targetFilter}
-                      onChange={(e) => setNotifForm({ ...notifForm, targetFilter: e.target.value })}
+                      placeholder="Judul Notifikasi *"
+                      value={notifForm.title}
+                      onChange={(e) => setNotifForm({ ...notifForm, title: e.target.value })}
                       className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
                     />
-                  ) : null}
-
-                  <input
-                    type="text"
-                    required
-                    placeholder="Judul Notifikasi *"
-                    value={notifForm.title}
-                    onChange={(e) => setNotifForm({ ...notifForm, title: e.target.value })}
-                    className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
-                  />
-                  <textarea
-                    rows={2}
-                    required
-                    placeholder="Isi pesan notifikasi *"
-                    value={notifForm.message}
-                    onChange={(e) => setNotifForm({ ...notifForm, message: e.target.value })}
-                    className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none sm:col-span-3 rounded-lg border border-indigo-500/30 p-3 text-sm"
-                  />
+                    <textarea
+                      rows={2}
+                      required
+                      placeholder="Isi pesan notifikasi *"
+                      value={notifForm.message}
+                      onChange={(e) => setNotifForm({ ...notifForm, message: e.target.value })}
+                      className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none sm:col-span-3 rounded-lg border border-indigo-500/30 p-3 text-sm"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={busy}
+                    className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-5 text-xs font-semibold text-white hover:from-blue-500 hover:to-purple-500 disabled:opacity-50"
+                  >
+                    {busy ? 'Mengirim...' : 'Kirim Kampanye Notifikasi'}
+                  </button>
+                </form>
+              ) : (
+                <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-200">
+                  Mode Read-Only: Role STAFF hanya dapat melihat riwayat notifikasi. Pengiriman kampanye notifikasi dilakukan oleh ADMIN atau SUPER_ADMIN.
                 </div>
-                <button
-                  type="submit"
-                  disabled={busy}
-                  className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-5 text-xs font-semibold text-white hover:from-blue-500 hover:to-purple-500"
-                >
-                  {busy ? 'Mengirim...' : 'Kirim Kampanye Notifikasi'}
-                </button>
-              </form>
+              )}
 
               <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 divide-y divide-indigo-500/15">
-                {(activeRows as NotificationCampaign[]).map((nc, idx) => (
-                  <div key={nc.id || `nc-${idx}`} className="p-4">
-                    <p className="text-sm font-bold text-white">{nc.title}</p>
-                    <p className="text-xs text-slate-300">{nc.message}</p>
-                    <p className="text-[11px] text-slate-400 mt-1">
-                      Target: {nc.targetType} {nc.inactivityDays ? `(>= ${nc.inactivityDays} hari)` : nc.targetFilter} · {formatJakartaDateTime(nc.createdAt)}
-                    </p>
+                {activeRows.length === 0 ? (
+                  <div className="p-8 text-center text-sm text-slate-400">
+                    {loadingRows ? 'Memuat riwayat notifikasi...' : 'Belum ada riwayat kampanye notifikasi.'}
                   </div>
-                ))}
+                ) : (
+                  (activeRows as NotificationCampaign[]).map((nc, idx) => (
+                    <div key={nc.id || `nc-${idx}`} className="p-4">
+                      <p className="text-sm font-bold text-white">{nc.title}</p>
+                      <p className="text-xs text-slate-300">{nc.message}</p>
+                      <p className="text-[11px] text-slate-400 mt-1">
+                        Target: {nc.targetType} {nc.inactivityDays ? `(>= ${nc.inactivityDays} hari)` : nc.targetFilter} · {formatJakartaDateTime(nc.createdAt)}
+                      </p>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           )}
@@ -1653,7 +1975,9 @@ export function AdminDashboardPage() {
                 onSubmit={async (e) => {
                   e.preventDefault();
                   setBusy(true);
+                  setFeedback(null);
                   try {
+                    const now = Date.now();
                     const target: AdminUser = {
                       uid: adminForm.uid.trim(),
                       email: adminForm.email.trim().toLowerCase(),
@@ -1673,11 +1997,20 @@ export function AdminDashboardPage() {
                         executeReset: adminForm.role === 'SUPER_ADMIN',
                       },
                       active: adminForm.active,
-                      createdAt: Date.now(),
-                      updatedAt: Date.now(),
+                      createdAt: adminOriginalCreatedAt || now,
+                      updatedAt: now,
                     };
                     await upsertAdminUserBySuperAdmin(target, adminProfile);
                     setFeedback({ type: 'success', text: `Admin ${target.email} (${target.role}) berhasil disimpan.` });
+                    setAdminOriginalCreatedAt(null);
+                    setAdminForm({
+                      uid: '',
+                      email: '',
+                      fullName: '',
+                      role: 'STAFF',
+                      branchScope: 'ALL',
+                      active: true,
+                    });
                     await loadMenuRows(true);
                   } catch (err) {
                     setFeedback({ type: 'error', text: mapFriendlyError(err) });
@@ -1687,7 +2020,28 @@ export function AdminDashboardPage() {
                 }}
                 className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-4"
               >
-                <h2 className="font-display text-base font-bold text-white">Kelola Operator & Role RBAC</h2>
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="font-display text-base font-bold text-white">Kelola Operator & Role RBAC</h2>
+                  {adminForm.uid && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAdminOriginalCreatedAt(null);
+                        setAdminForm({
+                          uid: '',
+                          email: '',
+                          fullName: '',
+                          role: 'STAFF',
+                          branchScope: 'ALL',
+                          active: true,
+                        });
+                      }}
+                      className="text-xs font-semibold text-slate-300 hover:text-white underline"
+                    >
+                      Batal Edit
+                    </button>
+                  )}
+                </div>
                 <div className="grid sm:grid-cols-3 gap-3">
                   <input
                     type="text"
@@ -1740,38 +2094,46 @@ export function AdminDashboardPage() {
                     <span>Status Aktif</span>
                   </label>
                 </div>
-                <button type="submit" disabled={busy} className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-5 text-xs font-semibold text-white">
-                  Simpan Admin
+                <button type="submit" disabled={busy} className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-5 text-xs font-semibold text-white disabled:opacity-50">
+                  {busy ? 'Menyimpan...' : 'Simpan Admin'}
                 </button>
               </form>
 
               <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 divide-y divide-indigo-500/15">
-                {(activeRows as AdminUser[]).map((a, idx) => (
-                  <div key={a.uid || a.email || `adm-${idx}`} className="p-4 flex items-center justify-between gap-4">
-                    <div>
-                      <p className="text-sm font-bold text-white">{a.fullName} ({a.role})</p>
-                      <p className="text-xs font-mono text-slate-400">
-                        {a.email} · UID: {a.uid} · Cabang: {a.branchScope} · {a.active ? 'ACTIVE' : 'DISABLED'}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setAdminForm({
-                          uid: a.uid,
-                          email: a.email,
-                          fullName: a.fullName,
-                          role: a.role,
-                          branchScope: a.branchScope,
-                          active: a.active,
-                        })
-                      }
-                      className="text-xs font-semibold text-sky-300 hover:underline"
-                    >
-                      Edit
-                    </button>
+                {activeRows.length === 0 ? (
+                  <div className="p-8 text-center text-sm text-slate-400">
+                    {loadingRows ? 'Memuat daftar operator...' : 'Belum ada data operator tambahan.'}
                   </div>
-                ))}
+                ) : (
+                  (activeRows as AdminUser[]).map((a, idx) => (
+                    <div key={a.uid || a.email || `adm-${idx}`} className="p-4 flex items-center justify-between gap-4">
+                      <div>
+                        <p className="text-sm font-bold text-white">{a.fullName} ({a.role})</p>
+                        <p className="text-xs font-mono text-slate-400">
+                          {a.email} · UID: {a.uid} · Cabang: {a.branchScope} · {a.active ? 'ACTIVE' : 'DISABLED'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAdminOriginalCreatedAt(a.createdAt);
+                          setAdminForm({
+                            uid: a.uid,
+                            email: a.email,
+                            fullName: a.fullName,
+                            role: a.role,
+                            branchScope: a.branchScope,
+                            active: a.active,
+                          });
+                          window.scrollTo({ top: 0, behavior: 'smooth' });
+                        }}
+                        className="text-xs font-semibold text-sky-300 hover:underline shrink-0"
+                      >
+                        Edit
+                      </button>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           )}
@@ -2003,19 +2365,25 @@ export function AdminDashboardPage() {
 
               <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 divide-y divide-indigo-500/15">
                 <div className="p-4 font-display text-sm font-bold text-white">Snapshot Riwayat Reset Cycle</div>
-                {(activeRows as CycleSnapshot[]).map((s, idx) => (
-                  <div key={s.id || `cyc-${idx}`} className="p-3.5 text-xs flex items-center justify-between gap-4">
-                    <div>
-                      <p className="font-semibold text-white">
-                        @{s.memberUsername} · {s.cycleId} → {s.nextCycleId}
-                      </p>
-                      <p className="text-slate-400">
-                        Sebelum: Progress {s.previousXpProgress}, Reward {s.previousXpReward}, Level {s.previousLevel}
-                      </p>
-                    </div>
-                    <span className="font-mono text-slate-400">{formatJakartaDateTime(s.resetAt)}</span>
+                {activeRows.length === 0 ? (
+                  <div className="p-6 text-center text-sm text-slate-400">
+                    {loadingRows ? 'Memuat snapshot...' : 'Belum ada riwayat snapshot reset cycle.'}
                   </div>
-                ))}
+                ) : (
+                  (activeRows as CycleSnapshot[]).map((s, idx) => (
+                    <div key={s.id || `cyc-${idx}`} className="p-3.5 text-xs flex items-center justify-between gap-4">
+                      <div>
+                        <p className="font-semibold text-white">
+                          @{s.memberUsername} · {s.cycleId} → {s.nextCycleId}
+                        </p>
+                        <p className="text-slate-400">
+                          Sebelum: Progress {s.previousXpProgress}, Reward {s.previousXpReward}, Level {s.previousLevel}
+                        </p>
+                      </div>
+                      <span className="font-mono text-slate-400">{formatJakartaDateTime(s.resetAt)}</span>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           )}
@@ -2028,31 +2396,52 @@ export function AdminDashboardPage() {
                   key={br.id}
                   branch={br}
                   onSave={async (updated) => {
-                    await upsertBranchByAdmin(updated, adminProfile);
-                    await refreshProfiles();
-                    setFeedback({ type: 'success', text: `Cabang ${updated.name} diperbarui.` });
+                    try {
+                      await upsertBranchByAdmin(updated, adminProfile);
+                      await refreshProfiles();
+                      setFeedback({ type: 'success', text: `Cabang ${updated.name} diperbarui.` });
+                    } catch (err) {
+                      setFeedback({ type: 'error', text: mapFriendlyError(err) });
+                    }
                   }}
                 />
               ))}
             </div>
           )}
 
+          {/* 17B. CMS HOMEPAGE */}
+          {menu === 'cmsHomepage' && (
+            <AdminCmsEditor
+              adminProfile={adminProfile}
+              levels={levels}
+              branches={branches}
+              systemSettings={systemSettings}
+              onFeedback={setFeedback}
+            />
+          )}
+
           {/* 18. AUDIT LOGS */}
           {menu === 'auditLogs' && (
             <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 divide-y divide-indigo-500/15">
-              {(activeRows as AuditLogRecord[]).map((log, idx) => (
-                <div key={log.id || `log-${idx}`} className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-                  <div>
-                    <p className="font-mono font-bold text-white">
-                      {log.action} · {log.targetType}:{log.targetId}
-                    </p>
-                    <p className="text-slate-400">
-                      Actor: {log.actorId} ({log.actorRole})
-                    </p>
-                  </div>
-                  <span className="font-mono text-slate-400">{formatJakartaDateTime(log.timestamp)} WIB</span>
+              {activeRows.length === 0 ? (
+                <div className="p-8 text-center text-sm text-slate-400">
+                  {loadingRows ? 'Memuat audit logs...' : 'Belum ada catatan audit log.'}
                 </div>
-              ))}
+              ) : (
+                (activeRows as AuditLogRecord[]).map((log, idx) => (
+                  <div key={log.id || `log-${idx}`} className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                    <div>
+                      <p className="font-mono font-bold text-white">
+                        {log.action} · {log.targetType}:{log.targetId}
+                      </p>
+                      <p className="text-slate-400">
+                        Actor: {log.actorId} ({log.actorRole})
+                      </p>
+                    </div>
+                    <span className="font-mono text-slate-400">{formatJakartaDateTime(log.timestamp)} WIB</span>
+                  </div>
+                ))
+              )}
               {hasMore && (
                 <div className="p-3 text-center">
                   <button type="button" onClick={() => void loadMenuRows(false)} className="text-xs font-semibold underline">
@@ -2197,6 +2586,10 @@ function BranchCardEditor({
 }) {
   const [draft, setDraft] = useState(branch);
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setDraft(branch);
+  }, [branch]);
 
   return (
     <form

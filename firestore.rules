@@ -63,6 +63,15 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == uid;
     }
 
+    function isSystemRestoreLocked() {
+      return exists(/databases/$(database)/documents/systemOperations/restoreLock)
+        && get(/databases/$(database)/documents/systemOperations/restoreLock).data.locked == true;
+    }
+
+    function isSuperAdminRestoring() {
+      return isSuperAdmin() && isSystemRestoreLocked();
+    }
+
     function isActiveMember(uid) {
       return isSignedIn()
         && exists(/databases/$(database)/documents/members/$(uid))
@@ -178,7 +187,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'uid', 'memberId', 'fullName', 'username', 'whatsapp',
           'socialMedia', 'status', 'xpProgress', 'xpReward',
-          'currentLevel', 'currentCycleId', 'referredByUid',
+          'currentLevel', 'levelMode', 'currentCycleId', 'referredByUid',
           'referredByUsername', 'referralCount', 'lastPlayAt',
           'lastPlayBranch', 'preferredBranch', 'createdAt', 'updatedAt'
         ])
@@ -194,6 +203,7 @@ service cloud.firestore {
         && data.xpProgress is int && data.xpProgress >= 0
         && data.xpReward is int && data.xpReward >= 0
         && data.currentLevel in ['BRONZE', 'SILVER', 'JURAGAN', 'SULTAN']
+        && (!('levelMode' in data) || data.levelMode in ['AUTOMATIC', 'MANUAL_OVERRIDE', 'RESET'])
         && data.currentCycleId is string && data.currentCycleId.size() >= 2 && data.currentCycleId.size() <= 64
         && (data.referredByUid == null || (data.referredByUid is string && data.referredByUid.size() <= 128))
         && (data.referredByUsername == null || (data.referredByUsername is string && data.referredByUsername.size() <= 24))
@@ -356,6 +366,395 @@ service cloud.firestore {
         && data.createdAt is int;
     }
 
+    function isSafeCmsNavUrl(url) {
+      return url is string && url.size() <= 500
+        && (url == '' || url.matches('^https?://.*') || url.matches('^/[^/].*') || url == '/' || url.matches('^#.*'));
+    }
+
+    function isSafeCmsAssetUrl(url) {
+      return url is string && url.size() <= 500
+        && (url == '' || url.matches('^https?://.*') || url.matches('^/assets/.*') || url.matches('^/api/cms/assets/.*'));
+    }
+
+    function isValidCmsContentKeys(c) {
+      return c is map
+        && c.keys().hasAll([
+          'brandName', 'storeName', 'logoUrl', 'faviconUrl', 'headerTagline', 'headerCtaText',
+          'heroTitle', 'heroSubtitle', 'heroDescription', 'heroImageUrl',
+          'bannerEnabled', 'bannerTitle', 'bannerText', 'bannerImageUrl',
+          'ctaPrimaryText', 'ctaPrimaryUrl', 'ctaSecondaryText', 'ctaSecondaryUrl',
+          'promoBannerEnabled', 'promoBannerTitle', 'promoBannerText', 'promoBannerCtaText', 'promoBannerCtaUrl',
+          'announcementEnabled', 'announcementText',
+          'aboutTitle', 'aboutDescription', 'aboutImageUrl',
+          'mechanicsTitle', 'mechanicsSubtitle', 'levelsSectionTitle', 'levelsSectionSubtitle', 'branchesSectionTitle',
+          'faqEnabled', 'faqTitle', 'faqItems',
+          'contactTitle', 'contactDescription', 'address', 'whatsapp', 'mapsUrl', 'operatingHours',
+          'instagramUrl', 'tiktokUrl', 'facebookUrl', 'youtubeUrl', 'footerText', 'footerCopyright'
+        ])
+        && c.keys().hasOnly([
+          'brandName', 'storeName', 'logoUrl', 'faviconUrl', 'headerTagline', 'headerCtaText',
+          'heroTitle', 'heroSubtitle', 'heroDescription', 'heroImageUrl',
+          'bannerEnabled', 'bannerTitle', 'bannerText', 'bannerImageUrl',
+          'ctaPrimaryText', 'ctaPrimaryUrl', 'ctaSecondaryText', 'ctaSecondaryUrl',
+          'promoBannerEnabled', 'promoBannerTitle', 'promoBannerText', 'promoBannerCtaText', 'promoBannerCtaUrl',
+          'announcementEnabled', 'announcementText',
+          'aboutTitle', 'aboutDescription', 'aboutImageUrl',
+          'mechanicsTitle', 'mechanicsSubtitle', 'levelsSectionTitle', 'levelsSectionSubtitle', 'branchesSectionTitle',
+          'faqEnabled', 'faqTitle', 'faqItems',
+          'contactTitle', 'contactDescription', 'address', 'whatsapp', 'mapsUrl', 'operatingHours',
+          'instagramUrl', 'tiktokUrl', 'facebookUrl', 'youtubeUrl', 'footerText', 'footerCopyright'
+        ]);
+    }
+
+    function isValidCmsHeroAndBanners(c) {
+      return c.brandName is string && c.brandName.size() >= 1 && c.brandName.size() <= 60
+        && c.storeName is string && c.storeName.size() >= 1 && c.storeName.size() <= 120
+        && isSafeCmsAssetUrl(c.logoUrl)
+        && isSafeCmsAssetUrl(c.faviconUrl)
+        && c.headerTagline is string && c.headerTagline.size() <= 120
+        && c.headerCtaText is string && c.headerCtaText.size() <= 40
+        && c.heroTitle is string && c.heroTitle.size() >= 1 && c.heroTitle.size() <= 180
+        && c.heroSubtitle is string && c.heroSubtitle.size() <= 180
+        && c.heroDescription is string && c.heroDescription.size() <= 600
+        && isSafeCmsAssetUrl(c.heroImageUrl)
+        && c.bannerEnabled is bool
+        && c.bannerTitle is string && c.bannerTitle.size() <= 160
+        && c.bannerText is string && c.bannerText.size() <= 400
+        && isSafeCmsAssetUrl(c.bannerImageUrl)
+        && c.ctaPrimaryText is string && c.ctaPrimaryText.size() <= 60
+        && isSafeCmsNavUrl(c.ctaPrimaryUrl)
+        && c.ctaSecondaryText is string && c.ctaSecondaryText.size() <= 60
+        && isSafeCmsNavUrl(c.ctaSecondaryUrl)
+        && c.promoBannerEnabled is bool
+        && c.promoBannerTitle is string && c.promoBannerTitle.size() <= 160
+        && c.promoBannerText is string && c.promoBannerText.size() <= 400
+        && c.promoBannerCtaText is string && c.promoBannerCtaText.size() <= 60
+        && isSafeCmsNavUrl(c.promoBannerCtaUrl)
+        && c.announcementEnabled is bool
+        && c.announcementText is string && c.announcementText.size() <= 240;
+    }
+
+    function isValidCmsSectionsAndContact(c) {
+      return c.aboutTitle is string && c.aboutTitle.size() <= 140
+        && c.aboutDescription is string && c.aboutDescription.size() <= 1000
+        && isSafeCmsAssetUrl(c.aboutImageUrl)
+        && c.mechanicsTitle is string && c.mechanicsTitle.size() <= 120
+        && c.mechanicsSubtitle is string && c.mechanicsSubtitle.size() <= 300
+        && c.levelsSectionTitle is string && c.levelsSectionTitle.size() <= 120
+        && c.levelsSectionSubtitle is string && c.levelsSectionSubtitle.size() <= 300
+        && c.branchesSectionTitle is string && c.branchesSectionTitle.size() <= 120
+        && c.faqEnabled is bool
+        && c.faqTitle is string && c.faqTitle.size() <= 120
+        && c.faqItems is list && c.faqItems.size() <= 15
+        && (c.faqItems.size() == 0 || c.faqItems[0] is map)
+        && c.contactTitle is string && c.contactTitle.size() <= 120
+        && c.contactDescription is string && c.contactDescription.size() <= 400
+        && c.address is string && c.address.size() <= 260
+        && c.whatsapp is string && c.whatsapp.size() <= 30
+        && isSafeCmsNavUrl(c.mapsUrl)
+        && c.operatingHours is string && c.operatingHours.size() <= 120
+        && isSafeCmsNavUrl(c.instagramUrl)
+        && isSafeCmsNavUrl(c.tiktokUrl)
+        && isSafeCmsNavUrl(c.facebookUrl)
+        && isSafeCmsNavUrl(c.youtubeUrl)
+        && c.footerText is string && c.footerText.size() <= 300
+        && c.footerCopyright is string && c.footerCopyright.size() <= 160;
+    }
+
+    function isValidCmsContent(c) {
+      return isValidCmsContentKeys(c)
+        && isValidCmsHeroAndBanners(c)
+        && isValidCmsSectionsAndContact(c);
+    }
+
+    function isValidCmsDraft(data) {
+      return data.keys().hasAll(['id', 'content', 'updatedAt', 'updatedBy', 'updatedByEmail', 'basePublishedVersionId'])
+        && data.keys().hasOnly(['id', 'content', 'updatedAt', 'updatedBy', 'updatedByEmail', 'basePublishedVersionId'])
+        && data.id == 'homepage'
+        && isValidCmsContent(data.content)
+        && data.updatedAt is int
+        && data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128
+        && data.updatedByEmail is string && data.updatedByEmail.size() <= 160
+        && (data.basePublishedVersionId == null || (data.basePublishedVersionId is string && data.basePublishedVersionId.size() <= 40));
+    }
+
+    function isValidCmsPublished(data) {
+      return data.keys().hasAll(['id', 'content', 'versionId', 'versionNumber', 'publishedAt', 'publishedBy', 'publishedByEmail', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'content', 'versionId', 'versionNumber', 'publishedAt', 'publishedBy', 'publishedByEmail', 'updatedAt'])
+        && data.id == 'homepage'
+        && isValidCmsContent(data.content)
+        && data.versionId is string && data.versionId.size() >= 2 && data.versionId.size() <= 40
+        && data.versionNumber is int && data.versionNumber >= 1
+        && data.publishedAt is int
+        && data.publishedBy is string && data.publishedBy.size() >= 1 && data.publishedBy.size() <= 128
+        && data.publishedByEmail is string && data.publishedByEmail.size() <= 160
+        && data.updatedAt is int;
+    }
+
+    function isValidCmsVersion(data) {
+      return data.keys().hasAll([
+          'versionId', 'versionNumber', 'content', 'createdBy', 'createdAt',
+          'publishedBy', 'publishedByEmail', 'publishedAt', 'sourceAction', 'restoredFromVersionId', 'note'
+        ])
+        && data.keys().hasOnly([
+          'versionId', 'versionNumber', 'content', 'createdBy', 'createdAt',
+          'publishedBy', 'publishedByEmail', 'publishedAt', 'sourceAction', 'restoredFromVersionId', 'note'
+        ])
+        && data.versionId is string && data.versionId.size() >= 2 && data.versionId.size() <= 40
+        && data.versionNumber is int && data.versionNumber >= 1
+        && isValidCmsContent(data.content)
+        && data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128
+        && data.createdAt is int
+        && data.publishedBy is string && data.publishedBy.size() >= 1 && data.publishedBy.size() <= 128
+        && data.publishedByEmail is string && data.publishedByEmail.size() <= 160
+        && data.publishedAt is int
+        && data.sourceAction in ['PUBLISH', 'ROLLBACK']
+        && (data.restoredFromVersionId == null || (data.restoredFromVersionId is string && data.restoredFromVersionId.size() <= 40))
+        && data.note is string && data.note.size() <= 240;
+    }
+
+    function isValidXpAdjustment(data) {
+      return data.keys().hasAll([
+          'id', 'operationId', 'kind', 'memberId', 'memberUid', 'memberUsername',
+          'adjustment', 'beforeBalance', 'afterBalance',
+          'beforeXpProgress', 'afterXpProgress', 'beforeXpReward', 'afterXpReward',
+          'levelBefore', 'levelAfter', 'reason', 'reference',
+          'auditId', 'adminId', 'adminEmail', 'adminRole', 'cycleId', 'timestamp'
+        ])
+        && data.keys().hasOnly([
+          'id', 'operationId', 'kind', 'memberId', 'memberUid', 'memberUsername',
+          'adjustment', 'beforeBalance', 'afterBalance',
+          'beforeXpProgress', 'afterXpProgress', 'beforeXpReward', 'afterXpReward',
+          'levelBefore', 'levelAfter', 'reason', 'reference',
+          'auditId', 'adminId', 'adminEmail', 'adminRole', 'cycleId', 'timestamp'
+        ])
+        && data.id is string && data.id.size() >= 6 && data.id.size() <= 128
+        && data.operationId is string && data.operationId.size() >= 6 && data.operationId.size() <= 80
+        && data.kind in ['PROGRESS', 'REWARD']
+        && data.memberId is string && data.memberId.size() >= 4 && data.memberId.size() <= 40
+        && data.memberUid is string && data.memberUid.size() >= 1 && data.memberUid.size() <= 128
+        && data.memberUsername is string && data.memberUsername.size() >= 3 && data.memberUsername.size() <= 24
+        && data.adjustment is int && data.adjustment != 0 && data.adjustment >= -1000000 && data.adjustment <= 1000000
+        && data.beforeBalance is int && data.beforeBalance >= 0
+        && data.afterBalance is int && data.afterBalance >= 0
+        && data.afterBalance == data.beforeBalance + data.adjustment
+        && data.beforeXpProgress is int && data.beforeXpProgress >= 0
+        && data.afterXpProgress is int && data.afterXpProgress >= 0
+        && data.beforeXpReward is int && data.beforeXpReward >= 0
+        && data.afterXpReward is int && data.afterXpReward >= 0
+        && data.levelBefore in ['BRONZE', 'SILVER', 'JURAGAN', 'SULTAN']
+        && data.levelAfter in ['BRONZE', 'SILVER', 'JURAGAN', 'SULTAN']
+        && (
+          data.kind == 'PROGRESS'
+            ? (data.afterXpReward == data.beforeXpReward && data.afterXpProgress == data.afterBalance)
+            : (data.afterXpProgress == data.beforeXpProgress && data.afterXpReward == data.afterBalance && data.levelAfter == data.levelBefore)
+        )
+        && data.reason is string && data.reason.size() >= 3 && data.reason.size() <= 300
+        && data.reference is string && data.reference.size() <= 120
+        && data.auditId is string && data.auditId.size() >= 1 && data.auditId.size() <= 128
+        && data.adminId is string && data.adminId.size() >= 1 && data.adminId.size() <= 128
+        && data.adminEmail is string && data.adminEmail.size() <= 160
+        && data.adminRole in ['SUPER_ADMIN', 'ADMIN']
+        && data.cycleId is string && data.cycleId.size() >= 2 && data.cycleId.size() <= 64
+        && data.timestamp is int;
+    }
+
+    function isValidLevelOverride(data) {
+      return data.keys().hasAll([
+          'id', 'operationId', 'action', 'memberId', 'memberUid', 'memberUsername',
+          'xpProgressSnapshot', 'previousLevel', 'newLevel',
+          'previousLevelMode', 'newLevelMode', 'reason', 'reference',
+          'auditId', 'adminId', 'adminEmail', 'adminRole', 'cycleId', 'timestamp'
+        ])
+        && data.keys().hasOnly([
+          'id', 'operationId', 'action', 'memberId', 'memberUid', 'memberUsername',
+          'xpProgressSnapshot', 'previousLevel', 'newLevel',
+          'previousLevelMode', 'newLevelMode', 'reason', 'reference',
+          'auditId', 'adminId', 'adminEmail', 'adminRole', 'cycleId', 'timestamp'
+        ])
+        && data.id is string && data.id.size() >= 6 && data.id.size() <= 128
+        && data.operationId is string && data.operationId.size() >= 6 && data.operationId.size() <= 80
+        && data.action in ['MANUAL_OVERRIDE', 'RECALCULATE']
+        && data.memberId is string && data.memberId.size() >= 4 && data.memberId.size() <= 40
+        && data.memberUid is string && data.memberUid.size() >= 1 && data.memberUid.size() <= 128
+        && data.memberUsername is string && data.memberUsername.size() >= 3 && data.memberUsername.size() <= 24
+        && data.xpProgressSnapshot is int && data.xpProgressSnapshot >= 0
+        && data.previousLevel in ['BRONZE', 'SILVER', 'JURAGAN', 'SULTAN']
+        && data.newLevel in ['BRONZE', 'SILVER', 'JURAGAN', 'SULTAN']
+        && data.previousLevelMode in ['AUTOMATIC', 'MANUAL_OVERRIDE', 'RESET']
+        && data.newLevelMode == (data.action == 'MANUAL_OVERRIDE' ? 'MANUAL_OVERRIDE' : 'AUTOMATIC')
+        && data.reason is string && data.reason.size() >= 3 && data.reason.size() <= 300
+        && data.reference is string && data.reference.size() <= 120
+        && data.auditId is string && data.auditId.size() >= 1 && data.auditId.size() <= 128
+        && data.adminId is string && data.adminId.size() >= 1 && data.adminId.size() <= 128
+        && data.adminEmail is string && data.adminEmail.size() <= 160
+        && data.adminRole in ['SUPER_ADMIN', 'ADMIN']
+        && data.cycleId is string && data.cycleId.size() >= 2 && data.cycleId.size() <= 64
+        && data.timestamp is int;
+    }
+
+    function isValidSystemBackupCore(data) {
+      return data.keys().hasAll([
+          'backupId', 'operationId', 'kind', 'scopeType', 'status',
+          'appVersion', 'schemaVersion', 'createdAt', 'completedAt', 'durationMs',
+          'createdBy', 'createdByEmail', 'createdByRole', 'note',
+          'totalDocuments', 'authUserCount', 'storageFileCount', 'totalBackupBytes',
+          'storagePath', 'manifestChecksumSha256', 'verified', 'verifiedAt',
+          'verificationStatus', 'verificationSummary', 'errorMessage', 'protectedFromRetention'
+        ])
+        && data.keys().hasOnly([
+          'backupId', 'operationId', 'kind', 'scopeType', 'status',
+          'appVersion', 'schemaVersion', 'createdAt', 'completedAt', 'durationMs',
+          'createdBy', 'createdByEmail', 'createdByRole', 'note',
+          'totalDocuments', 'authUserCount', 'storageFileCount', 'totalBackupBytes',
+          'storagePath', 'manifestChecksumSha256', 'verified', 'verifiedAt',
+          'verificationStatus', 'verificationSummary', 'errorMessage', 'protectedFromRetention'
+        ])
+        && data.backupId is string && data.backupId.size() >= 6 && data.backupId.size() <= 128
+        && data.operationId is string && data.operationId.size() >= 4 && data.operationId.size() <= 128
+        && data.kind in ['MANUAL', 'SCHEDULED', 'PRE_RESTORE']
+        && data.scopeType in ['FULL_SYSTEM_BACKUP', 'FIRESTORE_AND_STORAGE_BACKUP']
+        && data.status in ['REQUESTED', 'PREPARING', 'RUNNING', 'VERIFYING', 'COMPLETED', 'FAILED', 'VERIFICATION_FAILED', 'CANCELLED']
+        && data.appVersion is string && data.appVersion.size() >= 1 && data.appVersion.size() <= 32
+        && data.schemaVersion is string && data.schemaVersion.size() >= 1 && data.schemaVersion.size() <= 64
+        && data.createdAt is int
+        && (data.completedAt == null || data.completedAt is int)
+        && (data.durationMs == null || (data.durationMs is int && data.durationMs >= 0))
+        && data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128
+        && data.createdByEmail is string && data.createdByEmail.size() <= 160
+        && data.createdByRole in ['SUPER_ADMIN', 'ADMIN', 'STAFF'];
+    }
+
+    function isValidSystemBackupMetrics(data) {
+      return data.note is string && data.note.size() <= 300
+        && data.totalDocuments is int && data.totalDocuments >= 0
+        && data.authUserCount is int && data.authUserCount >= 0
+        && data.storageFileCount is int && data.storageFileCount >= 0
+        && data.totalBackupBytes is int && data.totalBackupBytes >= 0
+        && data.storagePath is string && data.storagePath.size() >= 1 && data.storagePath.size() <= 260
+        && data.manifestChecksumSha256 is string && data.manifestChecksumSha256.size() <= 128
+        && data.verified is bool
+        && (data.verifiedAt == null || data.verifiedAt is int)
+        && data.verificationStatus in ['PENDING', 'VERIFIED', 'VERIFICATION_FAILED']
+        && data.verificationSummary is string && data.verificationSummary.size() <= 600
+        && (data.errorMessage == null || (data.errorMessage is string && data.errorMessage.size() <= 1000))
+        && data.protectedFromRetention is bool;
+    }
+
+    function isValidSystemBackup(data) {
+      return isValidSystemBackupCore(data) && isValidSystemBackupMetrics(data);
+    }
+
+    function isValidRestoreJobCore(data) {
+      return data.keys().hasAll([
+          'restoreJobId', 'operationId', 'targetBackupId', 'preRestoreBackupId',
+          'status', 'requestedBy', 'requestedByEmail', 'requestedByRole',
+          'reason', 'startedAt', 'completedAt', 'durationMs',
+          'steps', 'restoredCollectionCounts', 'expectedCollectionCounts',
+          'restoredStorageCount', 'expectedStorageCount',
+          'authRestoreMode', 'authRestoreNotice', 'postRestoreVerificationPassed',
+          'integrityReport', 'errorMessage', 'recoveryRecommendation'
+        ])
+        && data.keys().hasOnly([
+          'restoreJobId', 'operationId', 'targetBackupId', 'preRestoreBackupId',
+          'status', 'requestedBy', 'requestedByEmail', 'requestedByRole',
+          'reason', 'startedAt', 'completedAt', 'durationMs',
+          'steps', 'restoredCollectionCounts', 'expectedCollectionCounts',
+          'restoredStorageCount', 'expectedStorageCount',
+          'authRestoreMode', 'authRestoreNotice', 'postRestoreVerificationPassed',
+          'integrityReport', 'errorMessage', 'recoveryRecommendation'
+        ])
+        && data.restoreJobId is string && data.restoreJobId.size() >= 6 && data.restoreJobId.size() <= 128
+        && data.operationId is string && data.operationId.size() >= 4 && data.operationId.size() <= 128
+        && data.targetBackupId is string && data.targetBackupId.size() >= 6 && data.targetBackupId.size() <= 128
+        && (data.preRestoreBackupId == null || (data.preRestoreBackupId is string && data.preRestoreBackupId.size() <= 128))
+        && data.status in ['REQUESTED', 'VALIDATING', 'LOCKING', 'PRE_RESTORE_BACKUP', 'RESTORING_FIRESTORE', 'RESTORING_STORAGE', 'RESTORING_AUTH_METADATA', 'VERIFYING', 'COMPLETED', 'FAILED', 'VERIFICATION_FAILED', 'CANCELLED']
+        && data.requestedBy is string && data.requestedBy.size() >= 1 && data.requestedBy.size() <= 128
+        && data.requestedByEmail is string && data.requestedByEmail.size() <= 160
+        && data.requestedByRole == 'SUPER_ADMIN'
+        && data.reason is string && data.reason.size() >= 3 && data.reason.size() <= 300
+        && data.startedAt is int
+        && (data.completedAt == null || data.completedAt is int)
+        && (data.durationMs == null || (data.durationMs is int && data.durationMs >= 0));
+    }
+
+    function isValidRestoreJobResults(data) {
+      return data.steps is list && data.steps.size() <= 30
+        && data.restoredCollectionCounts is map
+        && data.expectedCollectionCounts is map
+        && data.restoredStorageCount is int && data.restoredStorageCount >= 0
+        && data.expectedStorageCount is int && data.expectedStorageCount >= 0
+        && data.authRestoreMode in ['METADATA_SYNCED', 'SKIPPED_NO_ADMIN_SDK']
+        && data.authRestoreNotice is string && data.authRestoreNotice.size() <= 600
+        && data.postRestoreVerificationPassed is bool
+        && (data.integrityReport == null || data.integrityReport is map)
+        && (data.errorMessage == null || (data.errorMessage is string && data.errorMessage.size() <= 1200))
+        && (data.recoveryRecommendation == null || (data.recoveryRecommendation is string && data.recoveryRecommendation.size() <= 1200));
+    }
+
+    function isValidRestoreJob(data) {
+      return isValidRestoreJobCore(data) && isValidRestoreJobResults(data);
+    }
+
+    function isValidRestoreLock(data) {
+      return data.keys().hasAll([
+          'id', 'locked', 'state', 'restoreJobId', 'backupId',
+          'lockedBy', 'lockedByEmail', 'lockedAt', 'updatedAt', 'message'
+        ])
+        && data.keys().hasOnly([
+          'id', 'locked', 'state', 'restoreJobId', 'backupId',
+          'lockedBy', 'lockedByEmail', 'lockedAt', 'updatedAt', 'message'
+        ])
+        && data.id == 'restoreLock'
+        && data.locked is bool
+        && data.state in ['IDLE', 'RESTORE_IN_PROGRESS']
+        && (data.restoreJobId == null || (data.restoreJobId is string && data.restoreJobId.size() <= 128))
+        && (data.backupId == null || (data.backupId is string && data.backupId.size() <= 128))
+        && (data.lockedBy == null || (data.lockedBy is string && data.lockedBy.size() <= 128))
+        && data.lockedByEmail == null
+        && (data.lockedAt == null || data.lockedAt is int)
+        && data.updatedAt is int
+        && data.message is string && data.message.size() <= 300;
+    }
+
+    function isValidBackupLock(data) {
+      return data.keys().hasAll([
+          'id', 'locked', 'operationId', 'backupId', 'lockedBy', 'lockedAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'locked', 'operationId', 'backupId', 'lockedBy', 'lockedAt', 'updatedAt'
+        ])
+        && data.id == 'backupLock'
+        && data.locked is bool
+        && (data.operationId == null || (data.operationId is string && data.operationId.size() <= 128))
+        && (data.backupId == null || (data.backupId is string && data.backupId.size() <= 128))
+        && (data.lockedBy == null || (data.lockedBy is string && data.lockedBy.size() <= 128))
+        && (data.lockedAt == null || data.lockedAt is int)
+        && data.updatedAt is int;
+    }
+
+    function isValidBackupRetention(data) {
+      return data.keys().hasAll([
+          'id', 'dailyRetentionCount', 'weeklyRetentionCount', 'monthlyRetentionCount',
+          'customMaxAgeDays', 'alwaysKeepLatestSuccessful', 'alwaysKeepLatestPreRestore',
+          'updatedAt', 'updatedBy'
+        ])
+        && data.keys().hasOnly([
+          'id', 'dailyRetentionCount', 'weeklyRetentionCount', 'monthlyRetentionCount',
+          'customMaxAgeDays', 'alwaysKeepLatestSuccessful', 'alwaysKeepLatestPreRestore',
+          'updatedAt', 'updatedBy'
+        ])
+        && data.id == 'backupRetention'
+        && data.dailyRetentionCount is int && data.dailyRetentionCount >= 1 && data.dailyRetentionCount <= 90
+        && data.weeklyRetentionCount is int && data.weeklyRetentionCount >= 1 && data.weeklyRetentionCount <= 52
+        && data.monthlyRetentionCount is int && data.monthlyRetentionCount >= 1 && data.monthlyRetentionCount <= 36
+        && data.customMaxAgeDays is int && data.customMaxAgeDays >= 7 && data.customMaxAgeDays <= 3650
+        && data.alwaysKeepLatestSuccessful is bool
+        && data.alwaysKeepLatestPreRestore is bool
+        && data.updatedAt is int
+        && data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 128;
+    }
+
     // ---------- Connection Check ----------
     match /test/connection {
       allow get: if true;
@@ -367,21 +766,21 @@ service cloud.firestore {
       allow get: if isValidId(branchId);
       allow list: if true;
       allow create, update: if isSuperAdmin() && isValidId(branchId) && isValidBranch(incoming());
-      allow delete: if false;
+      allow delete: if isSuperAdminRestoring() && isValidId(branchId);
     }
 
     match /levels/{levelId} {
       allow get: if isValidId(levelId);
       allow list: if true;
       allow create, update: if isSuperAdmin() && isValidId(levelId) && isValidLevelConfig(incoming());
-      allow delete: if false;
+      allow delete: if isSuperAdminRestoring() && isValidId(levelId);
     }
 
     match /systemSettings/{settingId} {
       allow get: if isValidId(settingId) && isSignedIn();
       allow list: if isAdmin();
       allow create, update: if isSuperAdmin() && isValidId(settingId) && isValidSystemSettings(incoming());
-      allow delete: if false;
+      allow delete: if isSuperAdminRestoring() && isValidId(settingId);
     }
 
     // ---------- Admin RBAC Collection ----------
@@ -389,24 +788,30 @@ service cloud.firestore {
       allow get: if isValidId(uid) && (isOwner(uid) || isAdmin());
       allow list: if isAdmin();
       allow create, update: if isSuperAdmin() && isValidId(uid) && isValidAdminUser(incoming());
-      allow delete: if false;
+      allow delete: if isSuperAdminRestoring() && isValidId(uid) && uid != request.auth.uid;
     }
 
-    // ---------- Internal Identity Mapping (Server-Only) ----------
+    // ---------- Internal Identity Mapping (Super Admin Backup/Restore Only) ----------
     match /identityIndex/{indexKey} {
-      allow read, write: if false;
+      allow get: if isValidId(indexKey) && isSuperAdmin();
+      allow list: if isSuperAdmin();
+      allow create, update, delete: if isSuperAdminRestoring() && isValidId(indexKey);
     }
 
-    // ---------- Zero-PII Hashed Auth Lookup (Get by Exact SHA-256 Only, No List) ----------
+    // ---------- Zero-PII Hashed Auth Lookup (Get by Exact SHA-256 Only; List Super Admin Backup Only) ----------
     match /authIndex/{hashId} {
       allow get: if isValidAuthIndexHash(hashId);
-      allow list: if false;
-      allow create: if isSignedIn()
-        && isValidAuthIndexHash(hashId)
-        && !exists(/databases/$(database)/documents/authIndex/$(hashId))
-        && isValidAuthIndex(incoming())
-        && (isAdmin() || incoming().uid == request.auth.uid);
-      allow update, delete: if false;
+      allow list: if isSuperAdmin();
+      allow create: if isValidAuthIndexHash(hashId) && isValidAuthIndex(incoming()) && (
+        isSuperAdminRestoring() || (
+          isSignedIn()
+          && !isSystemRestoreLocked()
+          && !exists(/databases/$(database)/documents/authIndex/$(hashId))
+          && (isAdmin() || incoming().uid == request.auth.uid)
+        )
+      );
+      allow update: if isSuperAdminRestoring() && isValidAuthIndexHash(hashId) && isValidAuthIndex(incoming());
+      allow delete: if isSuperAdminRestoring() && isValidAuthIndexHash(hashId);
     }
 
     // ---------- Members Collection ----------
@@ -414,12 +819,20 @@ service cloud.firestore {
       allow get: if isValidId(uid) && (isOwner(uid) || isAdmin());
       allow list: if isAdmin();
       allow create: if isValidId(uid) && isValidMemberProfile(incoming()) && (
-        isAdmin() || (
+        isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
+          isAdmin() || (
           isOwner(uid)
           && !exists(/databases/$(database)/documents/members/$(uid))
           && incoming().uid == uid
           && incoming().status == 'ACTIVE'
-          && incoming().currentLevel == 'BRONZE'
+          && (!('levelMode' in incoming()) || incoming().levelMode == 'AUTOMATIC')
+          && (
+            incoming().currentLevel == 'BRONZE' || (
+              incoming().currentLevel in ['SILVER', 'JURAGAN', 'SULTAN']
+              && exists(/databases/$(database)/documents/levels/$(incoming().currentLevel))
+              && incoming().xpProgress >= get(/databases/$(database)/documents/levels/$(incoming().currentLevel)).data.minXp
+            )
+          )
           && incoming().referralCount == 0
           && incoming().lastPlayAt == null
           && incoming().lastPlayBranch == null
@@ -440,10 +853,11 @@ service cloud.firestore {
               && existsAfter(/databases/$(database)/documents/referrals/$('ref_' + uid))
             )
           )
-        )
+        )))
       );
       allow update: if isValidId(uid) && isValidMemberProfile(incoming()) && (
-        isAdmin() || (
+        isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
+          isAdmin() || (
           isOwner(uid)
           && isActiveMember(uid)
           && incoming().uid == existing().uid
@@ -474,9 +888,9 @@ service cloud.firestore {
           && incoming().xpProgress == existing().xpProgress + refBonusSetting()
           && incoming().xpReward == existing().xpReward + refBonusSetting()
           && incoming().referralCount == existing().referralCount + 1
-        )
+        )))
       );
-      allow delete: if false;
+      allow delete: if isSuperAdminRestoring() && isValidId(uid);
     }
 
     // ---------- Immutable Ledgers & Transactions ----------
@@ -484,65 +898,69 @@ service cloud.firestore {
       allow get: if isValidId(entryId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
       allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
       allow create: if isValidId(entryId) && (
-        isAdmin() || (
-          isSignedIn()
-          && !exists(/databases/$(database)/documents/members/$(request.auth.uid))
-          && existsAfter(/databases/$(database)/documents/members/$(request.auth.uid))
-          && incoming().direction == 'CREDIT'
-          && (
-            (
-              incoming().memberUid == request.auth.uid
-              && incoming().source == 'REGISTRATION'
-              && incoming().amount == regBonusSetting()
-            ) || (
-              incoming().source == 'REFERRAL'
-              && incoming().amount == refBonusSetting()
-              && existsAfter(/databases/$(database)/documents/referrals/$('ref_' + request.auth.uid))
-              && (
+        isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
+          isAdmin() || (
+            isSignedIn()
+            && !exists(/databases/$(database)/documents/members/$(request.auth.uid))
+            && existsAfter(/databases/$(database)/documents/members/$(request.auth.uid))
+            && incoming().direction == 'CREDIT'
+            && (
+              (
                 incoming().memberUid == request.auth.uid
-                || incoming().memberUid == getAfter(/databases/$(database)/documents/members/$(request.auth.uid)).data.referredByUid
+                && incoming().source == 'REGISTRATION'
+                && incoming().amount == regBonusSetting()
+              ) || (
+                incoming().source == 'REFERRAL'
+                && incoming().amount == refBonusSetting()
+                && existsAfter(/databases/$(database)/documents/referrals/$('ref_' + request.auth.uid))
+                && (
+                  incoming().memberUid == request.auth.uid
+                  || incoming().memberUid == getAfter(/databases/$(database)/documents/members/$(request.auth.uid)).data.referredByUid
+                )
               )
             )
           )
-        )
+        ))
       );
-      allow update, delete: if false;
+      allow update, delete: if isSuperAdminRestoring() && isValidId(entryId);
     }
 
     match /xpRewardLedger/{entryId} {
       allow get: if isValidId(entryId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
       allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
       allow create: if isValidId(entryId) && (
-        isAdmin() || (
-          isSignedIn()
-          && !exists(/databases/$(database)/documents/members/$(request.auth.uid))
-          && existsAfter(/databases/$(database)/documents/members/$(request.auth.uid))
-          && incoming().direction == 'CREDIT'
-          && (
-            (
-              incoming().memberUid == request.auth.uid
-              && incoming().source == 'REGISTRATION'
-              && incoming().amount == regBonusSetting()
-            ) || (
-              incoming().source == 'REFERRAL'
-              && incoming().amount == refBonusSetting()
-              && existsAfter(/databases/$(database)/documents/referrals/$('ref_' + request.auth.uid))
-              && (
+        isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
+          isAdmin() || (
+            isSignedIn()
+            && !exists(/databases/$(database)/documents/members/$(request.auth.uid))
+            && existsAfter(/databases/$(database)/documents/members/$(request.auth.uid))
+            && incoming().direction == 'CREDIT'
+            && (
+              (
                 incoming().memberUid == request.auth.uid
-                || incoming().memberUid == getAfter(/databases/$(database)/documents/members/$(request.auth.uid)).data.referredByUid
+                && incoming().source == 'REGISTRATION'
+                && incoming().amount == regBonusSetting()
+              ) || (
+                incoming().source == 'REFERRAL'
+                && incoming().amount == refBonusSetting()
+                && existsAfter(/databases/$(database)/documents/referrals/$('ref_' + request.auth.uid))
+                && (
+                  incoming().memberUid == request.auth.uid
+                  || incoming().memberUid == getAfter(/databases/$(database)/documents/members/$(request.auth.uid)).data.referredByUid
+                )
               )
             )
           )
-        )
+        ))
       );
-      allow update, delete: if false;
+      allow update, delete: if isSuperAdminRestoring() && isValidId(entryId);
     }
 
     match /transactions/{transactionId} {
       allow get: if isValidId(transactionId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
       allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
-      allow create: if isAdmin() && isValidId(transactionId);
-      allow update, delete: if false;
+      allow create: if isValidId(transactionId) && (isSuperAdminRestoring() || (isAdmin() && !isSystemRestoreLocked()));
+      allow update, delete: if isSuperAdminRestoring() && isValidId(transactionId);
     }
 
     match /referrals/{referralId} {
@@ -553,117 +971,156 @@ service cloud.firestore {
         isSignedIn() && (resource.data.referrerUid == request.auth.uid || resource.data.refereeUid == request.auth.uid)
       );
       allow create: if isValidId(referralId) && (
-        isAdmin() || (
-          isSignedIn()
-          && referralId == ('ref_' + request.auth.uid)
-          && !exists(/databases/$(database)/documents/members/$(request.auth.uid))
-          && existsAfter(/databases/$(database)/documents/members/$(request.auth.uid))
-          && incoming().refereeUid == request.auth.uid
-          && incoming().referrerUid != request.auth.uid
-          && incoming().referrerXp == refBonusSetting()
-          && incoming().refereeXp == refBonusSetting()
-        )
+        isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
+          isAdmin() || (
+            isSignedIn()
+            && referralId == ('ref_' + request.auth.uid)
+            && !exists(/databases/$(database)/documents/members/$(request.auth.uid))
+            && existsAfter(/databases/$(database)/documents/members/$(request.auth.uid))
+            && incoming().refereeUid == request.auth.uid
+            && incoming().referrerUid != request.auth.uid
+            && incoming().referrerXp == refBonusSetting()
+            && incoming().refereeXp == refBonusSetting()
+          )
+        ))
       );
-      allow update, delete: if false;
+      allow update, delete: if isSuperAdminRestoring() && isValidId(referralId);
     }
 
     match /levelHistory/{historyId} {
       allow get: if isValidId(historyId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
       allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
-      allow create: if isAdmin() && isValidId(historyId);
-      allow update, delete: if false;
+      allow create: if isValidId(historyId) && (isSuperAdminRestoring() || (isAdmin() && !isSystemRestoreLocked()));
+      allow update, delete: if isSuperAdminRestoring() && isValidId(historyId);
     }
 
     // ---------- Benefits & Campaigns ----------
     match /benefits/{benefitId} {
       allow get: if isValidId(benefitId) && (isAdmin() || (isSignedIn() && existing().active == true));
       allow list: if isAdmin() || (isSignedIn() && resource.data.active == true);
-      allow create, update: if isFullAdminOrSuper() && isValidId(benefitId) && isValidBenefit(incoming());
-      allow delete: if false;
+      allow create: if isValidId(benefitId) && isValidBenefit(incoming()) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
+      allow update: if isValidId(benefitId) && isValidBenefit(incoming()) && (
+        isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
+          isFullAdminOrSuper() || (
+            isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'updatedAt'])
+            && existing().stock is int
+            && incoming().stock is int
+            && incoming().stock == existing().stock - 1
+          )
+        ))
+      );
+      allow delete: if isSuperAdminRestoring() && isValidId(benefitId);
     }
 
     match /campaigns/{campaignId} {
       allow get: if isValidId(campaignId) && (isAdmin() || (isSignedIn() && existing().active == true));
       allow list: if isAdmin() || (isSignedIn() && resource.data.active == true);
-      allow create, update: if isFullAdminOrSuper() && isValidId(campaignId) && isValidCampaign(incoming());
-      allow delete: if false;
+      allow create: if isValidId(campaignId) && isValidCampaign(incoming()) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
+      allow update: if isValidId(campaignId) && isValidCampaign(incoming()) && (
+        isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
+          isFullAdminOrSuper() || (
+            isAdmin()
+            && incoming().diff(existing()).affectedKeys().hasOnly(['claimsCount', 'updatedAt'])
+            && incoming().claimsCount == existing().claimsCount + 1
+            && (existing().totalClaimLimit == null || incoming().claimsCount <= existing().totalClaimLimit)
+          )
+        ))
+      );
+      allow delete: if isSuperAdminRestoring() && isValidId(campaignId);
     }
 
     // ---------- Claims & Redemptions ----------
     match /claims/{claimId} {
       allow get: if isValidId(claimId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
       allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
-      allow create: if isSignedIn()
-        && isValidId(claimId)
-        && isValidClaim(incoming())
-        && isActiveMember(request.auth.uid)
-        && incoming().memberUid == request.auth.uid
-        && incoming().status == 'ON_PROCESS'
-        && incoming().reviewedBy == null
-        && incoming().reviewerRole == null
-        && incoming().reviewedAt == null
-        && incoming().denialReason == null;
-      allow update: if isAdmin()
-        && isValidId(claimId)
-        && isValidClaim(incoming())
-        && existing().status == 'ON_PROCESS'
-        && incoming().status in ['APPROVED', 'DENIED']
-        && incoming().memberUid == existing().memberUid
-        && incoming().campaignId == existing().campaignId
-        && incoming().xpRewardSnapshot == existing().xpRewardSnapshot
-        && incoming().createdAt == existing().createdAt;
-      allow delete: if false;
+      allow create: if isValidId(claimId) && isValidClaim(incoming()) && (
+        isSuperAdminRestoring() || (
+          isSignedIn()
+          && !isSystemRestoreLocked()
+          && isActiveMember(request.auth.uid)
+          && incoming().memberUid == request.auth.uid
+          && incoming().status == 'ON_PROCESS'
+          && incoming().reviewedBy == null
+          && incoming().reviewerRole == null
+          && incoming().reviewedAt == null
+          && incoming().denialReason == null
+        )
+      );
+      allow update: if isValidId(claimId) && isValidClaim(incoming()) && (
+        isSuperAdminRestoring() || (
+          isAdmin()
+          && !isSystemRestoreLocked()
+          && existing().status == 'ON_PROCESS'
+          && incoming().status in ['APPROVED', 'DENIED']
+          && incoming().memberUid == existing().memberUid
+          && incoming().campaignId == existing().campaignId
+          && incoming().xpRewardSnapshot == existing().xpRewardSnapshot
+          && incoming().createdAt == existing().createdAt
+        )
+      );
+      allow delete: if isSuperAdminRestoring() && isValidId(claimId);
     }
 
     match /redemptions/{redemptionId} {
       allow get: if isValidId(redemptionId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
       allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
-      allow create: if isSignedIn()
-        && isValidId(redemptionId)
-        && isValidRedemption(incoming())
-        && isActiveMember(request.auth.uid)
-        && incoming().memberUid == request.auth.uid
-        && incoming().status == 'ON_PROCESS'
-        && incoming().reviewedBy == null
-        && incoming().reviewerRole == null
-        && incoming().reviewedAt == null
-        && incoming().denialReason == null;
-      allow update: if isAdmin()
-        && isValidId(redemptionId)
-        && isValidRedemption(incoming())
-        && existing().status == 'ON_PROCESS'
-        && incoming().status in ['APPROVED', 'DENIED']
-        && incoming().memberUid == existing().memberUid
-        && incoming().benefitId == existing().benefitId
-        && incoming().xpCostSnapshot == existing().xpCostSnapshot
-        && incoming().createdAt == existing().createdAt;
-      allow delete: if false;
+      allow create: if isValidId(redemptionId) && isValidRedemption(incoming()) && (
+        isSuperAdminRestoring() || (
+          isSignedIn()
+          && !isSystemRestoreLocked()
+          && isActiveMember(request.auth.uid)
+          && incoming().memberUid == request.auth.uid
+          && incoming().status == 'ON_PROCESS'
+          && incoming().reviewedBy == null
+          && incoming().reviewerRole == null
+          && incoming().reviewedAt == null
+          && incoming().denialReason == null
+        )
+      );
+      allow update: if isValidId(redemptionId) && isValidRedemption(incoming()) && (
+        isSuperAdminRestoring() || (
+          isAdmin()
+          && !isSystemRestoreLocked()
+          && existing().status == 'ON_PROCESS'
+          && incoming().status in ['APPROVED', 'DENIED']
+          && incoming().memberUid == existing().memberUid
+          && incoming().benefitId == existing().benefitId
+          && incoming().xpCostSnapshot == existing().xpCostSnapshot
+          && incoming().createdAt == existing().createdAt
+        )
+      );
+      allow delete: if isSuperAdminRestoring() && isValidId(redemptionId);
     }
 
     // ---------- Notifications ----------
     match /notifications/{notificationId} {
       allow get: if isValidId(notificationId) && isAdmin();
       allow list: if isAdmin();
-      allow create, update: if isFullAdminOrSuper() && isValidId(notificationId);
-      allow delete: if false;
+      allow create, update: if isValidId(notificationId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
+      allow delete: if isSuperAdminRestoring() && isValidId(notificationId);
     }
 
     match /memberNotifications/{notificationId} {
       allow get: if isValidId(notificationId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
       allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
-      allow create: if isAdmin() && isValidId(notificationId) && isValidMemberNotification(incoming());
-      allow update: if isValidId(notificationId) && isValidMemberNotification(incoming()) && (
-        isAdmin() || (
-          isOwner(existing().memberUid)
-          && incoming().memberUid == existing().memberUid
-          && incoming().memberId == existing().memberId
-          && incoming().title == existing().title
-          && incoming().message == existing().message
-          && incoming().createdAt == existing().createdAt
-          && incoming().diff(existing()).affectedKeys().hasOnly(['read', 'readAt', 'status'])
-        )
+      allow create: if isValidId(notificationId) && isValidMemberNotification(incoming()) && (
+        isSuperAdminRestoring() || (isAdmin() && !isSystemRestoreLocked())
       );
-      allow delete: if false;
+      allow update: if isValidId(notificationId) && isValidMemberNotification(incoming()) && (
+        isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
+          isAdmin() || (
+            isOwner(existing().memberUid)
+            && incoming().memberUid == existing().memberUid
+            && incoming().memberId == existing().memberId
+            && incoming().title == existing().title
+            && incoming().message == existing().message
+            && incoming().createdAt == existing().createdAt
+            && incoming().diff(existing()).affectedKeys().hasOnly(['read', 'readAt', 'status'])
+          )
+        ))
+      );
+      allow delete: if isSuperAdminRestoring() && isValidId(notificationId);
     }
 
     // ---------- Membership Cycles & Snapshots ----------
@@ -671,22 +1128,119 @@ service cloud.firestore {
       allow get: if isValidId(cycleId) && isSignedIn();
       allow list: if isSignedIn();
       allow create, update: if isSuperAdmin() && isValidId(cycleId);
-      allow delete: if false;
+      allow delete: if isSuperAdminRestoring() && isValidId(cycleId);
     }
 
     match /cycleSnapshots/{snapshotId} {
       allow get: if isValidId(snapshotId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
       allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
       allow create: if isSuperAdmin() && isValidId(snapshotId);
-      allow update, delete: if false;
+      allow update, delete: if isSuperAdminRestoring() && isValidId(snapshotId);
     }
 
-    // ---------- Immutable Audit Logs ----------
+    // ---------- Immutable Audit Logs (NEVER Deleted or Overwritten Even During Restore) ----------
     match /auditLogs/{logId} {
       allow get: if isValidId(logId) && isAdmin();
       allow list: if isAdmin();
-      allow create: if isAdmin() && isValidId(logId);
+      allow create: if isValidId(logId) && (isSuperAdmin() || (isAdmin() && !isSystemRestoreLocked()));
       allow update, delete: if false;
+    }
+
+    // ---------- CMS Homepage (Draft / Published / Immutable Version History) ----------
+    match /cmsPublished/{docId} {
+      allow get: if docId == 'homepage';
+      allow list: if isSuperAdmin();
+      allow create, update: if docId == 'homepage' && isValidCmsPublished(incoming()) && (
+        isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked())
+      );
+      allow delete: if isSuperAdminRestoring() && docId == 'homepage';
+    }
+
+    match /cmsDrafts/{docId} {
+      allow get: if docId == 'homepage' && isAdmin();
+      allow list: if isSuperAdmin();
+      allow create, update: if docId == 'homepage' && isValidCmsDraft(incoming()) && (
+        isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked())
+      );
+      allow delete: if isSuperAdminRestoring() && docId == 'homepage';
+    }
+
+    match /cmsVersions/{versionId} {
+      allow get: if isValidId(versionId) && isAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(versionId) && isValidCmsVersion(incoming()) && incoming().versionId == versionId && (
+        isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked())
+      );
+      allow update: if isSuperAdminRestoring() && isValidId(versionId) && isValidCmsVersion(incoming()) && incoming().versionId == versionId;
+      allow delete: if isSuperAdminRestoring() && isValidId(versionId);
+    }
+
+    // ---------- Immutable Admin XP Adjustment Audit Records ----------
+    match /xpAdjustments/{adjustmentId} {
+      allow get: if isValidId(adjustmentId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
+      allow create: if isValidId(adjustmentId) && isValidXpAdjustment(incoming()) && incoming().id == adjustmentId && (
+        isSuperAdminRestoring() || (
+          isFullAdminOrSuper()
+          && !isSystemRestoreLocked()
+          && incoming().adminId == request.auth.uid
+          && !exists(/databases/$(database)/documents/xpAdjustments/$(adjustmentId))
+        )
+      );
+      allow update: if isSuperAdminRestoring() && isValidId(adjustmentId) && isValidXpAdjustment(incoming()) && incoming().id == adjustmentId;
+      allow delete: if isSuperAdminRestoring() && isValidId(adjustmentId);
+    }
+
+    // ---------- Immutable Admin Level Override & Recalculate Records ----------
+    match /levelOverrides/{overrideId} {
+      allow get: if isValidId(overrideId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
+      allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
+      allow create: if isValidId(overrideId) && isValidLevelOverride(incoming()) && incoming().id == overrideId && (
+        isSuperAdminRestoring() || (
+          isFullAdminOrSuper()
+          && !isSystemRestoreLocked()
+          && incoming().adminId == request.auth.uid
+          && !exists(/databases/$(database)/documents/levelOverrides/$(overrideId))
+        )
+      );
+      allow update: if isSuperAdminRestoring() && isValidId(overrideId) && isValidLevelOverride(incoming()) && incoming().id == overrideId;
+      allow delete: if isSuperAdminRestoring() && isValidId(overrideId);
+    }
+
+    // ---------- Protected System Collections: Backups, Restore Jobs & System Operations ----------
+    match /systemBackups/{backupId} {
+      allow get: if isValidId(backupId) && isSuperAdmin();
+      allow list: if isSuperAdmin();
+      allow create, update: if isValidId(backupId)
+        && isSuperAdmin()
+        && isValidSystemBackup(incoming())
+        && incoming().backupId == backupId;
+      allow delete: if isValidId(backupId)
+        && isSuperAdmin()
+        && !isSystemRestoreLocked()
+        && existing().status in ['COMPLETED', 'FAILED', 'VERIFICATION_FAILED', 'CANCELLED'];
+    }
+
+    match /restoreJobs/{restoreJobId} {
+      allow get: if isValidId(restoreJobId) && isSuperAdmin();
+      allow list: if isSuperAdmin();
+      allow create, update: if isValidId(restoreJobId)
+        && isSuperAdmin()
+        && isValidRestoreJob(incoming())
+        && incoming().restoreJobId == restoreJobId;
+      allow delete: if false;
+    }
+
+    match /systemOperations/{opId} {
+      allow get: if (opId == 'restoreLock' && isSignedIn())
+        || (opId in ['restoreLock', 'backupLock', 'backupRetention'] && isSuperAdmin());
+      allow list: if isSuperAdmin();
+      allow create, update: if isSuperAdmin() && (
+        (opId == 'restoreLock' && isValidRestoreLock(incoming()))
+        || (opId == 'backupLock' && isValidBackupLock(incoming()))
+        || (opId == 'backupRetention' && isValidBackupRetention(incoming()))
+      );
+      allow delete: if false;
     }
   }
 }

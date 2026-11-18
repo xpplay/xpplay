@@ -14,9 +14,12 @@ export function RegisterPage() {
     memberProfile,
     adminProfile,
     capabilities,
+    systemSettings,
     signInWithServerToken,
     refreshProfiles,
   } = useAuth();
+  const regBonus = systemSettings.registrationBonusXp;
+  const refBonus = systemSettings.referralBonusXp;
 
   const [fullName, setFullName] = useState('');
   const [username, setUsername] = useState('');
@@ -112,7 +115,7 @@ export function RegisterPage() {
           username: data.member.username,
           xpTotal: data.member.xpProgress,
           referralNote: data.referralApplied
-            ? 'Bonus referral +5 XP berhasil diterapkan untuk Anda dan referrer!'
+            ? `Bonus referral +${refBonus} XP berhasil diterapkan untuk Anda dan referrer!`
             : data.referralMessage,
         });
       } else {
@@ -132,7 +135,7 @@ export function RegisterPage() {
           username: res.member.username,
           xpTotal: res.member.xpProgress,
           referralNote: res.referralApplied
-            ? 'Bonus referral +5 XP berhasil diterapkan untuk Anda dan referrer!'
+            ? `Bonus referral +${refBonus} XP berhasil diterapkan untuk Anda dan referrer!`
             : res.referralMessage,
         });
       }
@@ -195,12 +198,14 @@ export function RegisterPage() {
 
         <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/30 p-5 sm:p-8 space-y-6 shadow-[0_0_40px_-14px_rgba(99,102,241,0.4)]">
           <div>
-            <p className="text-xs font-medium text-sky-300">Registrasi Member Baru · Bonus +10 XP</p>
+            <p className="text-xs font-medium text-sky-300">
+              Registrasi Member Baru · Bonus +{regBonus} XP
+            </p>
             <h1 className="mt-1 font-display text-2xl font-extrabold tracking-tight text-white">
               Daftar XP PLAY Member
             </h1>
             <p className="mt-1 text-sm text-slate-300">
-              Dapatkan +10 XP langsung saat mendaftar, dan +5 XP tambahan bila menggunakan username referral teman.
+              Dapatkan +{regBonus} XP langsung saat mendaftar, dan +{refBonus} XP tambahan bila menggunakan username referral teman.
             </p>
           </div>
 
@@ -296,7 +301,7 @@ export function RegisterPage() {
                   type="text"
                   value={referralUsername}
                   onChange={(e) => setReferralUsername(e.target.value.toLowerCase())}
-                  placeholder="Isi username teman (+5 XP)"
+                  placeholder={`Isi username teman (+${refBonus} XP)`}
                   className="w-full h-[46px] rounded-xl border border-indigo-500/30 bg-[#070B19] px-3.5 text-sm font-mono text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-400/20"
                 />
               </div>
@@ -343,7 +348,7 @@ export function RegisterPage() {
               className="w-full h-[48px] inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 px-4 text-sm font-semibold text-white hover:from-blue-500 hover:to-purple-500 shadow-[0_0_24px_-6px_rgba(99,102,241,0.65)] disabled:opacity-50 transition-all"
             >
               <UserPlus className="w-4 h-4" />
-              <span>{loading ? 'Memproses Pendaftaran...' : 'Daftar Sekarang (+10 XP)'}</span>
+              <span>{loading ? 'Memproses Pendaftaran...' : `Daftar Sekarang (+${regBonus} XP)`}</span>
             </button>
           </form>
 

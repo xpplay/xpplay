@@ -4,6 +4,7 @@ import {
   buildWhatsappHashId,
   calculateTransactionXp,
   DEFAULT_LEVELS,
+  formatDateTimeLocalInput,
   isCampaignClaimable,
   isLevelEligible,
   normalizeUsername,
@@ -73,7 +74,7 @@ describe('XP PLAY Mandatory Business Logic & Security Tests', () => {
     expect(isLevelEligible('SULTAN', 'JURAGAN', DEFAULT_LEVELS)).toBe(true);
   });
 
-  it('prevents claiming expired challenges/events/promos (currentTime > endAt)', () => {
+  it('prevents claiming expired or quota-exhausted challenges/events/promos', () => {
     const now = Date.now();
     const expiredCampaign = {
       status: 'ACTIVE' as const,
@@ -92,6 +93,19 @@ describe('XP PLAY Mandatory Business Logic & Security Tests', () => {
     };
     expect(resolveCampaignStatus(activeCampaign, now)).toBe('ACTIVE');
     expect(isCampaignClaimable(activeCampaign, now)).toBe(true);
+
+    const fullCampaign = {
+      ...activeCampaign,
+      totalClaimLimit: 10,
+      claimsCount: 10,
+    };
+    expect(isCampaignClaimable(fullCampaign, now)).toBe(false);
+  });
+
+  it('formats datetime-local strings strictly in Asia/Jakarta (UTC+7)', () => {
+    // 2026-06-01T00:30:00.000Z === 2026-06-01T07:30 WIB
+    const utcMs = Date.UTC(2026, 5, 1, 0, 30, 0);
+    expect(formatDateTimeLocalInput(utcMs)).toBe('2026-06-01T07:30');
   });
 
   it('verifies server-side CAPTCHA and rejects missing/wrong/replayed tokens', async () => {
@@ -133,9 +147,14 @@ describe('XP PLAY Mandatory Business Logic & Security Tests', () => {
     expect(rules).toContain('request.auth.token.email_verified == true');
     // Members cannot update XP/level/status
     expect(rules).toContain("affectedKeys().hasOnly(['fullName', 'socialMedia', 'preferredBranch', 'updatedAt'])");
-    // Claims & Redemptions locked to ON_PROCESS on create and admin-only on update
+    // Dynamic initial level validation on member registration
+    expect(rules).toContain("incoming().currentLevel in ['SILVER', 'JURAGAN', 'SULTAN']");
+    // Claims & Redemptions locked to ON_PROCESS on create and admin-only (when not restore-locked) on update
     expect(rules).toContain("incoming().status == 'ON_PROCESS'");
     expect(rules).toContain("existing().status == 'ON_PROCESS'");
-    expect(rules).toContain('allow update: if isAdmin()');
+    expect(rules).toContain('isAdmin()\n          && !isSystemRestoreLocked()');
+    // Atomic review counters scoped cleanly
+    expect(rules).toContain("affectedKeys().hasOnly(['claimsCount', 'updatedAt'])");
+    expect(rules).toContain("affectedKeys().hasOnly(['stock', 'updatedAt'])");
   });
 });

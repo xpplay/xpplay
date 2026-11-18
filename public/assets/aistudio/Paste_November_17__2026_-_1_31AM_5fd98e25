@@ -1,0 +1,1805 @@
+LANJUTKAN PENGEMBANGAN XP PLAY MEMBER SYSTEM DARI PROJECT YANG SUDAH ADA DAN DARI IMPLEMENTASI YANG SUDAH DIKERJAKAN PADA CHAT SEBELUMNYA.
+
+JANGAN MEMBUAT PROJECT BARU.
+
+JANGAN MENGULANG IMPLEMENTASI YANG SUDAH ADA.
+
+JANGAN MENGHAPUS FITUR YANG SUDAH BERFUNGSI.
+
+JANGAN MENGGANTI STRUKTUR PROJECT EXISTING TANPA ALASAN TEKNIS.
+
+JANGAN MENGGANTI FIREBASE EXISTING.
+
+JANGAN MENGGANTI AUTHENTICATION EXISTING.
+
+JANGAN MENGGANTI UI EXISTING SECARA TOTAL.
+
+JANGAN MENGGUNAKAN DUMMY DATA.
+
+ANGGAP SEMUA IMPLEMENTASI DARI PROMPT SEBELUMNYA SEBAGAI BASELINE YANG HARUS DIPERTAHANKAN.
+
+============================================================
+MODE PEKERJAAN
+============================================================
+
+Sebelum coding:
+
+1. Baca perubahan yang sudah dibuat dari prompt sebelumnya.
+2. Periksa file existing.
+3. Periksa database structure existing.
+4. Periksa Firebase configuration.
+5. Periksa Authentication.
+6. Periksa Firestore.
+7. Periksa Storage.
+8. Periksa Cloud Functions jika ada.
+9. Periksa Security Rules.
+10. Periksa Admin Role/Permission.
+11. Periksa XP Progress.
+12. Periksa XP Reward.
+13. Periksa Level.
+14. Periksa Member Dashboard.
+15. Periksa Admin Dashboard.
+
+Kemudian tentukan file dan module mana yang perlu ditambahkan atau dimodifikasi.
+
+JANGAN membuat duplicate implementation.
+
+============================================================
+FITUR TAMBAHAN YANG SEKARANG HARUS DIIMPLEMENTASIKAN
+============================================================
+
+Fitur tambahan terdiri dari:
+
+1. Admin CMS untuk halaman depan website
+2. Admin dapat mengurangi XP Progress
+3. Admin dapat mengurangi XP Reward
+4. Admin dapat menurunkan Level Membership
+5. Admin dapat mengubah password member
+6. Admin dapat melihat member yang sudah lama tidak bermain
+7. Full System Backup
+8. Full System Restore
+9. Backup Verification
+10. Restore Safety
+11. Backup/Restore Collision Prevention
+12. Backup/Restore Audit Log
+13. Pre-Restore Backup
+14. Restore Lock
+15. Restore Validation
+16. Restore Verification
+17. Recovery Handling
+
+============================================================
+MODULE 1 — ADMIN CMS HOMEPAGE
+============================================================
+
+Tambahkan CMS untuk halaman depan website.
+
+Admin harus dapat mengubah konten halaman depan TANPA mengubah source code.
+
+Admin dapat mengubah minimal:
+
+- Logo
+- Nama toko
+- Nama XP PLAY
+- Favicon
+- Header
+- Hero title
+- Hero subtitle
+- Hero description
+- Hero image
+- Banner
+- CTA button
+- CTA text
+- CTA URL
+- Tentang XP PLAY
+- Alamat
+- WhatsApp
+- Google Maps
+- Jam operasional
+- Social Media
+- Footer
+- Promo banner
+- Announcement
+- Section title
+- Section description
+- Section image
+- FAQ jika tersedia
+- Contact section
+
+============================================================
+CMS SECURITY
+============================================================
+
+Jangan mengizinkan admin memasukkan arbitrary JavaScript.
+
+Jangan menyimpan HTML berbahaya tanpa sanitization.
+
+Jika rich text diperlukan:
+
+gunakan sanitization.
+
+Pastikan:
+
+XSS prevention.
+
+Firebase Security Rules harus memastikan hanya Admin yang memiliki permission edit CMS.
+
+Member hanya dapat membaca published content.
+
+============================================================
+CMS DRAFT / PUBLISH
+============================================================
+
+Jangan membuat perubahan admin langsung mengubah production content tanpa workflow.
+
+Gunakan:
+
+DRAFT
+
+PUBLISHED
+
+Flow:
+
+ADMIN EDIT
+
+↓
+
+SAVE DRAFT
+
+↓
+
+PREVIEW
+
+↓
+
+PUBLISH
+
+↓
+
+PUBLISHED CONTENT
+
+Halaman depan user/public hanya membaca:
+
+PUBLISHED VERSION.
+
+============================================================
+CMS VERSION HISTORY
+============================================================
+
+Setiap publish membuat version.
+
+Contoh:
+
+version 1
+version 2
+version 3
+
+Simpan:
+
+- versionId
+- content
+- createdBy
+- createdAt
+- publishedBy
+- publishedAt
+
+Admin dapat:
+
+- melihat history
+- melihat versi sebelumnya
+- melakukan rollback
+
+Rollback juga harus membuat audit log.
+
+Jangan menghapus version history lama.
+
+============================================================
+MODULE 2 — ADMIN XP PROGRESS ADJUSTMENT
+============================================================
+
+Admin boleh mengurangi XP Progress member.
+
+Contoh:
+
+Member:
+
+XP Progress = 650
+Level = Sultan
+
+Admin melakukan:
+
+-100 XP
+
+Hasil:
+
+XP Progress = 550
+
+Level harus dihitung sesuai konfigurasi level.
+
+Jika threshold:
+
+Bronze 0-149
+Silver 150-299
+Juragan 300-599
+Sultan 600+
+
+maka:
+
+550 XP = JURAGAN
+
+============================================================
+PENTING — XP PROGRESS DEDUCTION
+============================================================
+
+Pengurangan XP Progress harus dibuat sebagai:
+
+XP ADJUSTMENT LEDGER ENTRY
+
+JANGAN menghapus history XP sebelumnya.
+
+Jangan mengedit history lama secara destructive.
+
+Contoh:
+
+Existing:
+
++100 TRANSACTION
++50 EVENT
++500 TRANSACTION
+
+Total:
+
+650
+
+Admin mengurangi:
+
+100
+
+Buat ledger baru:
+
+-100 ADMIN_ADJUSTMENT
+
+Balance:
+
+550
+
+Dengan demikian seluruh sejarah tetap dapat dilacak.
+
+============================================================
+ADMIN XP PROGRESS FORM
+============================================================
+
+Form:
+
+Member:
+[search username / WhatsApp]
+
+Current XP Progress:
+650
+
+Adjustment:
+[-100]
+
+New XP Progress:
+550
+
+Reason:
+[required]
+
+Preview:
+
+Before:
+650 XP
+
+After:
+550 XP
+
+Level Before:
+Sultan
+
+Level After:
+Juragan
+
+Admin harus melakukan confirmation.
+
+============================================================
+MODULE 3 — ADMIN XP REWARD ADJUSTMENT
+============================================================
+
+Admin juga dapat:
+
+- tambah XP Reward
+- kurangi XP Reward
+
+Contoh:
+
+XP Reward:
+
+450
+
+Admin deduct:
+
+100
+
+Hasil:
+
+350
+
+XP Progress tetap:
+
+450
+
+Level tetap:
+
+berdasarkan XP Progress.
+
+JANGAN mengurangi XP Progress saat Admin hanya mengurangi XP Reward.
+
+============================================================
+XP REWARD ADJUSTMENT LEDGER
+============================================================
+
+Gunakan:
+
+XP_REWARD_ADMIN_ADJUSTMENT
+
+Contoh:
+
+beforeReward:
+450
+
+adjustment:
+-100
+
+afterReward:
+350
+
+Simpan:
+
+- memberId
+- adminId
+- timestamp
+- adjustment
+- beforeBalance
+- afterBalance
+- reason
+- reference
+- auditId
+
+============================================================
+MODULE 4 — ADMIN FORCE LEVEL CHANGE
+============================================================
+
+Admin dapat mengubah Level Membership secara manual.
+
+Contoh:
+
+XP Progress = 650
+
+Normal Level:
+
+SULTAN
+
+Admin dapat memilih:
+
+JURAGAN
+
+Hasil:
+
+XP Progress tetap 650
+
+Level = JURAGAN
+
+Level Mode:
+
+MANUAL_OVERRIDE
+
+============================================================
+LEVEL OVERRIDE
+============================================================
+
+Jika level diubah manual:
+
+JANGAN otomatis mengubah XP Progress kecuali Admin memilih adjustment XP secara terpisah.
+
+Simpan:
+
+previousLevel
+newLevel
+levelMode
+reason
+adminId
+timestamp
+
+============================================================
+LEVEL MODE
+============================================================
+
+Gunakan:
+
+AUTOMATIC
+
+MANUAL_OVERRIDE
+
+RESET
+
+Jika:
+
+MANUAL_OVERRIDE
+
+jangan secara otomatis mengubah level berdasarkan XP setiap kali dashboard dibuka.
+
+Sediakan Admin action:
+
+RECALCULATE LEVEL FROM XP
+
+Jika Admin memilih:
+
+RECALCULATE
+
+maka:
+
+levelMode = AUTOMATIC
+
+dan level dihitung dari XP Progress.
+
+============================================================
+MODULE 5 — ADMIN CHANGE MEMBER PASSWORD
+============================================================
+
+Admin dapat melakukan:
+
+RESET PASSWORD MEMBER
+
+atau:
+
+CHANGE MEMBER PASSWORD
+
+Admin TIDAK BOLEH melihat password lama.
+
+Admin TIDAK BOLEH melihat password baru setelah tersimpan.
+
+Password tidak boleh disimpan plaintext.
+
+Gunakan authentication provider existing.
+
+Jika Firebase Authentication digunakan:
+
+gunakan trusted backend/server/Admin SDK untuk administrative password update.
+
+Jangan melakukan administrative password change langsung dari insecure frontend.
+
+Audit log:
+
+PASSWORD_CHANGED_BY_ADMIN
+
+Simpan:
+
+adminId
+memberId
+timestamp
+
+JANGAN simpan:
+
+oldPassword
+newPassword
+
+============================================================
+MODULE 6 — INACTIVE MEMBER
+============================================================
+
+Admin harus memiliki halaman:
+
+INACTIVE MEMBERS
+
+Admin dapat melihat member yang:
+
+7 hari tidak bermain
+14 hari tidak bermain
+30 hari tidak bermain
+60 hari tidak bermain
+90 hari tidak bermain
+180 hari tidak bermain
+1 tahun tidak bermain
+Custom
+
+============================================================
+INACTIVE MEMBER DATA
+============================================================
+
+Tampilkan:
+
+- Username
+- Nama Lengkap
+- WhatsApp
+- Level
+- XP Progress
+- XP Reward
+- Last Play
+- Last Play Branch
+- Days Since Last Play
+- Status
+- Registration Date
+
+Urutkan dari:
+
+paling lama tidak bermain.
+
+============================================================
+INACTIVE FILTER
+============================================================
+
+Filter:
+
+Branch:
+ALL
+DEMANG
+SEKIP
+
+Level:
+ALL
+BRONZE
+SILVER
+JURAGAN
+SULTAN
+
+Inactive Period:
+7 Days
+14 Days
+30 Days
+60 Days
+90 Days
+180 Days
+1 Year
+Custom
+
+Search:
+
+Username
+WhatsApp
+Nama
+
+Gunakan pagination.
+
+Jangan fetch semua member sekaligus.
+
+============================================================
+INACTIVE NOTIFICATION
+============================================================
+
+Data inactive member juga harus dapat digunakan oleh notification system existing.
+
+Contoh:
+
+member tidak bermain 7 hari
+
+→ notification campaign 7 days
+
+member tidak bermain 14 hari
+
+→ notification campaign 14 days
+
+member tidak bermain 30 hari
+
+→ notification campaign 30 days
+
+Jangan membuat duplicate notification tanpa policy.
+
+Simpan notification campaign history.
+
+============================================================
+MODULE 7 — FULL SYSTEM BACKUP
+============================================================
+
+Sekarang buat:
+
+BACKUP & RESTORE CENTER
+
+Backup dianggap sebagai sistem production-level.
+
+JANGAN hanya membuat tombol:
+
+"Export JSON"
+
+JANGAN menganggap download JSON sebagai full system backup.
+
+============================================================
+FULL BACKUP SCOPE
+============================================================
+
+Backup harus dirancang untuk menangani komponen berikut secara terpisah:
+
+1. Firestore data
+2. Authentication user metadata
+3. Storage files/assets
+4. CMS content
+5. System settings
+6. Level configuration
+7. XP configuration
+8. Benefits
+9. Challenges
+10. Events
+11. Promos
+12. Notifications
+13. Members
+14. Transactions
+15. XP Progress Ledger
+16. XP Reward Ledger
+17. Claims
+18. Redemptions
+19. Referrals
+20. Level History
+21. Membership Cycles
+22. Audit Logs
+23. Branch configuration
+24. Backup manifest
+
+============================================================
+AUTHENTICATION BACKUP
+============================================================
+
+JANGAN mencoba menyimpan plaintext password.
+
+JANGAN mencoba memasukkan password ke backup.
+
+Authentication backup harus mengikuti mekanisme resmi Firebase/Google yang sesuai.
+
+Backup Authentication harus minimal dapat menyimpan metadata user yang dibutuhkan untuk recovery:
+
+- uid
+- email jika digunakan
+- phone jika digunakan
+- display name
+- disabled
+- custom claims/role
+- provider information sesuai kebutuhan
+- creation timestamp jika tersedia
+- last sign-in information jika tersedia
+
+Jika password hash export/restore membutuhkan mekanisme khusus:
+
+gunakan mekanisme resmi.
+
+Jangan membuat password backup custom yang tidak aman.
+
+Dokumentasikan limitation tersebut.
+
+============================================================
+STORAGE BACKUP
+============================================================
+
+Backup Storage harus menyimpan:
+
+- object path
+- file name
+- content type
+- size
+- metadata
+- checksum/hash jika tersedia
+- generation/version jika tersedia
+- storage reference
+
+JANGAN hanya menyimpan public URL.
+
+============================================================
+FIRESTORE BACKUP
+============================================================
+
+Gunakan mekanisme server-side/managed yang sesuai dengan Firebase/Google Cloud.
+
+Jangan menjalankan privileged backup dari browser member.
+
+Backup Firestore harus terisolasi berdasarkan:
+
+backupId
+
+Contoh:
+
+backupId:
+backup_2026_11_17_001
+
+Storage:
+
+backups/backup_2026_11_17_001/firestore/
+
+============================================================
+BACKUP MANIFEST
+============================================================
+
+Setiap backup harus mempunyai:
+
+manifest.json
+
+Isi minimal:
+
+backupId
+createdAt
+createdBy
+applicationVersion
+databaseSchemaVersion
+backupStatus
+firestoreLocation
+storageLocation
+authBackupLocation
+configurationVersion
+
+counts:
+
+members
+transactions
+xpProgressEntries
+xpRewardEntries
+claims
+redemptions
+referrals
+notifications
+benefits
+campaigns
+admins
+
+verification:
+
+checksums
+hashes
+record counts
+verification status
+
+============================================================
+BACKUP JOB
+============================================================
+
+Gunakan backup job lifecycle:
+
+REQUESTED
+PREPARING
+RUNNING
+VERIFYING
+COMPLETED
+FAILED
+CANCELLED
+
+Jangan menggunakan status ambigu.
+
+============================================================
+BACKUP CONCURRENCY
+============================================================
+
+Sangat penting:
+
+Backup A tidak boleh menimpa Backup B.
+
+Backup B tidak boleh menimpa Backup A.
+
+Jangan menggunakan folder backup yang sama.
+
+Gunakan unique:
+
+backupId
+operationId
+
+Jika backup sedang RUNNING:
+
+request backup baru harus:
+
+QUEUE
+
+atau
+
+REJECT
+
+sesuai policy.
+
+JANGAN menjalankan dua proses yang dapat saling menimpa resource.
+
+============================================================
+MODULE 8 — BACKUP VERIFICATION
+============================================================
+
+Setelah backup selesai:
+
+jangan langsung status:
+
+COMPLETED
+
+Lakukan verification.
+
+Periksa:
+
+- Firestore export exists
+- Auth backup exists
+- Storage manifest exists
+- CMS snapshot exists
+- Settings snapshot exists
+- manifest valid
+- record counts valid
+- checksums valid jika digunakan
+- backup path valid
+
+Jika verification gagal:
+
+status:
+
+FAILED
+
+atau
+
+VERIFICATION_FAILED
+
+Jangan menyatakan backup valid jika verification belum berhasil.
+
+============================================================
+MODULE 9 — BACKUP RETENTION
+============================================================
+
+Admin dapat mengatur:
+
+Daily retention
+
+Weekly retention
+
+Monthly retention
+
+Custom retention
+
+Tetapi selalu pertahankan minimal:
+
+latest successful backup
+
+latest pre-restore backup
+
+Jangan delete backup yang sedang digunakan oleh restore.
+
+Jangan delete backup yang statusnya:
+
+RUNNING
+VERIFYING
+RESTORING
+
+============================================================
+MODULE 10 — FULL RESTORE
+============================================================
+
+Restore merupakan operasi HIGH RISK.
+
+Restore hanya boleh dilakukan oleh:
+
+SUPER_ADMIN
+
+atau role khusus:
+
+BACKUP_RESTORE_ADMIN
+
+============================================================
+RESTORE FLOW
+============================================================
+
+Flow wajib:
+
+1. Select backup
+2. Validate backup
+3. Verify manifest
+4. Show preview
+5. Create pre-restore backup
+6. Acquire restore lock
+7. Block dangerous writes
+8. Restore data
+9. Restore configuration
+10. Restore storage
+11. Restore authentication metadata sesuai capability
+12. Verify restored data
+13. Run integrity checks
+14. Release restore lock
+15. Mark restore completed
+
+============================================================
+MODULE 11 — PRE-RESTORE BACKUP
+============================================================
+
+SEBELUM RESTORE SELALU lakukan:
+
+CURRENT SYSTEM BACKUP
+
+Contoh:
+
+Backup sebelum restore:
+
+backup_pre_restore_2026_11_17_001
+
+Kemudian baru:
+
+restore_target_backup_xxx
+
+Tujuannya:
+
+Jika restore gagal atau hasil tidak sesuai:
+
+system masih memiliki recovery point.
+
+============================================================
+MODULE 12 — RESTORE LOCK
+============================================================
+
+Saat restore aktif:
+
+system state:
+
+RESTORE_IN_PROGRESS
+
+Selama restore:
+
+Block:
+
+- transaction input
+- XP adjustment
+- claim submission
+- claim approval
+- redemption submission
+- redemption approval
+- level changes
+- member mutations tertentu
+- CMS publish
+- system settings changes
+
+Jika memungkinkan:
+
+system menjadi:
+
+READ ONLY
+
+Member melihat:
+
+"XP PLAY sedang melakukan maintenance sistem. Silakan kembali beberapa saat lagi."
+
+============================================================
+MODULE 13 — RESTORE COLLISION PROTECTION
+============================================================
+
+Pastikan tidak ada collision antara:
+
+Current Data
+
+Backup A
+
+Backup B
+
+Restore Job A
+
+Restore Job B
+
+Backup Job
+
+Gunakan:
+
+backupId
+restoreJobId
+operationId
+manifestId
+
+Setiap operation memiliki namespace sendiri.
+
+JANGAN menulis ke lokasi backup lain.
+
+============================================================
+MODULE 14 — RESTORE VALIDATION
+============================================================
+
+Sebelum restore:
+
+periksa:
+
+- backup exists
+- backup status COMPLETED
+- manifest valid
+- checksum valid jika tersedia
+- schema compatible
+- application version compatible
+- database migration compatibility
+- storage files available
+- required configuration available
+
+Jika tidak compatible:
+
+BLOCK RESTORE.
+
+Jangan memaksa restore.
+
+============================================================
+MODULE 15 — RESTORE PREVIEW
+============================================================
+
+Sebelum confirm restore:
+
+tampilkan:
+
+TARGET BACKUP
+
+Backup ID
+
+Created Date
+
+Created By
+
+Application Version
+
+Schema Version
+
+Members
+
+Transactions
+
+XP Progress Records
+
+XP Reward Records
+
+Claims
+
+Redemptions
+
+Referrals
+
+Notifications
+
+Benefits
+
+Campaigns
+
+Storage Files
+
+Auth Users
+
+Current System Information
+
+WARNING:
+
+"Restore dapat mengubah data production."
+
+============================================================
+MODULE 16 — RESTORE CONFIRMATION
+============================================================
+
+Jangan hanya menggunakan tombol:
+
+RESTORE
+
+Gunakan confirmation.
+
+Admin harus melakukan:
+
+Confirmation modal
+
+atau:
+
+type phrase:
+
+RESTORE XP PLAY
+
+Kemudian:
+
+CONFIRM RESTORE
+
+============================================================
+MODULE 17 — RESTORE VERIFICATION
+============================================================
+
+Setelah restore selesai:
+
+lakukan verification otomatis.
+
+Bandingkan manifest target dengan result.
+
+Verifikasi:
+
+member count
+transaction count
+XP ledger count
+reward ledger count
+claim count
+redemption count
+referral count
+benefit count
+campaign count
+notification count
+settings
+CMS
+storage references
+auth users
+
+Selain count:
+
+cek data integrity.
+
+============================================================
+MODULE 18 — DATA INTEGRITY AFTER RESTORE
+============================================================
+
+Setelah restore:
+
+jalankan integrity check:
+
+1. XP Progress balance
+2. XP Reward balance
+3. Level consistency
+4. Negative balance
+5. Duplicate username
+6. Duplicate WhatsApp
+7. Broken referral
+8. Orphan claims
+9. Orphan redemption
+10. Broken transaction reference
+11. Missing storage object reference
+12. Broken CMS reference
+
+Jika ditemukan critical mismatch:
+
+RESTORE STATUS:
+
+VERIFICATION_FAILED
+
+Jangan menyatakan sukses.
+
+============================================================
+MODULE 19 — RESTORE FAILURE
+============================================================
+
+Jika restore gagal:
+
+status:
+
+FAILED
+
+Catat:
+
+- restoreJobId
+- backupId
+- error type
+- failed step
+- timestamp
+- adminId
+- recovery recommendation
+
+Jangan menghapus:
+
+- target backup
+- pre-restore backup
+- manifest
+- audit log
+
+============================================================
+MODULE 20 — RESTORE AUDIT
+============================================================
+
+Audit log:
+
+RESTORE_REQUESTED
+RESTORE_VALIDATED
+PRE_RESTORE_BACKUP_STARTED
+PRE_RESTORE_BACKUP_COMPLETED
+RESTORE_LOCKED
+RESTORE_STARTED
+RESTORE_PROGRESS
+RESTORE_VERIFICATION_STARTED
+RESTORE_VERIFICATION_COMPLETED
+RESTORE_COMPLETED
+
+atau:
+
+RESTORE_FAILED
+
+============================================================
+MODULE 21 — BACKUP UI
+============================================================
+
+Admin menu:
+
+BACKUP & RESTORE
+
+Dashboard:
+
+Last Successful Backup
+
+Last Backup Status
+
+Last Backup Date
+
+Backup Count
+
+Backup Size
+
+Last Restore
+
+Last Restore Status
+
+Current Lock
+
+System Health
+
+Menu:
+
+Create Backup
+
+Backup History
+
+Verify Backup
+
+Restore
+
+Retention Settings
+
+Backup Logs
+
+Restore Logs
+
+============================================================
+MODULE 22 — BACKUP HISTORY
+============================================================
+
+Table:
+
+Backup ID
+Date
+Admin
+Status
+Size
+Duration
+Records
+Verification
+Restore Availability
+
+Actions:
+
+View
+Verify
+Restore
+Delete
+
+Delete hanya jika permission cukup.
+
+Jangan delete backup yang sedang digunakan.
+
+============================================================
+MODULE 23 — SYSTEM HEALTH
+============================================================
+
+Tambahkan health status:
+
+Firebase
+Firestore
+Storage
+Authentication
+Cloud Functions
+Scheduled Jobs
+Backup
+Restore
+Notification
+
+Status:
+
+HEALTHY
+WARNING
+ERROR
+MAINTENANCE
+
+============================================================
+MODULE 24 — BACKUP / RESTORE SECURITY
+============================================================
+
+Backup sangat sensitif.
+
+Jangan berikan akses backup kepada member.
+
+Jangan memberikan download URL backup kepada member.
+
+Gunakan authorization kuat.
+
+Restore:
+
+SUPER_ADMIN ONLY.
+
+Jika backup berisi data pribadi:
+
+gunakan protected storage.
+
+Jika download backup diperbolehkan:
+
+gunakan short-lived authorized access.
+
+============================================================
+MODULE 25 — DOCUMENTATION
+============================================================
+
+Update dokumentasi.
+
+Minimal:
+
+CMS_GUIDE.md
+
+ADMIN_XP_ADJUSTMENT.md
+
+MEMBER_PASSWORD_ADMIN.md
+
+INACTIVE_MEMBER.md
+
+BACKUP_RESTORE.md
+
+SECURITY.md
+
+DATABASE.md
+
+ARCHITECTURE.md
+
+CHANGELOG.md
+
+BACKUP_RESTORE.md wajib menjelaskan:
+
+- backup scope
+- Firestore backup
+- Authentication metadata
+- Storage backup
+- manifest
+- verification
+- retention
+- concurrency
+- collision prevention
+- pre-restore backup
+- restore lock
+- restore preview
+- restore confirmation
+- restore verification
+- restore failure
+- recovery
+- role permissions
+- troubleshooting
+
+============================================================
+MODULE 26 — TESTING
+============================================================
+
+Wajib test:
+
+CMS:
+
+- edit
+- draft
+- preview
+- publish
+- rollback
+- unauthorized edit
+
+XP:
+
+- reduce XP Progress
+- reduce XP Reward
+- level recalculation
+- manual level override
+- recalculate level
+
+Password:
+
+- admin password reset
+- password security
+- audit
+
+Inactive:
+
+- 7 days
+- 14 days
+- 30 days
+- 1 year
+- custom
+
+Backup:
+
+- create backup
+- duplicate backup request
+- backup failure
+- verification failure
+- backup retention
+
+Restore:
+
+- valid restore
+- invalid backup
+- corrupted manifest
+- incompatible schema
+- restore collision
+- concurrent restore
+- restore failure
+- pre-restore backup
+- restore verification
+- lock/unlock
+
+============================================================
+MODULE 27 — CRITICAL TEST CASES
+============================================================
+
+TEST 1:
+
+Member:
+
+XP Progress = 650
+XP Reward = 300
+Level = Sultan
+
+Admin reduce XP Progress:
+
+-100
+
+Expected:
+
+XP Progress = 550
+
+Level = Juragan
+
+XP Reward = 300
+
+============================================================
+
+TEST 2:
+
+Member:
+
+XP Progress = 650
+XP Reward = 300
+Level = Sultan
+
+Admin reduce XP Reward:
+
+-100
+
+Expected:
+
+XP Progress = 650
+
+XP Reward = 200
+
+Level = Sultan
+
+============================================================
+
+TEST 3:
+
+Member:
+
+XP Progress = 650
+Level = Sultan
+
+Admin force level:
+
+Juragan
+
+Expected:
+
+XP Progress = 650
+
+Level = Juragan
+
+levelMode = MANUAL_OVERRIDE
+
+============================================================
+
+TEST 4:
+
+Admin presses:
+
+RECALCULATE LEVEL FROM XP
+
+Expected:
+
+XP Progress = 650
+
+Level = Sultan
+
+levelMode = AUTOMATIC
+
+============================================================
+
+TEST 5:
+
+Backup A created.
+
+Backup B created.
+
+Expected:
+
+Backup A and B remain completely independent.
+
+============================================================
+
+TEST 6:
+
+Backup A running.
+
+Admin starts Backup B.
+
+Expected:
+
+Queue or reject.
+
+Tidak boleh collision.
+
+============================================================
+
+TEST 7:
+
+Restore A requested.
+
+Expected:
+
+Current system backup created first.
+
+============================================================
+
+TEST 8:
+
+Restore running.
+
+Admin tries adding XP.
+
+Expected:
+
+BLOCKED.
+
+============================================================
+
+TEST 9:
+
+Restore running.
+
+Member submits claim.
+
+Expected:
+
+BLOCKED or maintenance mode.
+
+============================================================
+
+TEST 10:
+
+Restore completes.
+
+Integrity verification fails.
+
+Expected:
+
+Restore status:
+
+VERIFICATION_FAILED
+
+Tidak boleh:
+
+SUCCESS.
+
+============================================================
+MODULE 28 — IMPORTANT BACKUP PRINCIPLE
+============================================================
+
+JANGAN PERNAH MENYATAKAN:
+
+"FULL BACKUP BERHASIL"
+
+jika yang sebenarnya hanya Firestore yang di-backup.
+
+Gunakan istilah sesuai cakupan aktual:
+
+Firestore Backup
+
+atau
+
+Full System Backup
+
+hanya jika semua komponen yang ditetapkan dalam backup scope sudah selesai dan diverifikasi.
+
+Authentication password tidak boleh disimpan sebagai plaintext.
+
+Jika suatu bagian tidak dapat dipulihkan secara identik karena keterbatasan provider:
+
+jelaskan keterbatasannya.
+
+JANGAN berpura-pura restore 100% identik jika memang provider tidak mendukungnya.
+
+============================================================
+MODULE 29 — NO DATA LOSS PRINCIPLE
+============================================================
+
+Prioritas tertinggi:
+
+NO UNEXPECTED DATA LOSS
+
+Sebelum operasi berisiko:
+
+- validate
+- backup
+- lock
+- execute
+- verify
+- audit
+
+============================================================
+MODULE 30 — NO SILENT FAILURE
+============================================================
+
+Jangan membuat:
+
+backup gagal tapi UI menunjukkan sukses.
+
+restore gagal tapi UI menunjukkan sukses.
+
+XP gagal dikurangi tapi UI menunjukkan berhasil.
+
+CMS publish gagal tapi UI menunjukkan published.
+
+Password reset gagal tapi UI menunjukkan berhasil.
+
+Setiap operation harus menggunakan status backend yang benar.
+
+============================================================
+MODULE 31 — IDEMPOTENCY
+============================================================
+
+Operation yang dijalankan ulang tidak boleh menggandakan efek.
+
+Contoh:
+
+approve claim dua kali:
+
+XP hanya bertambah satu kali.
+
+approve redemption dua kali:
+
+XP hanya berkurang satu kali.
+
+backup job retry:
+
+tidak merusak backup sebelumnya.
+
+restore retry:
+
+harus melalui restore state dan policy yang aman.
+
+============================================================
+MODULE 32 — PERFORMANCE
+============================================================
+
+Gunakan:
+
+pagination
+
+server-side filtering
+
+indexed queries
+
+batch processing
+
+background jobs
+
+queue jika dibutuhkan
+
+Jangan melakukan:
+
+massive read
+
+massive write
+
+large synchronous loop
+
+di frontend.
+
+============================================================
+MODULE 33 — FINAL IMPLEMENTATION RULE
+============================================================
+
+Jangan langsung mengimplementasikan semua module sekaligus.
+
+Kerjakan bertahap:
+
+PHASE A:
+CMS
+
+PHASE B:
+Admin XP Adjustment
+
+PHASE C:
+Admin Level Override
+
+PHASE D:
+Admin Password Management
+
+PHASE E:
+Inactive Member
+
+PHASE F:
+Backup
+
+PHASE G:
+Backup Verification
+
+PHASE H:
+Restore
+
+PHASE I:
+Restore Verification
+
+PHASE J:
+Security Audit
+
+PHASE K:
+Data Integrity Audit
+
+PHASE L:
+Testing
+
+PHASE M:
+Documentation
+
+============================================================
+MODULE 34 — RESPONSE FORMAT
+============================================================
+
+Sebelum mengubah kode:
+
+Tampilkan:
+
+CURRENT IMPLEMENTATION
+
+FILES AFFECTED
+
+DATABASE AFFECTED
+
+SECURITY IMPACT
+
+MIGRATION IMPACT
+
+RISKS
+
+IMPLEMENTATION PLAN
+
+Setelah selesai:
+
+Tampilkan:
+
+IMPLEMENTED
+
+FILES CHANGED
+
+DATABASE CHANGES
+
+SECURITY CHANGES
+
+TEST RESULTS
+
+REGRESSION TEST
+
+KNOWN ISSUES
+
+DOCUMENTATION UPDATED
+
+MANUAL TEST STEPS
+
+============================================================
+MODULE 35 — START NOW
+============================================================
+
+Karena prompt sebelumnya sudah digunakan:
+
+JANGAN melakukan audit project dari nol.
+
+Lakukan audit singkat terhadap:
+
+- hasil implementasi sebelumnya
+- file terkait
+- database terkait
+- security terkait
+
+Kemudian mulai dari:
+
+PHASE A — CMS HOMEPAGE
+
+Implementasikan dengan aman tanpa merusak fitur existing.
+
+Setelah PHASE A selesai:
+
+STOP.
+
+Tampilkan hasil testing dan perubahan.
+
+Jangan lanjut PHASE B sebelum PHASE A selesai dan stabil.

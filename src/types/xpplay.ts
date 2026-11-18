@@ -32,8 +32,15 @@ export type XpLedgerSource =
   | 'PROMO'
   | 'LEVEL_BONUS'
   | 'ADMIN_ADJUSTMENT'
+  | 'XP_REWARD_ADMIN_ADJUSTMENT'
   | 'REDEMPTION'
   | 'RESET';
+
+export type XpAdjustmentKind = 'PROGRESS' | 'REWARD';
+
+export type LevelMode = 'AUTOMATIC' | 'MANUAL_OVERRIDE' | 'RESET';
+
+export type LevelOverrideAction = 'MANUAL_OVERRIDE' | 'RECALCULATE';
 
 export interface BranchInfo {
   id: BranchId;
@@ -81,6 +88,7 @@ export interface MemberProfile {
   xpProgress: number;
   xpReward: number;
   currentLevel: LevelId;
+  levelMode?: LevelMode;
   currentCycleId: string;
   referredByUid: string | null;
   referredByUsername: string | null;
@@ -173,6 +181,54 @@ export interface LevelHistoryRecord {
   source: string;
   cycleId: string;
   createdAt: number;
+}
+
+export interface XpAdjustmentRecord {
+  id: string;
+  operationId: string;
+  kind: XpAdjustmentKind;
+  memberId: string;
+  memberUid: string;
+  memberUsername: string;
+  adjustment: number;
+  beforeBalance: number;
+  afterBalance: number;
+  beforeXpProgress: number;
+  afterXpProgress: number;
+  beforeXpReward: number;
+  afterXpReward: number;
+  levelBefore: LevelId;
+  levelAfter: LevelId;
+  reason: string;
+  reference: string;
+  auditId: string;
+  adminId: string;
+  adminEmail: string;
+  adminRole: AdminRole;
+  cycleId: string;
+  timestamp: number;
+}
+
+export interface LevelOverrideRecord {
+  id: string;
+  operationId: string;
+  action: LevelOverrideAction;
+  memberId: string;
+  memberUid: string;
+  memberUsername: string;
+  xpProgressSnapshot: number;
+  previousLevel: LevelId;
+  newLevel: LevelId;
+  previousLevelMode: LevelMode;
+  newLevelMode: 'AUTOMATIC' | 'MANUAL_OVERRIDE';
+  reason: string;
+  reference: string;
+  auditId: string;
+  adminId: string;
+  adminEmail: string;
+  adminRole: AdminRole;
+  cycleId: string;
+  timestamp: number;
 }
 
 export interface BenefitItem {
@@ -324,3 +380,411 @@ export interface AuditLogRecord {
   metadata: Record<string, unknown> | null;
   timestamp: number;
 }
+
+export interface CmsFaqItem {
+  id: string;
+  question: string;
+  answer: string;
+}
+
+export interface HomepageCmsContent {
+  brandName: string;
+  storeName: string;
+  logoUrl: string;
+  faviconUrl: string;
+  headerTagline: string;
+  headerCtaText: string;
+  heroTitle: string;
+  heroSubtitle: string;
+  heroDescription: string;
+  heroImageUrl: string;
+  bannerEnabled: boolean;
+  bannerTitle: string;
+  bannerText: string;
+  bannerImageUrl: string;
+  ctaPrimaryText: string;
+  ctaPrimaryUrl: string;
+  ctaSecondaryText: string;
+  ctaSecondaryUrl: string;
+  promoBannerEnabled: boolean;
+  promoBannerTitle: string;
+  promoBannerText: string;
+  promoBannerCtaText: string;
+  promoBannerCtaUrl: string;
+  announcementEnabled: boolean;
+  announcementText: string;
+  aboutTitle: string;
+  aboutDescription: string;
+  aboutImageUrl: string;
+  mechanicsTitle: string;
+  mechanicsSubtitle: string;
+  levelsSectionTitle: string;
+  levelsSectionSubtitle: string;
+  branchesSectionTitle: string;
+  faqEnabled: boolean;
+  faqTitle: string;
+  faqItems: CmsFaqItem[];
+  contactTitle: string;
+  contactDescription: string;
+  address: string;
+  whatsapp: string;
+  mapsUrl: string;
+  operatingHours: string;
+  instagramUrl: string;
+  tiktokUrl: string;
+  facebookUrl: string;
+  youtubeUrl: string;
+  footerText: string;
+  footerCopyright: string;
+}
+
+export interface CmsDraftDoc {
+  id: 'homepage';
+  content: HomepageCmsContent;
+  updatedAt: number;
+  updatedBy: string;
+  updatedByEmail: string;
+  basePublishedVersionId: string | null;
+}
+
+export interface CmsPublishedDoc {
+  id: 'homepage';
+  content: HomepageCmsContent;
+  versionId: string;
+  versionNumber: number;
+  publishedAt: number;
+  publishedBy: string;
+  publishedByEmail: string;
+  updatedAt: number;
+}
+
+export interface CmsVersionRecord {
+  versionId: string;
+  versionNumber: number;
+  content: HomepageCmsContent;
+  createdBy: string;
+  createdAt: number;
+  publishedBy: string;
+  publishedByEmail: string;
+  publishedAt: number;
+  sourceAction: 'PUBLISH' | 'ROLLBACK';
+  restoredFromVersionId: string | null;
+  note: string;
+}
+
+// ---------- PHASE D: Admin Password Management ----------
+export interface AdminPasswordChangeResult {
+  operationId: string;
+  auditId: string;
+  memberUid: string;
+  memberId: string;
+  memberUsername: string;
+  sessionsRevoked: boolean;
+  timestamp: number;
+}
+
+// ---------- PHASE E: Inactive Member Management ----------
+export type InactivePeriodPreset = 7 | 14 | 30 | 60 | 90 | 180 | 365 | 'CUSTOM';
+
+export interface InactiveMemberRow {
+  member: MemberProfile;
+  daysInactive: number;
+  baselineTimestamp: number;
+  neverPlayed: boolean;
+}
+
+// ---------- PHASES F, G, H, I, K: Backup, Verification, Restore, Lock, Integrity & Health ----------
+export type BackupJobStatus =
+  | 'REQUESTED'
+  | 'PREPARING'
+  | 'RUNNING'
+  | 'VERIFYING'
+  | 'COMPLETED'
+  | 'VERIFICATION_FAILED'
+  | 'FAILED'
+  | 'CANCELLED';
+
+export type BackupKind = 'MANUAL' | 'SCHEDULED' | 'PRE_RESTORE';
+
+export type BackupScopeType =
+  | 'FULL_SYSTEM_BACKUP'
+  | 'FIRESTORE_AND_STORAGE_BACKUP';
+
+export interface BackupCollectionSummary {
+  collection: string;
+  documentCount: number;
+  byteSize: number;
+  checksumSha256: string;
+}
+
+export interface StorageBackupFileEntry {
+  relativePath: string;
+  bucketGroup: 'claims' | 'cms';
+  byteSize: number;
+  checksumSha256: string;
+  modifiedAt: number;
+}
+
+export interface AuthUserMetadataEntry {
+  uid: string;
+  email: string | null;
+  displayName: string | null;
+  disabled: boolean;
+  emailVerified: boolean;
+  providers: string[];
+  roleHint: 'ADMIN' | 'MEMBER' | 'BOTH' | 'UNKNOWN';
+  createdAt: string | null;
+  lastSignInAt: string | null;
+}
+
+export interface BackupManifest {
+  backupId: string;
+  operationId: string;
+  kind: BackupKind;
+  scopeType: BackupScopeType;
+  scopeDescription: string;
+  authExportMode: 'FIREBASE_ADMIN_SDK' | 'FIRESTORE_DERIVED_METADATA_ONLY';
+  authLimitationNotice: string;
+  appVersion: string;
+  schemaVersion: string;
+  createdAt: number;
+  createdBy: string;
+  createdByEmail: string;
+  createdByRole: AdminRole;
+  projectId: string;
+  firestoreDatabaseId: string;
+  firestoreCollections: BackupCollectionSummary[];
+  totalDocuments: number;
+  authUserCount: number;
+  authChecksumSha256: string;
+  storageFiles: StorageBackupFileEntry[];
+  storageFileCount: number;
+  storageTotalBytes: number;
+  storageManifestChecksumSha256: string;
+  totalBackupBytes: number;
+  manifestChecksumSha256: string;
+}
+
+export interface BackupVerificationCheck {
+  code: string;
+  label: string;
+  passed: boolean;
+  detail: string;
+}
+
+export interface BackupVerificationResult {
+  backupId: string;
+  verifiedAt: number;
+  verifiedBy: string;
+  passed: boolean;
+  status: 'VERIFIED' | 'VERIFICATION_FAILED';
+  checks: BackupVerificationCheck[];
+}
+
+export interface SystemBackupRecord {
+  backupId: string;
+  operationId: string;
+  kind: BackupKind;
+  scopeType: BackupScopeType;
+  status: BackupJobStatus;
+  appVersion: string;
+  schemaVersion: string;
+  createdAt: number;
+  completedAt: number | null;
+  durationMs: number | null;
+  createdBy: string;
+  createdByEmail: string;
+  createdByRole: AdminRole;
+  note: string;
+  totalDocuments: number;
+  authUserCount: number;
+  storageFileCount: number;
+  totalBackupBytes: number;
+  storagePath: string;
+  manifestChecksumSha256: string;
+  verified: boolean;
+  verifiedAt: number | null;
+  verificationStatus: 'PENDING' | 'VERIFIED' | 'VERIFICATION_FAILED';
+  verificationSummary: string;
+  errorMessage: string | null;
+  protectedFromRetention: boolean;
+}
+
+export interface BackupRetentionConfig {
+  id: 'backupRetention';
+  dailyRetentionCount: number;
+  weeklyRetentionCount: number;
+  monthlyRetentionCount: number;
+  customMaxAgeDays: number;
+  alwaysKeepLatestSuccessful: boolean;
+  alwaysKeepLatestPreRestore: boolean;
+  updatedAt: number;
+  updatedBy: string;
+}
+
+export interface RestoreLockState {
+  id: 'restoreLock';
+  locked: boolean;
+  state: 'IDLE' | 'RESTORE_IN_PROGRESS';
+  restoreJobId: string | null;
+  backupId: string | null;
+  lockedBy: string | null;
+  lockedByEmail: string | null;
+  lockedAt: number | null;
+  updatedAt: number;
+  message: string;
+}
+
+export interface BackupLockState {
+  id: 'backupLock';
+  locked: boolean;
+  operationId: string | null;
+  backupId: string | null;
+  lockedBy: string | null;
+  lockedAt: number | null;
+  updatedAt: number;
+}
+
+export type RestoreJobStatus =
+  | 'VALIDATING'
+  | 'LOCKING'
+  | 'PRE_RESTORE_BACKUP'
+  | 'RESTORING_FIRESTORE'
+  | 'RESTORING_STORAGE'
+  | 'RESTORING_AUTH_METADATA'
+  | 'VERIFYING'
+  | 'COMPLETED'
+  | 'VERIFICATION_FAILED'
+  | 'FAILED'
+  | 'CANCELLED';
+
+export interface RestorePreviewCollectionDiff {
+  collection: string;
+  liveCount: number;
+  backupCount: number;
+  delta: number;
+  protectedFromOverwrite: boolean;
+}
+
+export interface RestorePreviewResult {
+  backupId: string;
+  compatible: boolean;
+  canProceed: boolean;
+  blockingReasons: string[];
+  warnings: string[];
+  backupCreatedAt: number;
+  backupScopeType: BackupScopeType;
+  backupAppVersion: string;
+  backupSchemaVersion: string;
+  currentAppVersion: string;
+  currentSchemaVersion: string;
+  collections: RestorePreviewCollectionDiff[];
+  liveStorageCount: number;
+  backupStorageCount: number;
+  backupAuthUserCount: number;
+  requiresConfirmationPhrase: string;
+}
+
+export interface RestoreStepLog {
+  step: string;
+  status: 'PENDING' | 'RUNNING' | 'DONE' | 'FAILED' | 'SKIPPED';
+  startedAt: number;
+  finishedAt: number | null;
+  detail: string;
+}
+
+export type IntegritySeverity = 'CRITICAL' | 'WARNING';
+
+export type IntegrityCheckCode =
+  | 'XP_PROGRESS_CONSISTENCY'
+  | 'XP_REWARD_CONSISTENCY'
+  | 'LEVEL_CONSISTENCY'
+  | 'NO_NEGATIVE_BALANCE'
+  | 'NO_DUPLICATE_USERNAME'
+  | 'NO_DUPLICATE_WHATSAPP'
+  | 'REFERRAL_INTEGRITY'
+  | 'NO_ORPHAN_CLAIMS'
+  | 'NO_ORPHAN_REDEMPTIONS'
+  | 'TRANSACTION_INTEGRITY'
+  | 'STORAGE_OBJECT_INTEGRITY'
+  | 'CMS_ASSET_INTEGRITY';
+
+export interface IntegrityCheckItem {
+  code: IntegrityCheckCode;
+  label: string;
+  passed: boolean;
+  severity: IntegritySeverity;
+  issueCount: number;
+  samples: string[];
+  summary: string;
+}
+
+export interface IntegrityAuditReport {
+  auditId: string;
+  checkedAt: number;
+  checkedBy: string;
+  passed: boolean;
+  totalChecks: number;
+  passedChecks: number;
+  criticalCount: number;
+  warningCount: number;
+  checks: IntegrityCheckItem[];
+}
+
+export interface RestoreJobRecord {
+  restoreJobId: string;
+  operationId: string;
+  targetBackupId: string;
+  preRestoreBackupId: string | null;
+  status: RestoreJobStatus;
+  requestedBy: string;
+  requestedByEmail: string;
+  requestedByRole: AdminRole;
+  reason: string;
+  startedAt: number;
+  completedAt: number | null;
+  durationMs: number | null;
+  steps: RestoreStepLog[];
+  restoredCollectionCounts: Record<string, number>;
+  expectedCollectionCounts: Record<string, number>;
+  restoredStorageCount: number;
+  expectedStorageCount: number;
+  authRestoreMode: 'METADATA_SYNCED' | 'SKIPPED_NO_ADMIN_SDK';
+  authRestoreNotice: string;
+  postRestoreVerificationPassed: boolean;
+  integrityReport: IntegrityAuditReport | null;
+  errorMessage: string | null;
+  recoveryRecommendation: string | null;
+}
+
+export type HealthStatusLevel = 'HEALTHY' | 'WARNING' | 'ERROR' | 'MAINTENANCE';
+
+export interface SystemHealthComponent {
+  key:
+    | 'DATABASE'
+    | 'AUTHENTICATION'
+    | 'STORAGE'
+    | 'XP_ENGINE'
+    | 'CMS_CONFIG'
+    | 'BACKUP_SERVICE'
+    | 'RESTORE_LOCK'
+    | 'LAST_BACKUP'
+    | 'LAST_VERIFICATION';
+  label: string;
+  status: HealthStatusLevel;
+  summary: string;
+  detail: string;
+}
+
+export interface SystemHealthReport {
+  checkedAt: number;
+  overallStatus: HealthStatusLevel;
+  adminSdkConfigured: boolean;
+  restoreLocked: boolean;
+  backupLocked: boolean;
+  appVersion: string;
+  schemaVersion: string;
+  components: SystemHealthComponent[];
+}
+
+

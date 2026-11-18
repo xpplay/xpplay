@@ -13,27 +13,40 @@ import {
 import {
   requireAdminRole,
   requireAuth,
+  requireSystemNotLocked,
   type AuthenticatedRequest,
 } from '../middleware/authMiddleware.ts';
+import { backupRestoreEngine } from '../services/backupRestoreService.ts';
 import {
   createCaptchaChallenge,
   isRecaptchaConfigured,
   verifyCaptchaResponse,
 } from '../services/captchaService.ts';
 import {
+  adjustMemberXpServer,
+  changeMemberPasswordServer,
   executeCycleResetServer,
   loginMemberServer,
+  overrideMemberLevelServer,
   recordTransactionXpServer,
   registerMemberServer,
   reviewClaimServer,
   reviewRedemptionServer,
 } from '../services/xpEngineServer.ts';
-import type { BranchId } from '../../types/xpplay.ts';
+import type {
+  BackupKind,
+  BranchId,
+  LevelId,
+  LevelOverrideAction,
+  XpAdjustmentKind,
+} from '../../types/xpplay.ts';
 
 export const apiRouter = express.Router();
 
 const UPLOAD_ROOT = path.resolve(process.cwd(), '.uploads', 'claims');
+const CMS_UPLOAD_ROOT = path.resolve(process.cwd(), '.uploads', 'cms');
 fs.mkdirSync(UPLOAD_ROOT, { recursive: true });
+fs.mkdirSync(CMS_UPLOAD_ROOT, { recursive: true });
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -81,8 +94,15 @@ apiRouter.get('/health', (_req, res) => {
     ok: true,
     adminSdkConfigured: isAdminSdkAvailable(),
     recaptchaConfigured: isRecaptchaConfigured(),
+    restoreLocked: backupRestoreEngine.isRestoreLockActiveSync(),
     timezone: 'Asia/Jakarta',
   });
+});
+
+// Lightweight Maintenance / Restore Lock status for Portal Member & Admin
+apiRouter.get('/system/maintenance', async (_req, res) => {
+  const lock = await backupRestoreEngine.getRestoreLockState();
+  res.json(lock);
 });
 
 // Server-side CAPTCHA endpoints
@@ -211,6 +231,7 @@ apiRouter.post('/auth/login', authLimiter, async (req, res) => {
 apiRouter.post(
   '/claims/evidence',
   requireAuth,
+  requireSystemNotLocked(),
   upload.single('evidence'),
   (req: AuthenticatedRequest, res) => {
     try {
@@ -314,11 +335,72 @@ apiRouter.get(
   }
 );
 
-// Server-authoritative Admin APIs (active when Admin SDK is configured)
+// Admin-only CMS Homepage Image Upload (JPG/PNG/WEBP magic bytes, max 5 MB)
+apiRouter.post(
+  '/admin/cms/assets',
+  requireAuth,
+  requireAdminRole(['SUPER_ADMIN', 'ADMIN']),
+  requireSystemNotLocked(),
+  upload.single('asset'),
+  (req: AuthenticatedRequest, res) => {
+    try {
+      const file = req.file;
+      if (!file) {
+        res.status(400).json({ error: 'File gambar CMS wajib dilampirkan.' });
+        return;
+      }
+
+      const magic = hasValidImageMagicBytes(file.buffer);
+      if (!magic.valid) {
+        res.status(400).json({
+          error: 'Format gambar CMS tidak didukung. Gunakan JPG, PNG, atau WEBP (maks. 5 MB). SVG dilarang demi keamanan XSS.',
+        });
+        return;
+      }
+
+      const fileName = `cms_${Date.now()}_${crypto.randomBytes(6).toString('hex')}.${magic.ext}`;
+      const filePath = path.join(CMS_UPLOAD_ROOT, fileName);
+      fs.writeFileSync(filePath, file.buffer);
+
+      res.status(201).json({
+        assetPath: `cms/${fileName}`,
+        assetUrl: `/api/cms/assets/${fileName}`,
+        mimeType: magic.mime,
+        size: file.size,
+      });
+    } catch {
+      res.status(500).json({ error: 'Gagal mengunggah aset CMS. Silakan coba lagi.' });
+    }
+  }
+);
+
+// Public read for published CMS assets with strict filename validation & nosniff
+apiRouter.get('/cms/assets/:fileName', (req, res) => {
+  try {
+    const fileName = path.basename(String(req.params.fileName || ''));
+    if (!/^cms_[0-9]+_[a-f0-9]+\.(jpg|png|webp)$/.test(fileName)) {
+      res.status(400).json({ error: 'Nama aset tidak valid.' });
+      return;
+    }
+    const fullPath = path.join(CMS_UPLOAD_ROOT, fileName);
+    if (!fs.existsSync(fullPath)) {
+      res.status(404).json({ error: 'Aset CMS tidak ditemukan.' });
+      return;
+    }
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.sendFile(fullPath);
+  } catch {
+    res.status(500).json({ error: 'Gagal memuat aset CMS.' });
+  }
+});
+
+// Server-authoritative Admin APIs (guarded by Restore Lock when active)
 apiRouter.post(
   '/admin/transactions',
   requireAuth,
   requireAdminRole(['SUPER_ADMIN', 'ADMIN', 'STAFF']),
+  requireSystemNotLocked(),
   async (req: AuthenticatedRequest, res) => {
     try {
       const { identifier, amountIdr, branch, receiptNumber, note } = req.body as {
@@ -353,6 +435,7 @@ apiRouter.post(
   '/admin/claims/:claimId/review',
   requireAuth,
   requireAdminRole(['SUPER_ADMIN', 'ADMIN', 'STAFF']),
+  requireSystemNotLocked(),
   async (req: AuthenticatedRequest, res) => {
     try {
       const { decision, reason } = req.body as {
@@ -381,6 +464,7 @@ apiRouter.post(
   '/admin/redemptions/:redemptionId/review',
   requireAuth,
   requireAdminRole(['SUPER_ADMIN', 'ADMIN', 'STAFF']),
+  requireSystemNotLocked(),
   async (req: AuthenticatedRequest, res) => {
     try {
       const { decision, reason } = req.body as {
@@ -409,6 +493,7 @@ apiRouter.post(
   '/admin/reset-cycle/execute',
   requireAuth,
   requireAdminRole(['SUPER_ADMIN']),
+  requireSystemNotLocked(),
   async (req: AuthenticatedRequest, res) => {
     try {
       const { nextCycleId, nextCycleName, resetReason } = req.body as {
@@ -426,6 +511,402 @@ apiRouter.post(
       res.json(result);
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : 'Gagal menjalankan reset cycle.' });
+    }
+  }
+);
+
+apiRouter.post(
+  '/admin/xp-adjustments',
+  requireAuth,
+  requireAdminRole(['SUPER_ADMIN', 'ADMIN']),
+  requireSystemNotLocked(),
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const { operationId, kind, identifier, memberUid, adjustment, reason, reference } = req.body as {
+        operationId?: string;
+        kind?: XpAdjustmentKind;
+        identifier?: string;
+        memberUid?: string;
+        adjustment?: number;
+        reason?: string;
+        reference?: string;
+      };
+      if (kind !== 'PROGRESS' && kind !== 'REWARD') {
+        res.status(400).json({ error: 'Jenis adjustment harus PROGRESS atau REWARD.' });
+        return;
+      }
+      const result = await adjustMemberXpServer({
+        operationId: operationId || '',
+        kind,
+        identifier,
+        memberUid,
+        adjustment: Number(adjustment),
+        reason: reason || '',
+        reference,
+        adminUid: req.authUser!.uid,
+        adminEmail: req.authUser!.email || req.authUser!.uid,
+        adminRole: req.adminRole!,
+      });
+      res.status(201).json(result);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Gagal memproses penyesuaian XP.' });
+    }
+  }
+);
+
+apiRouter.post(
+  '/admin/level-overrides',
+  requireAuth,
+  requireAdminRole(['SUPER_ADMIN', 'ADMIN']),
+  requireSystemNotLocked(),
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const { operationId, action, identifier, memberUid, targetLevel, reason, reference } = req.body as {
+        operationId?: string;
+        action?: LevelOverrideAction;
+        identifier?: string;
+        memberUid?: string;
+        targetLevel?: LevelId;
+        reason?: string;
+        reference?: string;
+      };
+      if (action !== 'MANUAL_OVERRIDE' && action !== 'RECALCULATE') {
+        res.status(400).json({ error: 'Aksi harus MANUAL_OVERRIDE atau RECALCULATE.' });
+        return;
+      }
+      const result = await overrideMemberLevelServer({
+        operationId: operationId || '',
+        action,
+        identifier,
+        memberUid,
+        targetLevel,
+        reason: reason || '',
+        reference,
+        adminUid: req.authUser!.uid,
+        adminEmail: req.authUser!.email || req.authUser!.uid,
+        adminRole: req.adminRole!,
+      });
+      res.status(201).json(result);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Gagal memproses level override.' });
+    }
+  }
+);
+
+// ---------- PHASE D: Admin Password Management (MODULE 5) ----------
+apiRouter.post(
+  '/admin/members/:memberUid/password',
+  requireAuth,
+  requireAdminRole(['SUPER_ADMIN', 'ADMIN']),
+  requireSystemNotLocked(),
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const { operationId, newPassword, confirmPassword, reason, reference, revokeSessions } = req.body as {
+        operationId?: string;
+        newPassword?: string;
+        confirmPassword?: string;
+        reason?: string;
+        reference?: string;
+        revokeSessions?: boolean;
+      };
+      const result = await changeMemberPasswordServer({
+        operationId: operationId || `pwd_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+        memberUid: String(req.params.memberUid || ''),
+        newPassword: newPassword || '',
+        confirmPassword: confirmPassword || '',
+        reason: reason || '',
+        reference,
+        revokeSessions,
+        adminUid: req.authUser!.uid,
+        adminEmail: req.authUser!.email || req.authUser!.uid,
+        adminRole: req.adminRole!,
+      });
+      res.json(result);
+    } catch (err) {
+      const typed = err as Error & { statusCode?: number; code?: string };
+      res.status(typed.statusCode || 400).json({
+        code: typed.code || 'PASSWORD_CHANGE_FAILED',
+        error: typed.message || 'Gagal mengubah password member.',
+      });
+    }
+  }
+);
+
+// ---------- PHASES F, G, H, I, K: System Health, Integrity Audit, Backup, Verification & Restore ----------
+function extractBearer(req: AuthenticatedRequest): string | undefined {
+  const raw = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+  return raw || undefined;
+}
+
+apiRouter.get(
+  '/admin/system-health',
+  requireAuth,
+  requireAdminRole(['SUPER_ADMIN', 'ADMIN']),
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const report = await backupRestoreEngine.getSystemHealth(extractBearer(req));
+      res.json(report);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Gagal memeriksa kesehatan sistem.' });
+    }
+  }
+);
+
+apiRouter.post(
+  '/admin/integrity-audit',
+  requireAuth,
+  requireAdminRole(['SUPER_ADMIN', 'ADMIN']),
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const report = await backupRestoreEngine.runLiveIntegrityAudit({
+        actorUid: req.authUser!.uid,
+        actorRole: req.adminRole!,
+        bearerToken: extractBearer(req),
+        writeAudit: true,
+      });
+      res.json(report);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Gagal menjalankan 12-point integrity audit.' });
+    }
+  }
+);
+
+apiRouter.get(
+  '/admin/backups',
+  requireAuth,
+  requireAdminRole(['SUPER_ADMIN']),
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const backups = await backupRestoreEngine.listSystemBackups(extractBearer(req));
+      res.json({ backups });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Gagal memuat daftar backup.' });
+    }
+  }
+);
+
+apiRouter.post(
+  '/admin/backups',
+  requireAuth,
+  requireAdminRole(['SUPER_ADMIN']),
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const { kind, note } = req.body as { kind?: BackupKind; note?: string };
+      const safeKind: BackupKind =
+        kind === 'SCHEDULED' || kind === 'PRE_RESTORE' ? kind : 'MANUAL';
+      const result = await backupRestoreEngine.createSystemBackup({
+        kind: safeKind,
+        note: note || '',
+        actorUid: req.authUser!.uid,
+        actorEmail: req.authUser!.email || req.authUser!.uid,
+        actorRole: req.adminRole!,
+        bearerToken: extractBearer(req),
+      });
+      res.status(201).json(result);
+    } catch (err) {
+      const typed = err as Error & { statusCode?: number; code?: string };
+      res.status(typed.statusCode || 500).json({
+        code: typed.code || 'BACKUP_FAILED',
+        error: typed.message || 'Gagal menjalankan backup sistem.',
+      });
+    }
+  }
+);
+
+apiRouter.get(
+  '/admin/backups/:backupId',
+  requireAuth,
+  requireAdminRole(['SUPER_ADMIN']),
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const backupId = String(req.params.backupId || '');
+      const manifest = backupRestoreEngine.readBackupManifestFromDisk(backupId);
+      if (!manifest) {
+        res.status(404).json({ error: 'Manifest backup tidak ditemukan di server.' });
+        return;
+      }
+      res.json({ manifest });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Gagal membaca manifest backup.' });
+    }
+  }
+);
+
+apiRouter.post(
+  '/admin/backups/:backupId/verify',
+  requireAuth,
+  requireAdminRole(['SUPER_ADMIN']),
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const result = await backupRestoreEngine.verifySystemBackup({
+        backupId: String(req.params.backupId || ''),
+        actorUid: req.authUser!.uid,
+        actorRole: req.adminRole!,
+        bearerToken: extractBearer(req),
+      });
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Gagal memverifikasi backup.' });
+    }
+  }
+);
+
+apiRouter.delete(
+  '/admin/backups/:backupId',
+  requireAuth,
+  requireAdminRole(['SUPER_ADMIN']),
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      await backupRestoreEngine.deleteSystemBackup({
+        backupId: String(req.params.backupId || ''),
+        actorUid: req.authUser!.uid,
+        actorRole: req.adminRole!,
+        bearerToken: extractBearer(req),
+      });
+      res.json({ deleted: true });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Gagal menghapus backup.' });
+    }
+  }
+);
+
+apiRouter.get(
+  '/admin/backup-retention',
+  requireAuth,
+  requireAdminRole(['SUPER_ADMIN']),
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const config = await backupRestoreEngine.getBackupRetention(extractBearer(req));
+      res.json(config);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Gagal memuat konfigurasi retensi.' });
+    }
+  }
+);
+
+apiRouter.put(
+  '/admin/backup-retention',
+  requireAuth,
+  requireAdminRole(['SUPER_ADMIN']),
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const body = req.body as {
+        dailyRetentionCount?: number;
+        weeklyRetentionCount?: number;
+        monthlyRetentionCount?: number;
+        customMaxAgeDays?: number;
+        alwaysKeepLatestSuccessful?: boolean;
+        alwaysKeepLatestPreRestore?: boolean;
+      };
+      const config = await backupRestoreEngine.saveBackupRetention({
+        dailyRetentionCount: Number(body.dailyRetentionCount ?? 7),
+        weeklyRetentionCount: Number(body.weeklyRetentionCount ?? 4),
+        monthlyRetentionCount: Number(body.monthlyRetentionCount ?? 3),
+        customMaxAgeDays: Number(body.customMaxAgeDays ?? 90),
+        alwaysKeepLatestSuccessful: body.alwaysKeepLatestSuccessful !== false,
+        alwaysKeepLatestPreRestore: body.alwaysKeepLatestPreRestore !== false,
+        actorUid: req.authUser!.uid,
+        actorRole: req.adminRole!,
+        bearerToken: extractBearer(req),
+      });
+      res.json(config);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Gagal menyimpan kebijakan retensi.' });
+    }
+  }
+);
+
+apiRouter.get(
+  '/admin/restores',
+  requireAuth,
+  requireAdminRole(['SUPER_ADMIN']),
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const jobs = await backupRestoreEngine.listRestoreJobs(extractBearer(req));
+      const lock = await backupRestoreEngine.getRestoreLockState(extractBearer(req));
+      res.json({ jobs, lock });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Gagal memuat riwayat restore.' });
+    }
+  }
+);
+
+apiRouter.post(
+  '/admin/restores/preview',
+  requireAuth,
+  requireAdminRole(['SUPER_ADMIN']),
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const { backupId } = req.body as { backupId?: string };
+      if (!backupId) {
+        res.status(400).json({ error: 'backupId wajib dipilih.' });
+        return;
+      }
+      const preview = await backupRestoreEngine.previewRestore({
+        backupId,
+        actorUid: req.authUser!.uid,
+        actorRole: req.adminRole!,
+        bearerToken: extractBearer(req),
+      });
+      res.json(preview);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Gagal menyiapkan preview restore.' });
+    }
+  }
+);
+
+apiRouter.post(
+  '/admin/restores/execute',
+  requireAuth,
+  requireAdminRole(['SUPER_ADMIN']),
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const { backupId, confirmationPhrase, reason } = req.body as {
+        backupId?: string;
+        confirmationPhrase?: string;
+        reason?: string;
+      };
+      if (!backupId) {
+        res.status(400).json({ error: 'backupId wajib dipilih.' });
+        return;
+      }
+      const job = await backupRestoreEngine.executeRestore({
+        backupId,
+        confirmationPhrase: confirmationPhrase || '',
+        reason: reason || '',
+        actorUid: req.authUser!.uid,
+        actorEmail: req.authUser!.email || req.authUser!.uid,
+        actorRole: req.adminRole!,
+        bearerToken: extractBearer(req),
+      });
+      const statusCode = job.status === 'COMPLETED' ? 200 : 422;
+      res.status(statusCode).json(job);
+    } catch (err) {
+      const typed = err as Error & { statusCode?: number; code?: string };
+      res.status(typed.statusCode || 400).json({
+        code: typed.code || 'RESTORE_FAILED',
+        error: typed.message || 'Gagal menjalankan proses restore.',
+      });
+    }
+  }
+);
+
+apiRouter.post(
+  '/admin/restores/force-unlock',
+  requireAuth,
+  requireAdminRole(['SUPER_ADMIN']),
+  async (req: AuthenticatedRequest, res) => {
+    try {
+      const { reason } = req.body as { reason?: string };
+      const lock = await backupRestoreEngine.forceReleaseRestoreLock({
+        reason: reason || '',
+        actorUid: req.authUser!.uid,
+        actorRole: req.adminRole!,
+        bearerToken: extractBearer(req),
+      });
+      res.json(lock);
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : 'Gagal melepas Restore Lock.' });
     }
   }
 );

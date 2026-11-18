@@ -19,6 +19,10 @@ import {
 import { auth, db } from '../lib/firebase.ts';
 import { handleFirestoreError, OperationType } from '../lib/firestoreError.ts';
 import {
+  DEFAULT_HOMEPAGE_CMS,
+  sanitizeHomepageCmsContent,
+} from '../shared/cmsSanitizer.ts';
+import {
   DEFAULT_BRANCHES,
   DEFAULT_LEVELS,
   DEFAULT_SYSTEM_SETTINGS,
@@ -26,8 +30,11 @@ import {
 import type {
   AdminUser,
   BranchInfo,
+  CmsPublishedDoc,
+  HomepageCmsContent,
   LevelConfig,
   MemberProfile,
+  RestoreLockState,
   SystemSettings,
 } from '../types/xpplay.ts';
 
@@ -38,6 +45,12 @@ interface ServerCapabilities {
   recaptchaConfigured: boolean;
 }
 
+interface CmsPublishedMeta {
+  versionId: string;
+  versionNumber: number;
+  publishedAt: number;
+}
+
 interface AuthContextValue {
   firebaseUser: User | null;
   memberProfile: MemberProfile | null;
@@ -45,6 +58,9 @@ interface AuthContextValue {
   levels: LevelConfig[];
   branches: BranchInfo[];
   systemSettings: SystemSettings;
+  publishedHomepage: HomepageCmsContent;
+  publishedCmsMeta: CmsPublishedMeta | null;
+  restoreLock: RestoreLockState | null;
   capabilities: ServerCapabilities;
   loading: boolean;
   signInWithEmail: (email: string, password: string) => Promise<void>;
@@ -55,6 +71,7 @@ interface AuthContextValue {
   signInWithServerToken: (customToken: string) => Promise<void>;
   logout: () => Promise<void>;
   refreshProfiles: () => Promise<void>;
+  refreshPublishedCms: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -66,6 +83,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [levels, setLevels] = useState<LevelConfig[]>(DEFAULT_LEVELS);
   const [branches, setBranches] = useState<BranchInfo[]>(DEFAULT_BRANCHES);
   const [systemSettings, setSystemSettings] = useState<SystemSettings>(DEFAULT_SYSTEM_SETTINGS);
+  const [publishedHomepage, setPublishedHomepage] = useState<HomepageCmsContent>(
+    DEFAULT_HOMEPAGE_CMS
+  );
+  const [publishedCmsMeta, setPublishedCmsMeta] = useState<CmsPublishedMeta | null>(null);
+  const [restoreLock, setRestoreLock] = useState<RestoreLockState | null>(null);
   const [capabilities, setCapabilities] = useState<ServerCapabilities>({
     adminSdkConfigured: false,
     recaptchaConfigured: false,
@@ -83,12 +105,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         });
       })
       .catch(() => {});
+
+    fetch('/api/system/maintenance')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((lock: RestoreLockState | null) => {
+        if (lock && typeof lock.locked === 'boolean') {
+          setRestoreLock(lock);
+        }
+      })
+      .catch(() => {});
   }, []);
 
-  // Public level & branch config listeners
-  useEffect(() => {
+  const [, setAuthRevision] = useState(0);
+
+  const loadPublicConfigs = async () => {
     const levelIds = ['BRONZE', 'SILVER', 'JURAGAN', 'SULTAN'] as const;
-    Promise.all(
+    const levelRes = await Promise.all(
       levelIds.map(async (id) => {
         try {
           const snap = await getDoc(doc(db, 'levels', id));
@@ -97,15 +129,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return null;
         }
       })
-    ).then((res) => {
-      const valid = res.filter((x): x is LevelConfig => x !== null);
-      if (valid.length === 4) {
-        setLevels(valid.sort((a, b) => a.rank - b.rank));
-      }
-    });
+    );
+    const validLevels = levelRes.filter((x): x is LevelConfig => x !== null);
+    if (validLevels.length === 4) {
+      setLevels(validLevels.sort((a, b) => a.rank - b.rank));
+    }
 
     const branchIds = ['DEMANG', 'SEKIP'] as const;
-    Promise.all(
+    const branchRes = await Promise.all(
       branchIds.map(async (id) => {
         try {
           const snap = await getDoc(doc(db, 'branches', id));
@@ -114,12 +145,54 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return null;
         }
       })
-    ).then((res) => {
-      const valid = res.filter((x): x is BranchInfo => x !== null);
-      if (valid.length > 0) {
-        setBranches(valid);
+    );
+    const validBranches = branchRes.filter((x): x is BranchInfo => x !== null);
+    if (validBranches.length > 0) {
+      setBranches(validBranches);
+    }
+  };
+
+  const refreshPublishedCms = async () => {
+    try {
+      const snap = await getDoc(doc(db, 'cmsPublished', 'homepage'));
+      if (snap.exists()) {
+        const data = snap.data() as CmsPublishedDoc;
+        setPublishedHomepage(sanitizeHomepageCmsContent(data.content));
+        setPublishedCmsMeta({
+          versionId: data.versionId,
+          versionNumber: data.versionNumber,
+          publishedAt: data.publishedAt,
+        });
       }
-    });
+    } catch {
+      // keep safe default fallback
+    }
+  };
+
+  // Public level, branch, and published CMS homepage listeners
+  useEffect(() => {
+    void loadPublicConfigs();
+    const unsubCms = onSnapshot(
+      doc(db, 'cmsPublished', 'homepage'),
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data() as CmsPublishedDoc;
+          setPublishedHomepage(sanitizeHomepageCmsContent(data.content));
+          setPublishedCmsMeta({
+            versionId: data.versionId,
+            versionNumber: data.versionNumber,
+            publishedAt: data.publishedAt,
+          });
+        } else {
+          setPublishedHomepage(DEFAULT_HOMEPAGE_CMS);
+          setPublishedCmsMeta(null);
+        }
+      },
+      () => {
+        // Fallback to defaults silently if offline or unreachable
+      }
+    );
+    return () => unsubCms();
   }, []);
 
   const loadUserProfiles = async (user: User) => {
@@ -165,11 +238,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             resolvedAdmin = newAdmin;
           }
         } catch (err) {
-          if (!isBootstrapAdmin) {
-            const msg = err instanceof Error ? err.message : '';
-            if (!msg.includes('permission-denied') && !msg.includes('insufficient permissions')) {
-              console.warn('Admin check warning:', msg);
-            }
+          const msg = err instanceof Error ? err.message : '';
+          if (isBootstrapAdmin) {
+            console.error('Bootstrap admin initialization failed:', msg);
+          } else if (!msg.includes('permission-denied') && !msg.includes('insufficient permissions')) {
+            console.warn('Admin check warning:', msg);
           }
         }
       }
@@ -248,9 +321,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       () => {}
     );
 
+    const unsubRestoreLock = onSnapshot(
+      doc(db, 'systemOperations', 'restoreLock'),
+      (snap) => {
+        if (snap.exists()) {
+          setRestoreLock(snap.data() as RestoreLockState);
+        } else {
+          setRestoreLock(null);
+        }
+      },
+      () => {}
+    );
+
     return () => {
       unsubMember();
       unsubSettings();
+      unsubRestoreLock();
     };
   }, [firebaseUser, profilesLoaded]);
 
@@ -278,6 +364,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await auth.currentUser.reload();
     await auth.currentUser.getIdToken(true);
     setFirebaseUser(auth.currentUser);
+    setAuthRevision((v) => v + 1);
     await loadUserProfiles(auth.currentUser);
   };
 
@@ -296,6 +383,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const refreshProfiles = async () => {
+    await loadPublicConfigs();
     if (auth.currentUser) {
       await loadUserProfiles(auth.currentUser);
     }
@@ -310,6 +398,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         levels,
         branches,
         systemSettings,
+        publishedHomepage,
+        publishedCmsMeta,
+        restoreLock,
         capabilities,
         loading,
         signInWithEmail,
@@ -320,6 +411,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         signInWithServerToken,
         logout,
         refreshProfiles,
+        refreshPublishedCms,
       }}
     >
       {children}

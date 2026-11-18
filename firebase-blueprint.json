@@ -95,6 +95,7 @@
         "xpProgress": { "type": "integer" },
         "xpReward": { "type": "integer" },
         "currentLevel": { "type": "string", "enum": ["BRONZE", "SILVER", "JURAGAN", "SULTAN"] },
+        "levelMode": { "type": "string", "enum": ["AUTOMATIC", "MANUAL_OVERRIDE", "RESET"] },
         "currentCycleId": { "type": "string", "minLength": 2, "maxLength": 64 },
         "referredByUid": { "type": "string", "maxLength": 128 },
         "referredByUsername": { "type": "string", "maxLength": 24 },
@@ -148,7 +149,7 @@
     },
     "XpLedgerEntry": {
       "title": "XpLedgerEntry",
-      "description": "Buku besar immutable XP Progress atau XP Reward",
+      "description": "Buku besar immutable XP Progress atau XP Reward (termasuk ADMIN_ADJUSTMENT dan XP_REWARD_ADMIN_ADJUSTMENT)",
       "type": "object",
       "properties": {
         "id": { "type": "string", "minLength": 1, "maxLength": 128 },
@@ -157,7 +158,22 @@
         "amount": { "type": "integer" },
         "type": { "type": "string", "enum": ["PROGRESS", "REWARD"] },
         "direction": { "type": "string", "enum": ["CREDIT", "DEBIT"] },
-        "source": { "type": "string" },
+        "source": {
+          "type": "string",
+          "enum": [
+            "REGISTRATION",
+            "REFERRAL",
+            "TRANSACTION",
+            "CHALLENGE",
+            "EVENT",
+            "PROMO",
+            "LEVEL_BONUS",
+            "ADMIN_ADJUSTMENT",
+            "XP_REWARD_ADMIN_ADJUSTMENT",
+            "REDEMPTION",
+            "RESET"
+          ]
+        },
         "referenceId": { "type": "string", "maxLength": 128 },
         "cycleId": { "type": "string", "minLength": 2, "maxLength": 64 },
         "createdAt": { "type": "integer" },
@@ -165,6 +181,108 @@
         "note": { "type": "string", "maxLength": 300 }
       },
       "required": ["id", "memberId", "memberUid", "amount", "type", "direction", "source", "referenceId", "cycleId", "createdAt", "createdBy", "note"]
+    },
+    "XpAdjustmentRecord": {
+      "title": "XpAdjustmentRecord",
+      "description": "Catatan immutable penyesuaian XP Progress / XP Reward oleh Admin (idempoten berdasarkan operationId)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 6, "maxLength": 128 },
+        "operationId": { "type": "string", "minLength": 6, "maxLength": 80 },
+        "kind": { "type": "string", "enum": ["PROGRESS", "REWARD"] },
+        "memberId": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "memberUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberUsername": { "type": "string", "minLength": 3, "maxLength": 24 },
+        "adjustment": { "type": "integer" },
+        "beforeBalance": { "type": "integer" },
+        "afterBalance": { "type": "integer" },
+        "beforeXpProgress": { "type": "integer" },
+        "afterXpProgress": { "type": "integer" },
+        "beforeXpReward": { "type": "integer" },
+        "afterXpReward": { "type": "integer" },
+        "levelBefore": { "type": "string", "enum": ["BRONZE", "SILVER", "JURAGAN", "SULTAN"] },
+        "levelAfter": { "type": "string", "enum": ["BRONZE", "SILVER", "JURAGAN", "SULTAN"] },
+        "reason": { "type": "string", "minLength": 3, "maxLength": 300 },
+        "reference": { "type": "string", "maxLength": 120 },
+        "auditId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "adminId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "adminEmail": { "type": "string", "maxLength": 160 },
+        "adminRole": { "type": "string", "enum": ["SUPER_ADMIN", "ADMIN"] },
+        "cycleId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "timestamp": { "type": "integer" }
+      },
+      "required": [
+        "id",
+        "operationId",
+        "kind",
+        "memberId",
+        "memberUid",
+        "memberUsername",
+        "adjustment",
+        "beforeBalance",
+        "afterBalance",
+        "beforeXpProgress",
+        "afterXpProgress",
+        "beforeXpReward",
+        "afterXpReward",
+        "levelBefore",
+        "levelAfter",
+        "reason",
+        "reference",
+        "auditId",
+        "adminId",
+        "adminEmail",
+        "adminRole",
+        "cycleId",
+        "timestamp"
+      ]
+    },
+    "LevelOverrideRecord": {
+      "title": "LevelOverrideRecord",
+      "description": "Catatan immutable perubahan level manual (MANUAL_OVERRIDE) atau rekalkulasi otomatis (RECALCULATE) oleh Admin",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 6, "maxLength": 128 },
+        "operationId": { "type": "string", "minLength": 6, "maxLength": 80 },
+        "action": { "type": "string", "enum": ["MANUAL_OVERRIDE", "RECALCULATE"] },
+        "memberId": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "memberUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberUsername": { "type": "string", "minLength": 3, "maxLength": 24 },
+        "xpProgressSnapshot": { "type": "integer" },
+        "previousLevel": { "type": "string", "enum": ["BRONZE", "SILVER", "JURAGAN", "SULTAN"] },
+        "newLevel": { "type": "string", "enum": ["BRONZE", "SILVER", "JURAGAN", "SULTAN"] },
+        "previousLevelMode": { "type": "string", "enum": ["AUTOMATIC", "MANUAL_OVERRIDE", "RESET"] },
+        "newLevelMode": { "type": "string", "enum": ["AUTOMATIC", "MANUAL_OVERRIDE", "RESET"] },
+        "reason": { "type": "string", "minLength": 3, "maxLength": 300 },
+        "reference": { "type": "string", "maxLength": 120 },
+        "auditId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "adminId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "adminEmail": { "type": "string", "maxLength": 160 },
+        "adminRole": { "type": "string", "enum": ["SUPER_ADMIN", "ADMIN"] },
+        "cycleId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "timestamp": { "type": "integer" }
+      },
+      "required": [
+        "id",
+        "operationId",
+        "action",
+        "memberId",
+        "memberUid",
+        "memberUsername",
+        "xpProgressSnapshot",
+        "previousLevel",
+        "newLevel",
+        "previousLevelMode",
+        "newLevelMode",
+        "reason",
+        "reference",
+        "auditId",
+        "adminId",
+        "adminEmail",
+        "adminRole",
+        "cycleId",
+        "timestamp"
+      ]
     },
     "TransactionRecord": {
       "title": "TransactionRecord",
@@ -400,6 +518,138 @@
         "timestamp": { "type": "integer" }
       },
       "required": ["id", "actorId", "actorRole", "action", "targetType", "targetId", "timestamp"]
+    },
+    "CmsPublished": {
+      "title": "CmsPublished",
+      "description": "Konten homepage versi published yang dibaca publik dan member",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "enum": ["homepage"] },
+        "content": { "type": "object" },
+        "versionId": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "versionNumber": { "type": "integer" },
+        "publishedAt": { "type": "integer" },
+        "publishedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "publishedByEmail": { "type": "string", "maxLength": 160 },
+        "updatedAt": { "type": "integer" }
+      },
+      "required": ["id", "content", "versionId", "versionNumber", "publishedAt", "publishedBy", "publishedByEmail", "updatedAt"]
+    },
+    "CmsDraft": {
+      "title": "CmsDraft",
+      "description": "Draft konten homepage milik admin sebelum di-publish",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "enum": ["homepage"] },
+        "content": { "type": "object" },
+        "updatedAt": { "type": "integer" },
+        "updatedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "updatedByEmail": { "type": "string", "maxLength": 160 },
+        "basePublishedVersionId": { "type": "string", "maxLength": 40 }
+      },
+      "required": ["id", "content", "updatedAt", "updatedBy", "updatedByEmail"]
+    },
+    "CmsVersion": {
+      "title": "CmsVersion",
+      "description": "Riwayat versi immutable setiap publish atau rollback CMS homepage",
+      "type": "object",
+      "properties": {
+        "versionId": { "type": "string", "minLength": 2, "maxLength": 40 },
+        "versionNumber": { "type": "integer" },
+        "content": { "type": "object" },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "integer" },
+        "publishedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "publishedByEmail": { "type": "string", "maxLength": 160 },
+        "publishedAt": { "type": "integer" },
+        "sourceAction": { "type": "string", "enum": ["PUBLISH", "ROLLBACK"] },
+        "restoredFromVersionId": { "type": "string", "maxLength": 40 },
+        "note": { "type": "string", "maxLength": 240 }
+      },
+      "required": ["versionId", "versionNumber", "content", "createdBy", "createdAt", "publishedBy", "publishedByEmail", "publishedAt", "sourceAction", "note"]
+    },
+    "SystemBackupRecord": {
+      "title": "SystemBackupRecord",
+      "description": "Metadata snapshot backup terisolasi beserta status lifecycle dan hasil verifikasi SHA-256 (khusus SUPER_ADMIN)",
+      "type": "object",
+      "properties": {
+        "backupId": { "type": "string", "minLength": 4, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "operationId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "kind": { "type": "string", "enum": ["MANUAL", "SCHEDULED", "PRE_RESTORE"] },
+        "scopeType": { "type": "string", "enum": ["FULL_SYSTEM_BACKUP", "FIRESTORE_AND_STORAGE_BACKUP"] },
+        "status": {
+          "type": "string",
+          "enum": ["REQUESTED", "PREPARING", "RUNNING", "VERIFYING", "COMPLETED", "VERIFICATION_FAILED", "FAILED", "CANCELLED"]
+        },
+        "appVersion": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "schemaVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "createdAt": { "type": "integer" },
+        "completedAt": { "type": "integer" },
+        "durationMs": { "type": "integer" },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdByEmail": { "type": "string", "maxLength": 160 },
+        "createdByRole": { "type": "string", "enum": ["SUPER_ADMIN", "ADMIN", "STAFF"] },
+        "note": { "type": "string", "maxLength": 300 },
+        "totalDocuments": { "type": "integer" },
+        "authUserCount": { "type": "integer" },
+        "storageFileCount": { "type": "integer" },
+        "totalBackupBytes": { "type": "integer" },
+        "storagePath": { "type": "string", "maxLength": 240 },
+        "manifestChecksumSha256": { "type": "string", "maxLength": 64 },
+        "verified": { "type": "boolean" },
+        "verifiedAt": { "type": "integer" },
+        "verificationStatus": { "type": "string", "enum": ["PENDING", "VERIFIED", "VERIFICATION_FAILED"] },
+        "verificationSummary": { "type": "string", "maxLength": 500 },
+        "errorMessage": { "type": "string", "maxLength": 500 },
+        "protectedFromRetention": { "type": "boolean" }
+      },
+      "required": ["backupId", "operationId", "kind", "scopeType", "status", "appVersion", "schemaVersion", "createdAt", "createdBy", "createdByEmail", "createdByRole", "totalDocuments", "authUserCount", "storageFileCount", "totalBackupBytes", "storagePath", "manifestChecksumSha256", "verified", "verificationStatus", "verificationSummary", "protectedFromRetention"]
+    },
+    "RestoreJobRecord": {
+      "title": "RestoreJobRecord",
+      "description": "Riwayat immutable eksekusi Full System Restore termasuk Pre-Restore Backup ID, step logs, dan hasil 12-Point Integrity Verification (khusus SUPER_ADMIN)",
+      "type": "object",
+      "properties": {
+        "restoreJobId": { "type": "string", "minLength": 4, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "operationId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "targetBackupId": { "type": "string", "minLength": 4, "maxLength": 128 },
+        "preRestoreBackupId": { "type": "string", "maxLength": 128 },
+        "status": {
+          "type": "string",
+          "enum": ["VALIDATING", "LOCKING", "PRE_RESTORE_BACKUP", "RESTORING_FIRESTORE", "RESTORING_STORAGE", "RESTORING_AUTH_METADATA", "VERIFYING", "COMPLETED", "VERIFICATION_FAILED", "FAILED", "CANCELLED"]
+        },
+        "requestedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "requestedByEmail": { "type": "string", "maxLength": 160 },
+        "requestedByRole": { "type": "string", "enum": ["SUPER_ADMIN"] },
+        "reason": { "type": "string", "minLength": 3, "maxLength": 300 },
+        "startedAt": { "type": "integer" },
+        "completedAt": { "type": "integer" },
+        "durationMs": { "type": "integer" },
+        "steps": { "type": "array" },
+        "restoredCollectionCounts": { "type": "object" },
+        "expectedCollectionCounts": { "type": "object" },
+        "restoredStorageCount": { "type": "integer" },
+        "expectedStorageCount": { "type": "integer" },
+        "authRestoreMode": { "type": "string", "enum": ["METADATA_SYNCED", "SKIPPED_NO_ADMIN_SDK"] },
+        "authRestoreNotice": { "type": "string", "maxLength": 500 },
+        "postRestoreVerificationPassed": { "type": "boolean" },
+        "integrityReport": { "type": "object" },
+        "errorMessage": { "type": "string", "maxLength": 1000 },
+        "recoveryRecommendation": { "type": "string", "maxLength": 1000 }
+      },
+      "required": ["restoreJobId", "operationId", "targetBackupId", "status", "requestedBy", "requestedByEmail", "requestedByRole", "reason", "startedAt", "steps", "restoredCollectionCounts", "expectedCollectionCounts", "restoredStorageCount", "expectedStorageCount", "authRestoreMode", "authRestoreNotice", "postRestoreVerificationPassed"]
+    },
+    "SystemOperationDoc": {
+      "title": "SystemOperationDoc",
+      "description": "Dokumen operasional sistem: restoreLock (zero-PII Maintenance Mode flag), backupLock (concurrency lock), dan backupRetention (kebijakan retensi)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "enum": ["restoreLock", "backupLock", "backupRetention"] },
+        "locked": { "type": "boolean" },
+        "state": { "type": "string", "enum": ["IDLE", "RESTORE_IN_PROGRESS"] },
+        "updatedAt": { "type": "integer" }
+      },
+      "required": ["id", "updatedAt"]
     }
   },
   "firestore": {
@@ -425,7 +675,7 @@
     },
     "/identityIndex/{indexKey}": {
       "schema": { "$ref": "#/entities/IdentityIndex" },
-      "description": "Index unik internal username dan WhatsApp (server-only)"
+      "description": "Index unik internal username dan WhatsApp (server-only / SUPER_ADMIN backup)"
     },
     "/authIndex/{hashId}": {
       "schema": { "$ref": "#/entities/AuthIndex" },
@@ -438,6 +688,14 @@
     "/xpRewardLedger/{entryId}": {
       "schema": { "$ref": "#/entities/XpLedgerEntry" },
       "description": "Buku besar riwayat XP Reward"
+    },
+    "/xpAdjustments/{adjustmentId}": {
+      "schema": { "$ref": "#/entities/XpAdjustmentRecord" },
+      "description": "Riwayat immutable penyesuaian XP Progress / XP Reward oleh Admin beserta alasan, saldo sebelum/sesudah, dan jejak audit"
+    },
+    "/levelOverrides/{overrideId}": {
+      "schema": { "$ref": "#/entities/LevelOverrideRecord" },
+      "description": "Riwayat immutable Force Level Override dan Recalculate Level From XP oleh Admin"
     },
     "/transactions/{transactionId}": {
       "schema": { "$ref": "#/entities/TransactionRecord" },
@@ -486,6 +744,30 @@
     "/auditLogs/{logId}": {
       "schema": { "$ref": "#/entities/AuditLogRecord" },
       "description": "Audit log immutable untuk seluruh operasi penting"
+    },
+    "/cmsPublished/{docId}": {
+      "schema": { "$ref": "#/entities/CmsPublished" },
+      "description": "Konten CMS homepage yang sedang aktif dipublikasikan untuk publik/member"
+    },
+    "/cmsDrafts/{docId}": {
+      "schema": { "$ref": "#/entities/CmsDraft" },
+      "description": "Draft CMS homepage khusus Admin sebelum Preview & Publish"
+    },
+    "/cmsVersions/{versionId}": {
+      "schema": { "$ref": "#/entities/CmsVersion" },
+      "description": "Riwayat versi immutable CMS homepage (v1, v2, v3, dst.) untuk rollback"
+    },
+    "/systemBackups/{backupId}": {
+      "schema": { "$ref": "#/entities/SystemBackupRecord" },
+      "description": "Metadata snapshot backup terisolasi dan hasil verifikasi SHA-256 (khusus SUPER_ADMIN)"
+    },
+    "/restoreJobs/{restoreJobId}": {
+      "schema": { "$ref": "#/entities/RestoreJobRecord" },
+      "description": "Riwayat immutable eksekusi Full System Restore & 12-Point Integrity Audit (khusus SUPER_ADMIN)"
+    },
+    "/systemOperations/{opId}": {
+      "schema": { "$ref": "#/entities/SystemOperationDoc" },
+      "description": "Dokumen operasional sistem: restoreLock, backupLock, dan backupRetention"
     }
   }
 }

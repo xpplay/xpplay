@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { ArrowRight, Check, Clock, Copy, Crown, Gift, Shield, Trophy, Users, Zap } from 'lucide-react';
-import { formatJakartaDateTime, getBranchLabel, resolveLevelFromXp } from '../shared/xpLogic.ts';
-import type { BranchId, LevelConfig, LevelId } from '../types/xpplay.ts';
+import { formatJakartaDateTime, getBranchLabel, resolveEffectiveMemberLevel, resolveLevelFromXp } from '../shared/xpLogic.ts';
+import type { BranchId, LevelConfig, LevelId, LevelMode } from '../types/xpplay.ts';
 
 interface MemberXpShowcaseProps {
   memberId: string;
@@ -11,6 +11,8 @@ interface MemberXpShowcaseProps {
   xpProgress: number;
   xpReward: number;
   levels: LevelConfig[];
+  currentLevel?: LevelId;
+  levelMode?: LevelMode;
   lastPlayAt?: number | null;
   lastPlayBranch?: BranchId | null;
   referralCount?: number;
@@ -66,6 +68,8 @@ export function MemberXpShowcase({
   xpProgress,
   xpReward,
   levels,
+  currentLevel,
+  levelMode,
   lastPlayAt,
   lastPlayBranch,
   referralCount = 0,
@@ -75,8 +79,17 @@ export function MemberXpShowcase({
   const [copied, setCopied] = useState(false);
 
   const levelEval = resolveLevelFromXp(xpProgress, levels);
+  const effectiveLevel = resolveEffectiveMemberLevel(
+    {
+      xpProgress,
+      currentLevel: currentLevel ?? levelEval.current.id,
+      levelMode,
+    },
+    levels
+  );
+  const isManualOverride = levelMode === 'MANUAL_OVERRIDE';
   const sortedLevels = [...levels].sort((a, b) => a.rank - b.rank);
-  const style = LEVEL_STYLES[levelEval.current.id] ?? LEVEL_STYLES.BRONZE;
+  const style = LEVEL_STYLES[effectiveLevel.id] ?? LEVEL_STYLES.BRONZE;
   const LevelIcon = style.Icon;
 
   // Radial SVG progress ring math for XP Progress card
@@ -129,9 +142,11 @@ export function MemberXpShowcase({
               <LevelIcon className="w-6 h-6" />
             </div>
             <div className="text-left sm:text-right">
-              <p className="text-[11px] font-medium text-slate-400">Level Saat Ini</p>
+              <p className="text-[11px] font-medium text-slate-400">
+                Level Saat Ini{isManualOverride ? ' · Manual Override' : ''}
+              </p>
               <p className={`font-display text-xl sm:text-2xl font-extrabold tracking-tight uppercase ${style.accentText}`}>
-                {levelEval.current.name}
+                {effectiveLevel.name}
               </p>
             </div>
           </div>
@@ -141,7 +156,7 @@ export function MemberXpShowcase({
         <div className="relative space-y-2.5">
           <div className="flex items-center justify-between gap-3 text-xs sm:text-sm">
             <span className="font-medium text-slate-200">
-              {levelEval.next ? `Menuju Level ${levelEval.next.name}` : 'Tier Maksimal Tercapai'}
+              {levelEval.next ? `Progres XP menuju ${levelEval.next.name}` : 'Progres XP Tier Maksimal'}
             </span>
             <span className="font-mono font-bold text-white tabular-nums">
               {levelEval.next ? `${xpProgress} / ${levelEval.next.minXp} XP` : `${xpProgress} XP`}
@@ -157,17 +172,19 @@ export function MemberXpShowcase({
           </div>
 
           <p className="text-xs text-slate-300">
-            {levelEval.next
-              ? `Butuh ${levelEval.xpToNext} XP Progress lagi untuk naik ke ${levelEval.next.name}.`
-              : 'Seluruh level dan benefit tertinggi XP PLAY sudah terbuka.'}
+            {isManualOverride
+              ? `Level ${effectiveLevel.name} ditetapkan secara khusus oleh Admin. Saldo XP Progress (${xpProgress} XP) tetap tercatat utuh.`
+              : levelEval.next
+                ? `Butuh ${levelEval.xpToNext} XP Progress lagi untuk naik ke ${levelEval.next.name}.`
+                : 'Seluruh level dan benefit tertinggi XP PLAY sudah terbuka.'}
           </p>
         </div>
 
         {/* 4-Stage Level Milestone Strip */}
         <div className="relative pt-4 border-t border-indigo-400/20 grid grid-cols-4 gap-2">
           {sortedLevels.map((lvl) => {
-            const reached = xpProgress >= lvl.minXp;
-            const isCurrent = lvl.id === levelEval.current.id;
+            const reached = xpProgress >= lvl.minXp || lvl.id === effectiveLevel.id;
+            const isCurrent = lvl.id === effectiveLevel.id;
             return (
               <div
                 key={lvl.id}

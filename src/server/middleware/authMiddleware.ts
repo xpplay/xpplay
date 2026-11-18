@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from 'express';
 import {
+  firebaseAppletConfig,
   getAdminDb,
   getBootstrapSuperAdminEmails,
   verifyFirebaseIdToken,
@@ -57,8 +58,43 @@ export function requireAdminRole(allowedRoles: AdminRole[]) {
 
     const adminDb = getAdminDb();
     if (!adminDb) {
-      res.status(403).json({ error: 'Akses admin ditolak.' });
-      return;
+      if (!req.authUser.emailVerified) {
+        res.status(403).json({ error: 'Email admin belum terverifikasi.' });
+        return;
+      }
+      const bearer = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim();
+      if (!bearer) {
+        res.status(403).json({ error: 'Akses admin ditolak.' });
+        return;
+      }
+      try {
+        const restUrl = `https://firestore.googleapis.com/v1/projects/${firebaseAppletConfig.projectId}/databases/${firebaseAppletConfig.firestoreDatabaseId}/documents/admins/${encodeURIComponent(req.authUser.uid)}`;
+        const adminRes = await fetch(restUrl, {
+          headers: { Authorization: `Bearer ${bearer}` },
+        });
+        if (!adminRes.ok) {
+          res.status(403).json({ error: 'Akun Anda tidak memiliki hak akses admin.' });
+          return;
+        }
+        const docJson = (await adminRes.json()) as {
+          fields?: {
+            active?: { booleanValue?: boolean };
+            role?: { stringValue?: AdminRole };
+          };
+        };
+        const active = docJson.fields?.active?.booleanValue === true;
+        const role = docJson.fields?.role?.stringValue;
+        if (!active || !role || !allowedRoles.includes(role)) {
+          res.status(403).json({ error: 'Anda tidak memiliki izin untuk melakukan tindakan ini.' });
+          return;
+        }
+        req.adminRole = role;
+        next();
+        return;
+      } catch {
+        res.status(403).json({ error: 'Gagal memverifikasi otorisasi admin.' });
+        return;
+      }
     }
 
     try {
@@ -79,3 +115,35 @@ export function requireAdminRole(allowedRoles: AdminRole[]) {
     }
   };
 }
+
+export function requireSystemNotLocked(
+  checkLockedFn?: () => Promise<{ locked: boolean; message?: string }>
+) {
+  return async (
+    req: AuthenticatedRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const bearer = (req.headers.authorization || '').replace(/^Bearer\s+/i, '').trim() || undefined;
+      const lockState = checkLockedFn
+        ? await checkLockedFn()
+        : await (await import('../services/backupRestoreService.ts')).backupRestoreEngine.getRestoreLockState(bearer);
+
+      if (lockState.locked) {
+        res.status(503).json({
+          code: 'RESTORE_IN_PROGRESS',
+          error:
+            lockState.message ||
+            'XP PLAY sedang melakukan maintenance sistem. Silakan kembali beberapa saat lagi.',
+        });
+        return;
+      }
+      next();
+    } catch {
+      next();
+    }
+  };
+}
+
+

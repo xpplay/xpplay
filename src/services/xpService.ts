@@ -28,38 +28,75 @@ import { handleFirestoreError, OperationType } from '../lib/firestoreError.ts';
 import {
   buildUsernameHashId,
   buildWhatsappHashId,
+  calculateManualLevelOverride,
+  calculateRecalculateLevelFromXp,
   calculateTransactionXp,
+  calculateXpProgressAdjustment,
+  calculateXpRewardAdjustment,
   DEFAULT_LEVELS,
   DEFAULT_SYSTEM_SETTINGS,
   isCampaignClaimable,
   isLevelEligible,
   normalizeUsername,
   normalizeWhatsapp,
+  resolveEffectiveMemberLevel,
   resolveLevelFromXp,
   validateLevelThresholds,
   validateUsername,
   validateWhatsapp,
 } from '../shared/xpLogic.ts';
+import {
+  DEFAULT_HOMEPAGE_CMS,
+  sanitizeHomepageCmsContent,
+  validateCmsSecurity,
+} from '../shared/cmsSanitizer.ts';
+import {
+  buildInactiveNotificationDedupeKey,
+  calculateMemberInactivity,
+  isMemberInactive,
+  sortInactiveRowsLongestFirst,
+} from '../shared/inactiveLogic.ts';
 import type {
+  AdminPasswordChangeResult,
   AdminRole,
   AdminUser,
   AuditLogRecord,
+  BackupKind,
+  BackupManifest,
+  BackupRetentionConfig,
+  BackupVerificationResult,
   BenefitItem,
   BranchId,
   BranchInfo,
   CampaignItem,
   ClaimRecord,
+  CmsDraftDoc,
+  CmsPublishedDoc,
+  CmsVersionRecord,
   CycleSnapshot,
+  HomepageCmsContent,
+  InactiveMemberRow,
+  IntegrityAuditReport,
   LevelConfig,
   LevelId,
+  LevelMode,
+  LevelOverrideAction,
+  LevelOverrideRecord,
   MemberNotification,
   MemberProfile,
   MembershipCycle,
   MemberStatus,
   NotificationCampaign,
   RedemptionRecord,
+  RestoreJobRecord,
+  RestoreLockState,
+  RestorePreviewResult,
+  SystemBackupRecord,
+  SystemHealthReport,
   SystemSettings,
   TransactionRecord,
+  XpAdjustmentKind,
+  XpAdjustmentRecord,
 } from '../types/xpplay.ts';
 
 function genId(prefix: string): string {
@@ -216,6 +253,7 @@ export async function registerMemberClient(input: {
       xpProgress: totalXp,
       xpReward: totalXp,
       currentLevel: levelEval.current.id,
+      levelMode: 'AUTOMATIC',
       currentCycleId: settings.currentCycleId,
       referredByUid: withReferralUid,
       referredByUsername: withReferralUid ? refInput : null,
@@ -275,7 +313,7 @@ export async function registerMemberClient(input: {
       note: 'Bonus pendaftaran member baru XP PLAY',
     });
 
-    if (withReferralUid && refBonus > 0) {
+    if (withReferralUid) {
       const refDocId = `ref_${uid}`;
       batch.set(doc(db, 'referrals', refDocId), {
         id: refDocId,
@@ -291,40 +329,7 @@ export async function registerMemberClient(input: {
         createdAt: now,
       });
 
-      const rProgId = genId('xpp');
-      const rRewId = genId('xpr');
-      batch.set(doc(db, 'xpProgressLedger', rProgId), {
-        id: rProgId,
-        memberId,
-        memberUid: uid,
-        amount: refBonus,
-        type: 'PROGRESS',
-        direction: 'CREDIT',
-        source: 'REFERRAL',
-        referenceId: refDocId,
-        branch: null,
-        cycleId: settings.currentCycleId,
-        createdAt: now + 1,
-        createdBy: uid,
-        note: `Bonus referral dari @${refInput}`,
-      });
-      batch.set(doc(db, 'xpRewardLedger', rRewId), {
-        id: rRewId,
-        memberId,
-        memberUid: uid,
-        amount: refBonus,
-        type: 'REWARD',
-        direction: 'CREDIT',
-        source: 'REFERRAL',
-        referenceId: refDocId,
-        branch: null,
-        cycleId: settings.currentCycleId,
-        createdAt: now + 1,
-        createdBy: uid,
-        note: `Bonus referral dari @${refInput}`,
-      });
-
-      // Credit referrer atomically
+      // Credit referrer atomically (referralCount + optional refBonus XP)
       batch.update(doc(db, 'members', withReferralUid), {
         xpProgress: increment(refBonus),
         xpReward: increment(refBonus),
@@ -332,38 +337,73 @@ export async function registerMemberClient(input: {
         updatedAt: now,
       });
 
-      const refRProgId = genId('xpp');
-      const refRRewId = genId('xpr');
-      batch.set(doc(db, 'xpProgressLedger', refRProgId), {
-        id: refRProgId,
-        memberId: withReferralUid.slice(0, 40),
-        memberUid: withReferralUid,
-        amount: refBonus,
-        type: 'PROGRESS',
-        direction: 'CREDIT',
-        source: 'REFERRAL',
-        referenceId: refDocId,
-        branch: null,
-        cycleId: settings.currentCycleId,
-        createdAt: now + 1,
-        createdBy: uid,
-        note: `Bonus referral mengajak @${uCheck.normalized}`,
-      });
-      batch.set(doc(db, 'xpRewardLedger', refRRewId), {
-        id: refRRewId,
-        memberId: withReferralUid.slice(0, 40),
-        memberUid: withReferralUid,
-        amount: refBonus,
-        type: 'REWARD',
-        direction: 'CREDIT',
-        source: 'REFERRAL',
-        referenceId: refDocId,
-        branch: null,
-        cycleId: settings.currentCycleId,
-        createdAt: now + 1,
-        createdBy: uid,
-        note: `Bonus referral mengajak @${uCheck.normalized}`,
-      });
+      if (refBonus > 0) {
+        const rProgId = genId('xpp');
+        const rRewId = genId('xpr');
+        batch.set(doc(db, 'xpProgressLedger', rProgId), {
+          id: rProgId,
+          memberId,
+          memberUid: uid,
+          amount: refBonus,
+          type: 'PROGRESS',
+          direction: 'CREDIT',
+          source: 'REFERRAL',
+          referenceId: refDocId,
+          branch: null,
+          cycleId: settings.currentCycleId,
+          createdAt: now + 1,
+          createdBy: uid,
+          note: `Bonus referral dari @${refInput}`,
+        });
+        batch.set(doc(db, 'xpRewardLedger', rRewId), {
+          id: rRewId,
+          memberId,
+          memberUid: uid,
+          amount: refBonus,
+          type: 'REWARD',
+          direction: 'CREDIT',
+          source: 'REFERRAL',
+          referenceId: refDocId,
+          branch: null,
+          cycleId: settings.currentCycleId,
+          createdAt: now + 1,
+          createdBy: uid,
+          note: `Bonus referral dari @${refInput}`,
+        });
+
+        const refRProgId = genId('xpp');
+        const refRRewId = genId('xpr');
+        batch.set(doc(db, 'xpProgressLedger', refRProgId), {
+          id: refRProgId,
+          memberId: withReferralUid.slice(0, 40),
+          memberUid: withReferralUid,
+          amount: refBonus,
+          type: 'PROGRESS',
+          direction: 'CREDIT',
+          source: 'REFERRAL',
+          referenceId: refDocId,
+          branch: null,
+          cycleId: settings.currentCycleId,
+          createdAt: now + 1,
+          createdBy: uid,
+          note: `Bonus referral mengajak @${uCheck.normalized}`,
+        });
+        batch.set(doc(db, 'xpRewardLedger', refRRewId), {
+          id: refRRewId,
+          memberId: withReferralUid.slice(0, 40),
+          memberUid: withReferralUid,
+          amount: refBonus,
+          type: 'REWARD',
+          direction: 'CREDIT',
+          source: 'REFERRAL',
+          referenceId: refDocId,
+          branch: null,
+          cycleId: settings.currentCycleId,
+          createdAt: now + 1,
+          createdBy: uid,
+          note: `Bonus referral mengajak @${uCheck.normalized}`,
+        });
+      }
     }
 
     await batch.commit();
@@ -577,7 +617,7 @@ export async function submitRedemptionForMember(input: {
   if (!input.benefit.claimable || !input.benefit.redeemable) {
     throw new Error('Benefit ini bersifat informasi/terkunci dan tidak dapat di-redeem.');
   }
-  const effectiveLevel = resolveLevelFromXp(input.member.xpProgress, input.levels).current.id;
+  const effectiveLevel = resolveEffectiveMemberLevel(input.member, input.levels).id;
   if (!isLevelEligible(effectiveLevel, input.benefit.levelRequirement, input.levels)) {
     throw new Error(`Benefit ini memerlukan minimal level ${input.benefit.levelRequirement}.`);
   }
@@ -628,18 +668,31 @@ export async function markMemberNotificationRead(notificationId: string): Promis
   }
 }
 
+function isMissingIndexError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const msg = err.message.toLowerCase();
+  return (
+    msg.includes('requires an index') ||
+    msg.includes('failed-precondition') ||
+    msg.includes('failed_precondition')
+  );
+}
+
 // ---------- Paginated Queries (Member & Admin) ----------
 export async function fetchPaginatedCollection<T>(input: {
   collectionName: string;
   constraints: QueryConstraint[];
   orderByField?: string;
+  orderDirection?: 'asc' | 'desc';
   pageSize?: number;
   cursor?: QueryDocumentSnapshot<DocumentData> | null;
 }): Promise<PaginatedResult<T>> {
   const pageSize = input.pageSize ?? 10;
+  const sortField = input.orderByField ?? 'createdAt';
+  const sortDir = input.orderDirection ?? 'desc';
   const parts: QueryConstraint[] = [
     ...input.constraints,
-    orderBy(input.orderByField ?? 'createdAt', 'desc'),
+    orderBy(sortField, sortDir),
     limit(pageSize + 1),
   ];
   if (input.cursor) {
@@ -656,6 +709,26 @@ export async function fetchPaginatedCollection<T>(input: {
       hasMore,
     };
   } catch (err) {
+    if (isMissingIndexError(err) && !input.cursor) {
+      try {
+        const fallbackSnap = await getDocs(
+          query(collection(db, input.collectionName), ...input.constraints, limit(Math.max(pageSize * 5, 100)))
+        );
+        const sortedDocs = [...fallbackSnap.docs].sort((a, b) => {
+          const av = Number((a.data() as Record<string, unknown>)[sortField] ?? 0);
+          const bv = Number((b.data() as Record<string, unknown>)[sortField] ?? 0);
+          return sortDir === 'asc' ? av - bv : bv - av;
+        });
+        const sliced = sortedDocs.slice(0, pageSize);
+        return {
+          items: sliced.map((d) => d.data() as T),
+          lastCursor: null,
+          hasMore: false,
+        };
+      } catch (fallbackErr) {
+        handleFirestoreError(fallbackErr, OperationType.LIST, input.collectionName);
+      }
+    }
     handleFirestoreError(err, OperationType.LIST, input.collectionName);
   }
 }
@@ -667,6 +740,18 @@ export async function fetchActiveCampaigns(): Promise<CampaignItem[]> {
     );
     return snap.docs.map((d) => d.data() as CampaignItem);
   } catch (err) {
+    if (isMissingIndexError(err)) {
+      try {
+        const fallbackSnap = await getDocs(
+          query(collection(db, 'campaigns'), where('active', '==', true), limit(50))
+        );
+        return fallbackSnap.docs
+          .map((d) => d.data() as CampaignItem)
+          .sort((a, b) => b.endAt - a.endAt);
+      } catch (fallbackErr) {
+        handleFirestoreError(fallbackErr, OperationType.LIST, 'campaigns');
+      }
+    }
     handleFirestoreError(err, OperationType.LIST, 'campaigns');
   }
 }
@@ -678,6 +763,18 @@ export async function fetchActiveBenefits(): Promise<BenefitItem[]> {
     );
     return snap.docs.map((d) => d.data() as BenefitItem);
   } catch (err) {
+    if (isMissingIndexError(err)) {
+      try {
+        const fallbackSnap = await getDocs(
+          query(collection(db, 'benefits'), where('active', '==', true), limit(50))
+        );
+        return fallbackSnap.docs
+          .map((d) => d.data() as BenefitItem)
+          .sort((a, b) => a.xpCost - b.xpCost);
+      } catch (fallbackErr) {
+        handleFirestoreError(fallbackErr, OperationType.LIST, 'benefits');
+      }
+    }
     handleFirestoreError(err, OperationType.LIST, 'benefits');
   }
 }
@@ -706,19 +803,23 @@ export async function findMemberByIdentifierAdmin(identifier: string): Promise<M
   const digits = raw.replace(/\D/g, '');
   const looksLikePhone = /^\+?[0-9\s\-]{8,18}$/.test(raw) && digits.length >= 9;
 
-  if (looksLikePhone) {
-    const normalizedWa = normalizeWhatsapp(raw);
+  try {
+    if (looksLikePhone) {
+      const normalizedWa = normalizeWhatsapp(raw);
+      const snap = await getDocs(
+        query(collection(db, 'members'), where('whatsapp', '==', normalizedWa), limit(1))
+      );
+      return snap.empty ? null : (snap.docs[0].data() as MemberProfile);
+    }
+
+    const normalizedUser = normalizeUsername(raw);
     const snap = await getDocs(
-      query(collection(db, 'members'), where('whatsapp', '==', normalizedWa), limit(1))
+      query(collection(db, 'members'), where('username', '==', normalizedUser), limit(1))
     );
     return snap.empty ? null : (snap.docs[0].data() as MemberProfile);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.LIST, 'members');
   }
-
-  const normalizedUser = normalizeUsername(raw);
-  const snap = await getDocs(
-    query(collection(db, 'members'), where('username', '==', normalizedUser), limit(1))
-  );
-  return snap.empty ? null : (snap.docs[0].data() as MemberProfile);
 }
 
 export async function createMemberByAdmin(input: {
@@ -789,6 +890,7 @@ export async function createMemberByAdmin(input: {
     xpProgress: totalXp,
     xpReward: totalXp,
     currentLevel: levelEval.current.id,
+    levelMode: 'AUTOMATIC',
     currentCycleId: settings.currentCycleId,
     referredByUid: referrer ? referrer.uid : null,
     referredByUsername: referrer ? referrer.username : null,
@@ -896,12 +998,16 @@ export async function createMemberByAdmin(input: {
 
         const rNewProg = freshReferrer.xpProgress + refBonus;
         const rNewRew = freshReferrer.xpReward + refBonus;
+        const isRefManual = freshReferrer.levelMode === 'MANUAL_OVERRIDE';
         const rLvl = resolveLevelFromXp(rNewProg, levels);
+        const nextRefLevel: LevelId = isRefManual ? freshReferrer.currentLevel : rLvl.current.id;
+        const nextRefMode: LevelMode = isRefManual ? 'MANUAL_OVERRIDE' : 'AUTOMATIC';
 
         tx.update(doc(db, 'members', freshReferrer.uid), {
           xpProgress: rNewProg,
           xpReward: rNewRew,
-          currentLevel: rLvl.current.id,
+          currentLevel: nextRefLevel,
+          levelMode: nextRefMode,
           referralCount: (freshReferrer.referralCount || 0) + 1,
           updatedAt: now,
         });
@@ -939,14 +1045,14 @@ export async function createMemberByAdmin(input: {
           note: `Bonus referral mengajak @${uCheck.normalized}`,
         });
 
-        if (rLvl.current.id !== freshReferrer.currentLevel) {
+        if (!isRefManual && nextRefLevel !== freshReferrer.currentLevel) {
           const lhId = genId('lvl');
           tx.set(doc(db, 'levelHistory', lhId), {
             id: lhId,
             memberId: freshReferrer.memberId,
             memberUid: freshReferrer.uid,
             fromLevel: freshReferrer.currentLevel,
-            toLevel: rLvl.current.id,
+            toLevel: nextRefLevel,
             xpProgressAtEvent: rNewProg,
             source: 'REFERRAL',
             cycleId: settings.currentCycleId,
@@ -1043,7 +1149,10 @@ export async function recordTransactionByAdmin(input: {
       const xpGenerated = calculateTransactionXp(input.amountIdr, settings.transactionXpRate);
       const newProgress = member.xpProgress + xpGenerated;
       const newReward = member.xpReward + xpGenerated;
+      const isManualOverride = member.levelMode === 'MANUAL_OVERRIDE';
       const levelEval = resolveLevelFromXp(newProgress, levels);
+      const nextLevel: LevelId = isManualOverride ? member.currentLevel : levelEval.current.id;
+      const nextLevelMode: LevelMode = isManualOverride ? 'MANUAL_OVERRIDE' : 'AUTOMATIC';
 
       const txId = genId('trx');
       const txRecord: TransactionRecord = {
@@ -1068,7 +1177,8 @@ export async function recordTransactionByAdmin(input: {
       tx.update(memberRef, {
         xpProgress: newProgress,
         xpReward: newReward,
-        currentLevel: levelEval.current.id,
+        currentLevel: nextLevel,
+        levelMode: nextLevelMode,
         lastPlayAt: now,
         lastPlayBranch: input.branch,
         updatedAt: now,
@@ -1109,14 +1219,14 @@ export async function recordTransactionByAdmin(input: {
         });
       }
 
-      if (levelEval.current.id !== member.currentLevel) {
+      if (!isManualOverride && nextLevel !== member.currentLevel) {
         const lhId = genId('lvl');
         tx.set(doc(db, 'levelHistory', lhId), {
           id: lhId,
           memberId: member.memberId,
           memberUid: member.uid,
           fromLevel: member.currentLevel,
-          toLevel: levelEval.current.id,
+          toLevel: nextLevel,
           xpProgressAtEvent: newProgress,
           source: 'TRANSACTION',
           cycleId: settings.currentCycleId,
@@ -1156,7 +1266,7 @@ export async function recordTransactionByAdmin(input: {
         after: {
           xpProgress: newProgress,
           xpReward: newReward,
-          currentLevel: levelEval.current.id,
+          currentLevel: nextLevel,
           amountIdr: input.amountIdr,
           xpGenerated,
           branch: input.branch,
@@ -1165,7 +1275,7 @@ export async function recordTransactionByAdmin(input: {
         timestamp: now,
       });
 
-      return { xpGenerated, newProgress, newReward, newLevel: levelEval.current.id };
+      return { xpGenerated, newProgress, newReward, newLevel: nextLevel };
     });
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, 'transactions');
@@ -1209,7 +1319,11 @@ export async function reviewClaimByAdmin(input: {
       }
 
       const memberRef = doc(db, 'members', claim.memberUid);
-      const memberSnap = await tx.get(memberRef);
+      const campaignRef = doc(db, 'campaigns', claim.campaignId);
+      const [memberSnap, campaignSnap] = await Promise.all([
+        tx.get(memberRef),
+        tx.get(campaignRef),
+      ]);
       if (!memberSnap.exists()) throw new Error('Member tidak ditemukan.');
       const member = memberSnap.data() as MemberProfile;
 
@@ -1255,10 +1369,24 @@ export async function reviewClaimByAdmin(input: {
         return;
       }
 
+      if (campaignSnap.exists()) {
+        const campData = campaignSnap.data() as CampaignItem;
+        if (campData.totalClaimLimit !== null && campData.claimsCount >= campData.totalClaimLimit) {
+          throw new Error('Kuota total claim program ini telah habis.');
+        }
+        tx.update(campaignRef, {
+          claimsCount: (campData.claimsCount || 0) + 1,
+          updatedAt: now,
+        });
+      }
+
       const xpAward = claim.xpRewardSnapshot;
       const newProgress = member.xpProgress + xpAward;
       const newReward = member.xpReward + xpAward;
+      const isManualOverride = member.levelMode === 'MANUAL_OVERRIDE';
       const levelEval = resolveLevelFromXp(newProgress, levels);
+      const nextLevel: LevelId = isManualOverride ? member.currentLevel : levelEval.current.id;
+      const nextLevelMode: LevelMode = isManualOverride ? 'MANUAL_OVERRIDE' : 'AUTOMATIC';
 
       tx.update(claimRef, {
         status: 'APPROVED',
@@ -1271,7 +1399,8 @@ export async function reviewClaimByAdmin(input: {
       tx.update(memberRef, {
         xpProgress: newProgress,
         xpReward: newReward,
-        currentLevel: levelEval.current.id,
+        currentLevel: nextLevel,
+        levelMode: nextLevelMode,
         updatedAt: now,
       });
 
@@ -1308,14 +1437,14 @@ export async function reviewClaimByAdmin(input: {
         note: `Claim disetujui: ${claim.campaignTitle}`,
       });
 
-      if (levelEval.current.id !== member.currentLevel) {
+      if (!isManualOverride && nextLevel !== member.currentLevel) {
         const lhId = genId('lvl');
         tx.set(doc(db, 'levelHistory', lhId), {
           id: lhId,
           memberId: member.memberId,
           memberUid: member.uid,
           fromLevel: member.currentLevel,
-          toLevel: levelEval.current.id,
+          toLevel: nextLevel,
           xpProgressAtEvent: newProgress,
           source: claim.campaignType,
           cycleId: settings.currentCycleId,
@@ -1444,7 +1573,7 @@ export async function reviewRedemptionByAdmin(input: {
         return;
       }
 
-      const effectiveLevel = resolveLevelFromXp(member.xpProgress, levels).current.id;
+      const effectiveLevel = resolveEffectiveMemberLevel(member, levels).id;
       if (!isLevelEligible(effectiveLevel, redemption.levelRequirement, levels)) {
         throw new Error(`Level member (${effectiveLevel}) belum memenuhi syarat (${redemption.levelRequirement}).`);
       }
@@ -1682,8 +1811,33 @@ export async function saveSystemSettingsByAdmin(
   settings: SystemSettings,
   admin: AdminUser
 ): Promise<void> {
-  if (!Number.isSafeInteger(settings.transactionXpRate) || settings.transactionXpRate < 100) {
-    throw new Error('Rate XP transaksi minimal Rp100 per 1 XP.');
+  if (
+    !Number.isSafeInteger(settings.transactionXpRate) ||
+    settings.transactionXpRate < 100 ||
+    settings.transactionXpRate > 10000000
+  ) {
+    throw new Error('Rate XP transaksi harus antara Rp100 hingga Rp10.000.000 per 1 XP.');
+  }
+  if (
+    !Number.isSafeInteger(settings.registrationBonusXp) ||
+    settings.registrationBonusXp < 0 ||
+    settings.registrationBonusXp > 10000
+  ) {
+    throw new Error('Bonus registrasi harus bilangan bulat antara 0 hingga 10.000 XP.');
+  }
+  if (
+    !Number.isSafeInteger(settings.referralBonusXp) ||
+    settings.referralBonusXp < 0 ||
+    settings.referralBonusXp > 10000
+  ) {
+    throw new Error('Bonus referral harus bilangan bulat antara 0 hingga 10.000 XP.');
+  }
+  if (
+    !Number.isSafeInteger(settings.resetInterval) ||
+    settings.resetInterval < 1 ||
+    settings.resetInterval > 3650
+  ) {
+    throw new Error('Interval reset harus antara 1 hingga 3.650.');
   }
   const now = Date.now();
   try {
@@ -1770,10 +1924,15 @@ export async function createAndDispatchNotificationByAdmin(input: {
   targetType: NotificationCampaign['targetType'];
   targetFilter: string;
   inactivityDays: number | null;
+  branchFilter?: 'ALL' | BranchId;
+  levelFilter?: 'ALL' | LevelId;
+  includeNeverPlayed?: boolean;
+  dedupeDaily?: boolean;
   admin: AdminUser;
-}): Promise<{ campaignId: string; dispatchedCount: number }> {
+}): Promise<{ campaignId: string; dispatchedCount: number; skippedDuplicateCount: number }> {
   const now = Date.now();
   const campaignId = genId('ncamp');
+
   const campaign: NotificationCampaign = {
     id: campaignId,
     title: input.title.trim(),
@@ -1789,73 +1948,121 @@ export async function createAndDispatchNotificationByAdmin(input: {
     createdAt: now,
   };
 
-  await setDoc(doc(db, 'notifications', campaignId), campaign);
+  try {
+    await setDoc(doc(db, 'notifications', campaignId), campaign);
 
-  // Target paginated matching members without loading whole DB into memory
-  const constraints: QueryConstraint[] = [where('status', '==', 'ACTIVE')];
-  if (input.targetType === 'LEVEL' && input.targetFilter) {
-    constraints.push(where('currentLevel', '==', input.targetFilter));
-  } else if (input.targetType === 'BRANCH' && input.targetFilter) {
-    constraints.push(where('lastPlayBranch', '==', input.targetFilter));
-  } else if (input.targetType === 'SPECIFIC_MEMBER' && input.targetFilter) {
-    constraints.push(where('username', '==', normalizeUsername(input.targetFilter)));
-  } else if (input.targetType === 'INACTIVE_MEMBERS' && input.inactivityDays) {
-    const cutoff = now - input.inactivityDays * 24 * 60 * 60 * 1000;
-    constraints.push(where('lastPlayAt', '<=', cutoff));
-  }
+    const normalizedFilter = input.targetFilter.trim().toUpperCase();
+    const includeNeverPlayed = input.includeNeverPlayed ?? true;
+    const dedupeKey =
+      input.targetType === 'INACTIVE_MEMBERS' && input.dedupeDaily !== false && input.inactivityDays
+        ? buildInactiveNotificationDedupeKey({
+            inactivityDays: input.inactivityDays,
+            branch: input.branchFilter,
+            level: input.levelFilter,
+            now,
+          })
+        : null;
 
-  let dispatchedCount = 0;
-  let cursor: QueryDocumentSnapshot<DocumentData> | null = null;
-
-  while (true) {
-    const parts: QueryConstraint[] = [...constraints, limit(100)];
-    if (cursor) parts.push(startAfter(cursor));
-
-    const snap = await getDocs(query(collection(db, 'members'), ...parts));
-    if (snap.empty) break;
-
-    const batch = writeBatch(db);
-    for (const d of snap.docs) {
-      const m = d.data() as MemberProfile;
-      // Deterministic ID prevents duplicate notifications for the same campaign & member
-      const notifId = `${campaignId}__${m.uid}`;
-      const payload: MemberNotification = {
-        id: notifId,
-        memberId: m.memberId,
-        memberUid: m.uid,
-        notificationCampaignId: campaignId,
-        category: input.targetType === 'INACTIVE_MEMBERS' ? 'INACTIVITY' : 'PROMO',
-        title: campaign.title,
-        message: campaign.message,
-        read: false,
-        readAt: null,
-        status: 'SENT',
-        sentAt: now,
-        createdAt: now,
-      };
-      batch.set(doc(db, 'memberNotifications', notifId), payload);
-      dispatchedCount++;
+    // Single-field where queries avoid missing composite indexes; filter secondary conditions safely in loop
+    const baseConstraints: QueryConstraint[] = [];
+    if (input.targetType === 'LEVEL' && normalizedFilter) {
+      baseConstraints.push(where('currentLevel', '==', normalizedFilter));
+    } else if (input.targetType === 'BRANCH' && normalizedFilter) {
+      baseConstraints.push(where('lastPlayBranch', '==', normalizedFilter));
+    } else if (input.targetType === 'SPECIFIC_MEMBER' && input.targetFilter.trim()) {
+      baseConstraints.push(where('username', '==', normalizeUsername(input.targetFilter)));
+    } else {
+      baseConstraints.push(where('status', '==', 'ACTIVE'));
     }
-    await batch.commit();
-    cursor = snap.docs[snap.docs.length - 1];
-    if (snap.size < 100) break;
+
+    let dispatchedCount = 0;
+    let skippedDuplicateCount = 0;
+    let cursor: QueryDocumentSnapshot<DocumentData> | null = null;
+
+    while (true) {
+      const parts: QueryConstraint[] = [...baseConstraints, limit(100)];
+      if (cursor) parts.push(startAfter(cursor));
+
+      const snap = await getDocs(query(collection(db, 'members'), ...parts));
+      if (snap.empty) break;
+
+      const batch = writeBatch(db);
+      let batchCount = 0;
+      for (const d of snap.docs) {
+        const m = d.data() as MemberProfile;
+        if (m.status !== 'ACTIVE') continue;
+
+        if (input.targetType === 'INACTIVE_MEMBERS' && input.inactivityDays) {
+          if (!isMemberInactive(m, input.inactivityDays, now, includeNeverPlayed)) {
+            continue;
+          }
+          if (input.branchFilter && input.branchFilter !== 'ALL') {
+            const effBranch = m.lastPlayBranch ?? m.preferredBranch;
+            if (effBranch !== input.branchFilter) continue;
+          }
+          if (input.levelFilter && input.levelFilter !== 'ALL' && m.currentLevel !== input.levelFilter) {
+            continue;
+          }
+        }
+
+        // Deterministic ID prevents duplicate notifications for the same campaign OR same daily inactive cohort
+        const notifId = dedupeKey ? `${dedupeKey}__${m.uid}` : `${campaignId}__${m.uid}`;
+        if (dedupeKey) {
+          const existingNotif = await getDoc(doc(db, 'memberNotifications', notifId));
+          if (existingNotif.exists()) {
+            skippedDuplicateCount++;
+            continue;
+          }
+        }
+
+        const payload: MemberNotification = {
+          id: notifId,
+          memberId: m.memberId,
+          memberUid: m.uid,
+          notificationCampaignId: campaignId,
+          category: input.targetType === 'INACTIVE_MEMBERS' ? 'INACTIVITY' : 'PROMO',
+          title: campaign.title,
+          message: campaign.message,
+          read: false,
+          readAt: null,
+          status: 'SENT',
+          sentAt: now,
+          createdAt: now,
+        };
+        batch.set(doc(db, 'memberNotifications', notifId), payload);
+        dispatchedCount++;
+        batchCount++;
+      }
+      if (batchCount > 0) {
+        await batch.commit();
+      }
+      cursor = snap.docs[snap.docs.length - 1];
+      if (snap.size < 100) break;
+    }
+
+    const auditId = genId('audit');
+    await setDoc(doc(db, 'auditLogs', auditId), {
+      id: auditId,
+      actorId: input.admin.uid,
+      actorRole: input.admin.role,
+      action: 'NOTIFICATION_DISPATCH',
+      targetType: 'notification',
+      targetId: campaignId,
+      before: null,
+      after: {
+        targetType: input.targetType,
+        dispatchedCount,
+        skippedDuplicateCount,
+        inactivityDays: input.inactivityDays,
+      },
+      metadata: dedupeKey ? { dedupeKey } : null,
+      timestamp: now,
+    });
+
+    return { campaignId, dispatchedCount, skippedDuplicateCount };
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `notifications/${campaignId}`);
   }
-
-  const auditId = genId('audit');
-  await setDoc(doc(db, 'auditLogs', auditId), {
-    id: auditId,
-    actorId: input.admin.uid,
-    actorRole: input.admin.role,
-    action: 'NOTIFICATION_DISPATCH',
-    targetType: 'notification',
-    targetId: campaignId,
-    before: null,
-    after: { targetType: input.targetType, dispatchedCount },
-    metadata: null,
-    timestamp: now,
-  });
-
-  return { campaignId, dispatchedCount };
 }
 
 export async function executeCycleResetByAdmin(input: {
@@ -1896,178 +2103,189 @@ export async function executeCycleResetByAdmin(input: {
   const nextCycleId = input.nextCycleId.trim();
   if (nextCycleId.length < 2) throw new Error('ID Cycle baru minimal 2 karakter.');
 
-  const { settings } = await getSettingsAndLevelsClient();
-  if (settings.currentCycleId === nextCycleId) {
-    throw new Error(`Cycle ${nextCycleId} sudah aktif.`);
-  }
-
-  const nextCycleRef = doc(db, 'membershipCycles', nextCycleId);
-  const nextCycleSnap = await getDoc(nextCycleRef);
-  if (nextCycleSnap.exists()) {
-    throw new Error(`Cycle ${nextCycleId} sudah pernah ada. Gunakan ID baru untuk menjaga idempotency.`);
-  }
-
-  const now = Date.now();
-  const prevCycleId = settings.currentCycleId;
-  let processedMembers = 0;
-  let cursor: QueryDocumentSnapshot<DocumentData> | null = null;
-
-  while (true) {
-    const parts: QueryConstraint[] = [orderBy('createdAt', 'asc'), limit(100)];
-    if (cursor) parts.push(startAfter(cursor));
-
-    const snap = await getDocs(query(collection(db, 'members'), ...parts));
-    if (snap.empty) break;
-
-    const batch = writeBatch(db);
-    for (const mDoc of snap.docs) {
-      const m = mDoc.data() as MemberProfile;
-      if (m.currentCycleId === nextCycleId) continue;
-
-      const newProgress = settings.resetXpProgress ? 0 : m.xpProgress;
-      const newReward = settings.resetXpReward ? 0 : m.xpReward;
-      const newLevel: LevelId = settings.resetLevel ? 'BRONZE' : m.currentLevel;
-
-      const snapId = `${prevCycleId}__${m.uid}`;
-      const snapshotDoc: CycleSnapshot = {
-        id: snapId,
-        memberId: m.memberId,
-        memberUid: m.uid,
-        memberUsername: m.username,
-        cycleId: prevCycleId,
-        nextCycleId,
-        previousXpProgress: m.xpProgress,
-        previousXpReward: m.xpReward,
-        previousLevel: m.currentLevel,
-        newXpProgress: newProgress,
-        newXpReward: newReward,
-        newLevel,
-        resetAt: now,
-        resetReason: input.resetReason,
-        executedBy: input.admin.uid,
-      };
-      batch.set(doc(db, 'cycleSnapshots', snapId), snapshotDoc);
-
-      batch.update(mDoc.ref, {
-        xpProgress: newProgress,
-        xpReward: newReward,
-        currentLevel: newLevel,
-        currentCycleId: nextCycleId,
-        updatedAt: now,
-      });
-
-      if (settings.resetXpProgress && m.xpProgress > 0) {
-        const lid = genId('xpp');
-        batch.set(doc(db, 'xpProgressLedger', lid), {
-          id: lid,
-          memberId: m.memberId,
-          memberUid: m.uid,
-          amount: -m.xpProgress,
-          type: 'PROGRESS',
-          direction: 'DEBIT',
-          source: 'RESET',
-          referenceId: nextCycleId,
-          branch: null,
-          cycleId: prevCycleId,
-          createdAt: now,
-          createdBy: input.admin.uid,
-          note: `Reset cycle ke ${nextCycleId}`,
-        });
-      }
-
-      if (settings.resetXpReward && m.xpReward > 0) {
-        const lid = genId('xpr');
-        batch.set(doc(db, 'xpRewardLedger', lid), {
-          id: lid,
-          memberId: m.memberId,
-          memberUid: m.uid,
-          amount: -m.xpReward,
-          type: 'REWARD',
-          direction: 'DEBIT',
-          source: 'RESET',
-          referenceId: nextCycleId,
-          branch: null,
-          cycleId: prevCycleId,
-          createdAt: now,
-          createdBy: input.admin.uid,
-          note: `Reset cycle ke ${nextCycleId}`,
-        });
-      }
-
-      const notifId = genId('notif');
-      batch.set(doc(db, 'memberNotifications', notifId), {
-        id: notifId,
-        memberId: m.memberId,
-        memberUid: m.uid,
-        notificationCampaignId: null,
-        category: 'RESET',
-        title: `Season Baru: ${input.nextCycleName}`,
-        message: `Membership cycle ${prevCycleId} berakhir dan beralih ke ${nextCycleId}. Seluruh riwayat Anda tetap aman.`,
-        read: false,
-        readAt: null,
-        status: 'SENT',
-        sentAt: now,
-        createdAt: now,
-      });
-
-      processedMembers++;
+  try {
+    const { settings } = await getSettingsAndLevelsClient();
+    if (settings.currentCycleId === nextCycleId) {
+      throw new Error(`Cycle ${nextCycleId} sudah aktif.`);
     }
-    await batch.commit();
-    cursor = snap.docs[snap.docs.length - 1];
-    if (snap.size < 100) break;
+
+    const nextCycleRef = doc(db, 'membershipCycles', nextCycleId);
+    const nextCycleSnap = await getDoc(nextCycleRef);
+    if (nextCycleSnap.exists()) {
+      throw new Error(`Cycle ${nextCycleId} sudah pernah ada. Gunakan ID baru untuk menjaga idempotency.`);
+    }
+
+    const now = Date.now();
+    const prevCycleId = settings.currentCycleId;
+    let processedMembers = 0;
+    let cursor: QueryDocumentSnapshot<DocumentData> | null = null;
+
+    while (true) {
+      const parts: QueryConstraint[] = [orderBy('createdAt', 'asc'), limit(100)];
+      if (cursor) parts.push(startAfter(cursor));
+
+      const snap = await getDocs(query(collection(db, 'members'), ...parts));
+      if (snap.empty) break;
+
+      const batch = writeBatch(db);
+      for (const mDoc of snap.docs) {
+        const m = mDoc.data() as MemberProfile;
+        if (m.currentCycleId === nextCycleId) continue;
+
+        const newProgress = settings.resetXpProgress ? 0 : m.xpProgress;
+        const newReward = settings.resetXpReward ? 0 : m.xpReward;
+        const newLevel: LevelId = settings.resetLevel ? 'BRONZE' : m.currentLevel;
+        const newLevelMode: LevelMode = settings.resetLevel
+          ? 'RESET'
+          : (m.levelMode ?? 'AUTOMATIC');
+
+        const snapId = `${prevCycleId}__${m.uid}`;
+        const snapshotDoc: CycleSnapshot = {
+          id: snapId,
+          memberId: m.memberId,
+          memberUid: m.uid,
+          memberUsername: m.username,
+          cycleId: prevCycleId,
+          nextCycleId,
+          previousXpProgress: m.xpProgress,
+          previousXpReward: m.xpReward,
+          previousLevel: m.currentLevel,
+          newXpProgress: newProgress,
+          newXpReward: newReward,
+          newLevel,
+          resetAt: now,
+          resetReason: input.resetReason,
+          executedBy: input.admin.uid,
+        };
+        batch.set(doc(db, 'cycleSnapshots', snapId), snapshotDoc);
+
+        batch.update(mDoc.ref, {
+          xpProgress: newProgress,
+          xpReward: newReward,
+          currentLevel: newLevel,
+          levelMode: newLevelMode,
+          currentCycleId: nextCycleId,
+          updatedAt: now,
+        });
+
+        if (settings.resetXpProgress && m.xpProgress > 0) {
+          const lid = genId('xpp');
+          batch.set(doc(db, 'xpProgressLedger', lid), {
+            id: lid,
+            memberId: m.memberId,
+            memberUid: m.uid,
+            amount: -m.xpProgress,
+            type: 'PROGRESS',
+            direction: 'DEBIT',
+            source: 'RESET',
+            referenceId: nextCycleId,
+            branch: null,
+            cycleId: prevCycleId,
+            createdAt: now,
+            createdBy: input.admin.uid,
+            note: `Reset cycle ke ${nextCycleId}`,
+          });
+        }
+
+        if (settings.resetXpReward && m.xpReward > 0) {
+          const lid = genId('xpr');
+          batch.set(doc(db, 'xpRewardLedger', lid), {
+            id: lid,
+            memberId: m.memberId,
+            memberUid: m.uid,
+            amount: -m.xpReward,
+            type: 'REWARD',
+            direction: 'DEBIT',
+            source: 'RESET',
+            referenceId: nextCycleId,
+            branch: null,
+            cycleId: prevCycleId,
+            createdAt: now,
+            createdBy: input.admin.uid,
+            note: `Reset cycle ke ${nextCycleId}`,
+          });
+        }
+
+        const notifId = genId('notif');
+        batch.set(doc(db, 'memberNotifications', notifId), {
+          id: notifId,
+          memberId: m.memberId,
+          memberUid: m.uid,
+          notificationCampaignId: null,
+          category: 'RESET',
+          title: `Season Baru: ${input.nextCycleName}`,
+          message: `Membership cycle ${prevCycleId} berakhir dan beralih ke ${nextCycleId}. Seluruh riwayat Anda tetap aman.`,
+          read: false,
+          readAt: null,
+          status: 'SENT',
+          sentAt: now,
+          createdAt: now,
+        });
+
+        processedMembers++;
+      }
+      await batch.commit();
+      cursor = snap.docs[snap.docs.length - 1];
+      if (snap.size < 100) break;
+    }
+
+    const finalBatch = writeBatch(db);
+    finalBatch.set(
+      doc(db, 'membershipCycles', prevCycleId),
+      { status: 'CLOSED', endedAt: now },
+      { merge: true }
+    );
+    const newCycle: MembershipCycle = {
+      id: nextCycleId,
+      name: input.nextCycleName.trim() || nextCycleId,
+      startedAt: now,
+      endedAt: null,
+      status: 'ACTIVE',
+      resetCount: processedMembers,
+      createdBy: input.admin.uid,
+    };
+    finalBatch.set(nextCycleRef, newCycle);
+
+    const intervalMs =
+      settings.resetUnit === 'MONTHS'
+        ? settings.resetInterval * 30 * 24 * 60 * 60 * 1000
+        : settings.resetInterval * 24 * 60 * 60 * 1000;
+
+    finalBatch.set(
+      doc(db, 'systemSettings', 'default'),
+      {
+        ...settings,
+        currentCycleId: nextCycleId,
+        nextResetAt: settings.resetEnabled ? now + intervalMs : null,
+        updatedAt: now,
+        updatedBy: input.admin.uid,
+      },
+      { merge: true }
+    );
+
+    const auditId = genId('audit');
+    const auditDoc: AuditLogRecord = {
+      id: auditId,
+      actorId: input.admin.uid,
+      actorRole: input.admin.role,
+      action: 'CYCLE_RESET',
+      targetType: 'membershipCycle',
+      targetId: nextCycleId,
+      before: { cycleId: prevCycleId },
+      after: { cycleId: nextCycleId, processedMembers, reason: input.resetReason },
+      metadata: null,
+      timestamp: now,
+    };
+    finalBatch.set(doc(db, 'auditLogs', auditId), auditDoc);
+    await finalBatch.commit();
+
+    return { prevCycleId, nextCycleId, processedMembers };
+  } catch (err) {
+    if (err instanceof Error && (err.message.includes('sudah aktif') || err.message.includes('sudah pernah'))) {
+      throw err;
+    }
+    handleFirestoreError(err, OperationType.WRITE, `membershipCycles/${nextCycleId}`);
   }
-
-  const finalBatch = writeBatch(db);
-  finalBatch.set(
-    doc(db, 'membershipCycles', prevCycleId),
-    { status: 'CLOSED', endedAt: now },
-    { merge: true }
-  );
-  const newCycle: MembershipCycle = {
-    id: nextCycleId,
-    name: input.nextCycleName.trim() || nextCycleId,
-    startedAt: now,
-    endedAt: null,
-    status: 'ACTIVE',
-    resetCount: processedMembers,
-    createdBy: input.admin.uid,
-  };
-  finalBatch.set(nextCycleRef, newCycle);
-
-  const intervalMs =
-    settings.resetUnit === 'MONTHS'
-      ? settings.resetInterval * 30 * 24 * 60 * 60 * 1000
-      : settings.resetInterval * 24 * 60 * 60 * 1000;
-
-  finalBatch.set(
-    doc(db, 'systemSettings', 'default'),
-    {
-      ...settings,
-      currentCycleId: nextCycleId,
-      nextResetAt: settings.resetEnabled ? now + intervalMs : null,
-      updatedAt: now,
-      updatedBy: input.admin.uid,
-    },
-    { merge: true }
-  );
-
-  const auditId = genId('audit');
-  const auditDoc: AuditLogRecord = {
-    id: auditId,
-    actorId: input.admin.uid,
-    actorRole: input.admin.role,
-    action: 'CYCLE_RESET',
-    targetType: 'membershipCycle',
-    targetId: nextCycleId,
-    before: { cycleId: prevCycleId },
-    after: { cycleId: nextCycleId, processedMembers, reason: input.resetReason },
-    metadata: null,
-    timestamp: now,
-  };
-  finalBatch.set(doc(db, 'auditLogs', auditId), auditDoc);
-  await finalBatch.commit();
-
-  return { prevCycleId, nextCycleId, processedMembers };
 }
 
 // ---------- Admin Aggregate Metrics (Efficient Count Queries) ----------
@@ -2088,9 +2306,6 @@ export async function fetchAdminSummaryMetrics() {
       totalTxSnap,
       pendingClaimsSnap,
       pendingRedemptionsSnap,
-      inactive7Snap,
-      inactive14Snap,
-      inactive30Snap,
       recentTxSnap,
     ] = await Promise.all([
       getCountFromServer(collection(db, 'members')),
@@ -2102,17 +2317,41 @@ export async function fetchAdminSummaryMetrics() {
       getCountFromServer(collection(db, 'transactions')),
       getCountFromServer(query(collection(db, 'claims'), where('status', '==', 'ON_PROCESS'))),
       getCountFromServer(query(collection(db, 'redemptions'), where('status', '==', 'ON_PROCESS'))),
-      getCountFromServer(
-        query(collection(db, 'members'), where('status', '==', 'ACTIVE'), where('lastPlayAt', '<=', d7))
-      ),
-      getCountFromServer(
-        query(collection(db, 'members'), where('status', '==', 'ACTIVE'), where('lastPlayAt', '<=', d14))
-      ),
-      getCountFromServer(
-        query(collection(db, 'members'), where('status', '==', 'ACTIVE'), where('lastPlayAt', '<=', d30))
-      ),
       getDocs(query(collection(db, 'transactions'), orderBy('createdAt', 'desc'), limit(25))),
     ]);
+
+    let inactive7Days = 0;
+    let inactive14Days = 0;
+    let inactive30Days = 0;
+    try {
+      const [in7, in14, in30] = await Promise.all([
+        getCountFromServer(
+          query(collection(db, 'members'), where('status', '==', 'ACTIVE'), where('lastPlayAt', '<=', d7))
+        ),
+        getCountFromServer(
+          query(collection(db, 'members'), where('status', '==', 'ACTIVE'), where('lastPlayAt', '<=', d14))
+        ),
+        getCountFromServer(
+          query(collection(db, 'members'), where('status', '==', 'ACTIVE'), where('lastPlayAt', '<=', d30))
+        ),
+      ]);
+      inactive7Days = in7.data().count;
+      inactive14Days = in14.data().count;
+      inactive30Days = in30.data().count;
+    } catch {
+      // Composite index (status, lastPlayAt) fallback without blocking dashboard metrics
+      const activeSnap = await getDocs(
+        query(collection(db, 'members'), where('status', '==', 'ACTIVE'), limit(250))
+      );
+      for (const mDoc of activeSnap.docs) {
+        const lp = (mDoc.data() as MemberProfile).lastPlayAt;
+        if (lp !== null) {
+          if (lp <= d7) inactive7Days++;
+          if (lp <= d14) inactive14Days++;
+          if (lp <= d30) inactive30Days++;
+        }
+      }
+    }
 
     const recentTransactions = recentTxSnap.docs.map((d) => d.data() as TransactionRecord);
     const recentTxAmount = recentTransactions.reduce((acc, t) => acc + t.amountIdr, 0);
@@ -2132,12 +2371,1148 @@ export async function fetchAdminSummaryMetrics() {
       recentXpDistributed,
       pendingClaims: pendingClaimsSnap.data().count,
       pendingRedemptions: pendingRedemptionsSnap.data().count,
-      inactive7Days: inactive7Snap.data().count,
-      inactive14Days: inactive14Snap.data().count,
-      inactive30Days: inactive30Snap.data().count,
+      inactive7Days,
+      inactive14Days,
+      inactive30Days,
       recentTransactions: recentTransactions.slice(0, 6),
     };
   } catch (err) {
     handleFirestoreError(err, OperationType.LIST, 'admin_metrics');
   }
 }
+
+// ---------- CMS Homepage (Draft / Preview / Publish / Immutable Version History / Rollback) ----------
+export async function fetchPublishedHomepageCms(): Promise<{
+  content: HomepageCmsContent;
+  meta: { versionId: string; versionNumber: number; publishedAt: number } | null;
+}> {
+  try {
+    const snap = await getDoc(doc(db, 'cmsPublished', 'homepage'));
+    if (!snap.exists()) {
+      return { content: sanitizeHomepageCmsContent(DEFAULT_HOMEPAGE_CMS), meta: null };
+    }
+    const data = snap.data() as CmsPublishedDoc;
+    return {
+      content: sanitizeHomepageCmsContent(data.content),
+      meta: {
+        versionId: data.versionId,
+        versionNumber: data.versionNumber,
+        publishedAt: data.publishedAt,
+      },
+    };
+  } catch {
+    return { content: sanitizeHomepageCmsContent(DEFAULT_HOMEPAGE_CMS), meta: null };
+  }
+}
+
+export async function fetchDraftHomepageCms(): Promise<{
+  draft: CmsDraftDoc | null;
+  content: HomepageCmsContent;
+}> {
+  try {
+    const draftSnap = await getDoc(doc(db, 'cmsDrafts', 'homepage'));
+    if (draftSnap.exists()) {
+      const data = draftSnap.data() as CmsDraftDoc;
+      return {
+        draft: data,
+        content: sanitizeHomepageCmsContent(data.content),
+      };
+    }
+    const pub = await fetchPublishedHomepageCms();
+    return { draft: null, content: pub.content };
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, 'cmsDrafts/homepage');
+  }
+}
+
+export async function saveHomepageCmsDraft(input: {
+  content: HomepageCmsContent;
+  admin: AdminUser;
+  basePublishedVersionId: string | null;
+}): Promise<CmsDraftDoc> {
+  if (input.admin.role !== 'SUPER_ADMIN' && input.admin.role !== 'ADMIN') {
+    throw new Error('Hanya ADMIN atau SUPER_ADMIN yang dapat mengubah draft CMS.');
+  }
+
+  const sec = validateCmsSecurity(input.content);
+  if (!sec.valid) {
+    throw new Error(sec.error || 'Konten CMS tidak lolos validasi keamanan.');
+  }
+
+  const sanitized = sanitizeHomepageCmsContent(input.content);
+  const now = Date.now();
+  const payload: CmsDraftDoc = {
+    id: 'homepage',
+    content: sanitized,
+    updatedAt: now,
+    updatedBy: input.admin.uid,
+    updatedByEmail: input.admin.email,
+    basePublishedVersionId: input.basePublishedVersionId,
+  };
+
+  try {
+    await setDoc(doc(db, 'cmsDrafts', 'homepage'), payload);
+    const auditId = genId('audit');
+    await setDoc(doc(db, 'auditLogs', auditId), {
+      id: auditId,
+      actorId: input.admin.uid,
+      actorRole: input.admin.role,
+      action: 'CMS_DRAFT_SAVE',
+      targetType: 'cmsDraft',
+      targetId: 'homepage',
+      before: null,
+      after: {
+        brandName: sanitized.brandName,
+        heroTitle: sanitized.heroTitle,
+        basePublishedVersionId: input.basePublishedVersionId,
+      },
+      metadata: null,
+      timestamp: now,
+    });
+    return payload;
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'cmsDrafts/homepage');
+  }
+}
+
+export async function publishHomepageCms(input: {
+  content: HomepageCmsContent;
+  admin: AdminUser;
+  note?: string;
+}): Promise<{ published: CmsPublishedDoc; version: CmsVersionRecord }> {
+  if (input.admin.role !== 'SUPER_ADMIN' && input.admin.role !== 'ADMIN') {
+    throw new Error('Hanya ADMIN atau SUPER_ADMIN yang dapat mempublikasikan CMS.');
+  }
+
+  const sec = validateCmsSecurity(input.content);
+  if (!sec.valid) {
+    throw new Error(sec.error || 'Konten CMS tidak lolos validasi keamanan.');
+  }
+
+  const sanitized = sanitizeHomepageCmsContent(input.content);
+  const cleanNote = (input.note || 'Publish pembaruan konten homepage').trim().slice(0, 240);
+
+  try {
+    return await runTransaction(db, async (tx) => {
+      const now = Date.now();
+      const pubRef = doc(db, 'cmsPublished', 'homepage');
+      const pubSnap = await tx.get(pubRef);
+
+      const prevVersionNum = pubSnap.exists()
+        ? Number((pubSnap.data() as CmsPublishedDoc).versionNumber || 0)
+        : 0;
+      const prevVersionId = pubSnap.exists()
+        ? (pubSnap.data() as CmsPublishedDoc).versionId
+        : null;
+      const nextVersionNum = prevVersionNum + 1;
+      const versionId = `v${nextVersionNum}`;
+
+      const versionDoc: CmsVersionRecord = {
+        versionId,
+        versionNumber: nextVersionNum,
+        content: sanitized,
+        createdBy: input.admin.uid,
+        createdAt: now,
+        publishedBy: input.admin.uid,
+        publishedByEmail: input.admin.email,
+        publishedAt: now,
+        sourceAction: 'PUBLISH',
+        restoredFromVersionId: null,
+        note: cleanNote,
+      };
+
+      const publishedDoc: CmsPublishedDoc = {
+        id: 'homepage',
+        content: sanitized,
+        versionId,
+        versionNumber: nextVersionNum,
+        publishedAt: now,
+        publishedBy: input.admin.uid,
+        publishedByEmail: input.admin.email,
+        updatedAt: now,
+      };
+
+      const draftDoc: CmsDraftDoc = {
+        id: 'homepage',
+        content: sanitized,
+        updatedAt: now,
+        updatedBy: input.admin.uid,
+        updatedByEmail: input.admin.email,
+        basePublishedVersionId: versionId,
+      };
+
+      tx.set(doc(db, 'cmsVersions', versionId), versionDoc);
+      tx.set(pubRef, publishedDoc);
+      tx.set(doc(db, 'cmsDrafts', 'homepage'), draftDoc);
+
+      const auditId = genId('audit');
+      tx.set(doc(db, 'auditLogs', auditId), {
+        id: auditId,
+        actorId: input.admin.uid,
+        actorRole: input.admin.role,
+        action: 'CMS_PUBLISH',
+        targetType: 'cmsPublished',
+        targetId: versionId,
+        before: prevVersionId ? { versionId: prevVersionId, versionNumber: prevVersionNum } : null,
+        after: { versionId, versionNumber: nextVersionNum, note: cleanNote },
+        metadata: null,
+        timestamp: now,
+      });
+
+      return { published: publishedDoc, version: versionDoc };
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'cmsPublished/homepage');
+  }
+}
+
+export async function fetchCmsVersionHistory(maxRows = 30): Promise<CmsVersionRecord[]> {
+  try {
+    const snap = await getDocs(
+      query(collection(db, 'cmsVersions'), orderBy('versionNumber', 'desc'), limit(maxRows))
+    );
+    return snap.docs.map((d) => d.data() as CmsVersionRecord);
+  } catch (err) {
+    if (isMissingIndexError(err)) {
+      try {
+        const fallbackSnap = await getDocs(query(collection(db, 'cmsVersions'), limit(maxRows)));
+        return fallbackSnap.docs
+          .map((d) => d.data() as CmsVersionRecord)
+          .sort((a, b) => b.versionNumber - a.versionNumber);
+      } catch (fallbackErr) {
+        handleFirestoreError(fallbackErr, OperationType.LIST, 'cmsVersions');
+      }
+    }
+    handleFirestoreError(err, OperationType.LIST, 'cmsVersions');
+  }
+}
+
+export async function rollbackHomepageCmsVersion(input: {
+  targetVersion: CmsVersionRecord;
+  admin: AdminUser;
+  note?: string;
+}): Promise<{ published: CmsPublishedDoc; version: CmsVersionRecord }> {
+  if (input.admin.role !== 'SUPER_ADMIN' && input.admin.role !== 'ADMIN') {
+    throw new Error('Hanya ADMIN atau SUPER_ADMIN yang dapat melakukan rollback CMS.');
+  }
+
+  const sanitized = sanitizeHomepageCmsContent(input.targetVersion.content);
+  const sec = validateCmsSecurity(sanitized);
+  if (!sec.valid) {
+    throw new Error(sec.error || 'Snapshot versi target tidak lolos validasi keamanan.');
+  }
+
+  const cleanNote = (
+    input.note || `Rollback ke ${input.targetVersion.versionId}`
+  ).trim().slice(0, 240);
+
+  try {
+    return await runTransaction(db, async (tx) => {
+      const now = Date.now();
+      const pubRef = doc(db, 'cmsPublished', 'homepage');
+      const pubSnap = await tx.get(pubRef);
+
+      const prevVersionNum = pubSnap.exists()
+        ? Number((pubSnap.data() as CmsPublishedDoc).versionNumber || 0)
+        : 0;
+      const prevVersionId = pubSnap.exists()
+        ? (pubSnap.data() as CmsPublishedDoc).versionId
+        : null;
+      const nextVersionNum = prevVersionNum + 1;
+      const versionId = `v${nextVersionNum}`;
+
+      const versionDoc: CmsVersionRecord = {
+        versionId,
+        versionNumber: nextVersionNum,
+        content: sanitized,
+        createdBy: input.admin.uid,
+        createdAt: now,
+        publishedBy: input.admin.uid,
+        publishedByEmail: input.admin.email,
+        publishedAt: now,
+        sourceAction: 'ROLLBACK',
+        restoredFromVersionId: input.targetVersion.versionId,
+        note: cleanNote,
+      };
+
+      const publishedDoc: CmsPublishedDoc = {
+        id: 'homepage',
+        content: sanitized,
+        versionId,
+        versionNumber: nextVersionNum,
+        publishedAt: now,
+        publishedBy: input.admin.uid,
+        publishedByEmail: input.admin.email,
+        updatedAt: now,
+      };
+
+      const draftDoc: CmsDraftDoc = {
+        id: 'homepage',
+        content: sanitized,
+        updatedAt: now,
+        updatedBy: input.admin.uid,
+        updatedByEmail: input.admin.email,
+        basePublishedVersionId: versionId,
+      };
+
+      tx.set(doc(db, 'cmsVersions', versionId), versionDoc);
+      tx.set(pubRef, publishedDoc);
+      tx.set(doc(db, 'cmsDrafts', 'homepage'), draftDoc);
+
+      const auditId = genId('audit');
+      tx.set(doc(db, 'auditLogs', auditId), {
+        id: auditId,
+        actorId: input.admin.uid,
+        actorRole: input.admin.role,
+        action: 'CMS_ROLLBACK',
+        targetType: 'cmsPublished',
+        targetId: versionId,
+        before: prevVersionId ? { versionId: prevVersionId, versionNumber: prevVersionNum } : null,
+        after: {
+          versionId,
+          versionNumber: nextVersionNum,
+          restoredFromVersionId: input.targetVersion.versionId,
+          note: cleanNote,
+        },
+        metadata: null,
+        timestamp: now,
+      });
+
+      return { published: publishedDoc, version: versionDoc };
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'cmsPublished/homepage');
+  }
+}
+
+export async function uploadCmsAsset(file: File): Promise<{
+  assetUrl: string;
+  assetPath: string;
+}> {
+  const token = await getAuthBearer();
+  const formData = new FormData();
+  formData.append('asset', file);
+
+  const res = await fetch('/api/admin/cms/assets', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    body: formData,
+  });
+
+  const data = (await res.json()) as {
+    assetUrl?: string;
+    assetPath?: string;
+    error?: string;
+  };
+  if (!res.ok || !data.assetUrl || !data.assetPath) {
+    throw new Error(data.error || 'Gambar CMS gagal diunggah.');
+  }
+  return {
+    assetUrl: data.assetUrl,
+    assetPath: data.assetPath,
+  };
+}
+
+// ---------- Admin XP Adjustment (Phase B — Progress & Reward Separate Adjustments) ----------
+export async function adjustMemberXpByAdmin(input: {
+  operationId: string;
+  kind: XpAdjustmentKind;
+  identifier: string;
+  memberUid?: string;
+  adjustment: number;
+  reason: string;
+  reference?: string;
+  admin: AdminUser;
+  adminSdkConfigured: boolean;
+}): Promise<{
+  record: XpAdjustmentRecord;
+  newXpProgress: number;
+  newXpReward: number;
+  levelAfter: LevelId;
+}> {
+  if (input.admin.role !== 'SUPER_ADMIN' && input.admin.role !== 'ADMIN') {
+    throw new Error('Hanya ADMIN atau SUPER_ADMIN yang dapat melakukan penyesuaian XP.');
+  }
+
+  const cleanOpId = (input.operationId || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+  if (cleanOpId.length < 6 || cleanOpId.length > 80) {
+    throw new Error('Operation ID tidak valid.');
+  }
+
+  if (!Number.isSafeInteger(input.adjustment) || input.adjustment === 0) {
+    throw new Error('Nilai adjustment harus berupa bilangan bulat selain 0.');
+  }
+
+  const cleanReason = (input.reason || '').trim().slice(0, 300);
+  if (cleanReason.length < 3) {
+    throw new Error('Alasan penyesuaian XP wajib diisi (minimal 3 karakter).');
+  }
+  const cleanRef = (input.reference || '').trim().slice(0, 120);
+
+  if (input.adminSdkConfigured) {
+    const token = await getAuthBearer();
+    const res = await fetch('/api/admin/xp-adjustments', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        operationId: cleanOpId,
+        kind: input.kind,
+        identifier: input.identifier,
+        memberUid: input.memberUid,
+        adjustment: input.adjustment,
+        reason: cleanReason,
+        reference: cleanRef,
+      }),
+    });
+    const data = (await res.json()) as {
+      record?: XpAdjustmentRecord;
+      newXpProgress?: number;
+      newXpReward?: number;
+      levelAfter?: LevelId;
+      error?: string;
+    };
+    if (!res.ok || !data.record) {
+      throw new Error(data.error || 'Gagal memproses penyesuaian XP.');
+    }
+    return {
+      record: data.record,
+      newXpProgress: data.newXpProgress ?? data.record.afterXpProgress,
+      newXpReward: data.newXpReward ?? data.record.afterXpReward,
+      levelAfter: data.levelAfter ?? data.record.levelAfter,
+    };
+  }
+
+  // Client Firestore Transactional Execution (when Admin SDK service account not set)
+  let targetUid = (input.memberUid || '').trim();
+  if (!targetUid) {
+    const found = await findMemberByIdentifierAdmin(input.identifier);
+    if (!found) {
+      throw new Error('Member dengan username atau nomor WhatsApp tersebut tidak ditemukan.');
+    }
+    targetUid = found.uid;
+  }
+
+  const { settings, levels } = await getSettingsAndLevelsClient();
+  const adjDocId = `adj_${cleanOpId}`;
+
+  try {
+    return await runTransaction(db, async (tx) => {
+      const now = Date.now();
+      const adjRef = doc(db, 'xpAdjustments', adjDocId);
+      const existingAdj = await tx.get(adjRef);
+      if (existingAdj.exists()) {
+        throw new Error('Penyesuaian XP dengan ID operasi ini sudah diproses sebelumnya.');
+      }
+
+      const memberRef = doc(db, 'members', targetUid);
+      const memberSnap = await tx.get(memberRef);
+      if (!memberSnap.exists()) {
+        throw new Error('Profil member tidak ditemukan.');
+      }
+
+      const member = memberSnap.data() as MemberProfile;
+      if (member.status === 'DELETED') {
+        throw new Error('Member berstatus DELETED dan tidak dapat disesuaikan saldonya.');
+      }
+
+      const computed =
+        input.kind === 'PROGRESS'
+          ? calculateXpProgressAdjustment({
+              currentXpProgress: member.xpProgress,
+              currentXpReward: member.xpReward,
+              currentLevel: member.currentLevel,
+              adjustment: input.adjustment,
+              levels,
+            })
+          : calculateXpRewardAdjustment({
+              currentXpProgress: member.xpProgress,
+              currentXpReward: member.xpReward,
+              currentLevel: member.currentLevel,
+              adjustment: input.adjustment,
+            });
+
+      const auditId = genId('audit');
+      const ledgerCollection = input.kind === 'PROGRESS' ? 'xpProgressLedger' : 'xpRewardLedger';
+      const ledgerId = genId(input.kind === 'PROGRESS' ? 'xpp' : 'xpr');
+      const ledgerSource =
+        input.kind === 'PROGRESS' ? 'ADMIN_ADJUSTMENT' : 'XP_REWARD_ADMIN_ADJUSTMENT';
+
+      if (input.kind === 'PROGRESS') {
+        tx.update(memberRef, {
+          xpProgress: computed.newXpProgress,
+          currentLevel: computed.levelAfter,
+          levelMode: 'AUTOMATIC',
+          updatedAt: now,
+        });
+      } else {
+        tx.update(memberRef, {
+          xpReward: computed.newXpReward,
+          updatedAt: now,
+        });
+      }
+
+      const notePrefix =
+        input.kind === 'PROGRESS' ? 'Penyesuaian XP Progress' : 'Penyesuaian XP Reward';
+      tx.set(doc(db, ledgerCollection, ledgerId), {
+        id: ledgerId,
+        memberId: member.memberId,
+        memberUid: member.uid,
+        amount: input.adjustment,
+        type: input.kind,
+        direction: input.adjustment > 0 ? 'CREDIT' : 'DEBIT',
+        source: ledgerSource,
+        referenceId: adjDocId,
+        branch: null,
+        cycleId: settings.currentCycleId,
+        createdAt: now,
+        createdBy: input.admin.uid,
+        note: `${notePrefix}: ${cleanReason}${cleanRef ? ` (Ref: ${cleanRef})` : ''}`.slice(0, 300),
+      });
+
+      const adjRecord: XpAdjustmentRecord = {
+        id: adjDocId,
+        operationId: cleanOpId,
+        kind: input.kind,
+        memberId: member.memberId,
+        memberUid: member.uid,
+        memberUsername: member.username,
+        adjustment: input.adjustment,
+        beforeBalance: computed.beforeBalance,
+        afterBalance: computed.afterBalance,
+        beforeXpProgress: member.xpProgress,
+        afterXpProgress: computed.newXpProgress,
+        beforeXpReward: member.xpReward,
+        afterXpReward: computed.newXpReward,
+        levelBefore: computed.levelBefore,
+        levelAfter: computed.levelAfter,
+        reason: cleanReason,
+        reference: cleanRef,
+        auditId,
+        adminId: input.admin.uid,
+        adminEmail: input.admin.email,
+        adminRole: input.admin.role,
+        cycleId: settings.currentCycleId,
+        timestamp: now,
+      };
+
+      tx.set(adjRef, adjRecord);
+
+      if (input.kind === 'PROGRESS' && computed.levelChanged) {
+        const lhId = genId('lvl');
+        tx.set(doc(db, 'levelHistory', lhId), {
+          id: lhId,
+          memberId: member.memberId,
+          memberUid: member.uid,
+          fromLevel: computed.levelBefore,
+          toLevel: computed.levelAfter,
+          xpProgressAtEvent: computed.newXpProgress,
+          source: 'ADMIN_ADJUSTMENT',
+          cycleId: settings.currentCycleId,
+          createdAt: now,
+        });
+      }
+
+      const notifId = genId('notif');
+      const signStr = input.adjustment > 0 ? `+${input.adjustment}` : `${input.adjustment}`;
+      const balanceLabel = input.kind === 'PROGRESS' ? 'XP Progress' : 'XP Reward';
+      tx.set(doc(db, 'memberNotifications', notifId), {
+        id: notifId,
+        memberId: member.memberId,
+        memberUid: member.uid,
+        notificationCampaignId: null,
+        category: 'SYSTEM',
+        title: `Penyesuaian ${balanceLabel} (${signStr} XP)`,
+        message: `${balanceLabel} Anda disesuaikan sebesar ${signStr} XP (saldo baru: ${computed.afterBalance} XP${
+          input.kind === 'PROGRESS' && computed.levelChanged ? `, Level: ${computed.levelAfter}` : ''
+        }). Alasan: ${cleanReason}`,
+        read: false,
+        readAt: null,
+        status: 'SENT',
+        sentAt: now,
+        createdAt: now,
+      });
+
+      tx.set(doc(db, 'auditLogs', auditId), {
+        id: auditId,
+        actorId: input.admin.uid,
+        actorRole: input.admin.role,
+        action:
+          input.kind === 'PROGRESS'
+            ? 'XP_PROGRESS_ADMIN_ADJUSTMENT'
+            : 'XP_REWARD_ADMIN_ADJUSTMENT',
+        targetType: 'member',
+        targetId: member.uid,
+        before: {
+          xpProgress: member.xpProgress,
+          xpReward: member.xpReward,
+          currentLevel: member.currentLevel,
+        },
+        after: {
+          xpProgress: computed.newXpProgress,
+          xpReward: computed.newXpReward,
+          currentLevel: computed.levelAfter,
+        },
+        metadata: {
+          adjustmentId: adjDocId,
+          operationId: cleanOpId,
+          kind: input.kind,
+          adjustment: input.adjustment,
+          reason: cleanReason,
+          reference: cleanRef,
+          memberId: member.memberId,
+          memberUsername: member.username,
+        },
+        timestamp: now,
+      });
+
+      return {
+        record: adjRecord,
+        newXpProgress: computed.newXpProgress,
+        newXpReward: computed.newXpReward,
+        levelAfter: computed.levelAfter,
+      };
+    });
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      (err.message.includes('sudah diproses') ||
+        err.message.includes('tidak boleh negatif') ||
+        err.message.includes('tidak ditemukan') ||
+        err.message.includes('DELETED') ||
+        err.message.includes('bilangan bulat') ||
+        err.message.includes('wajib diisi'))
+    ) {
+      throw err;
+    }
+    handleFirestoreError(err, OperationType.WRITE, `xpAdjustments/${adjDocId}`);
+  }
+}
+
+export async function fetchRecentXpAdjustments(input?: {
+  kindFilter?: 'ALL' | XpAdjustmentKind;
+  pageSize?: number;
+  cursor?: QueryDocumentSnapshot<DocumentData> | null;
+}): Promise<PaginatedResult<XpAdjustmentRecord>> {
+  const constraints: QueryConstraint[] = [];
+  if (input?.kindFilter && input.kindFilter !== 'ALL') {
+    constraints.push(where('kind', '==', input.kindFilter));
+  }
+  return fetchPaginatedCollection<XpAdjustmentRecord>({
+    collectionName: 'xpAdjustments',
+    constraints,
+    orderByField: 'timestamp',
+    orderDirection: 'desc',
+    pageSize: input?.pageSize ?? 15,
+    cursor: input?.cursor ?? null,
+  });
+}
+
+// ---------- Admin Force Level Override & Recalculate (Phase C) ----------
+export async function overrideMemberLevelByAdmin(input: {
+  operationId: string;
+  action: LevelOverrideAction;
+  identifier: string;
+  memberUid?: string;
+  targetLevel?: LevelId;
+  reason: string;
+  reference?: string;
+  admin: AdminUser;
+  adminSdkConfigured: boolean;
+}): Promise<{
+  record: LevelOverrideRecord;
+  newLevel: LevelId;
+  newLevelMode: 'AUTOMATIC' | 'MANUAL_OVERRIDE';
+}> {
+  if (input.admin.role !== 'SUPER_ADMIN' && input.admin.role !== 'ADMIN') {
+    throw new Error('Hanya ADMIN atau SUPER_ADMIN yang dapat mengubah level member.');
+  }
+
+  const cleanOpId = (input.operationId || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+  if (cleanOpId.length < 6 || cleanOpId.length > 80) {
+    throw new Error('Operation ID tidak valid.');
+  }
+
+  const cleanReason = (input.reason || '').trim().slice(0, 300);
+  if (cleanReason.length < 3) {
+    throw new Error('Alasan perubahan level wajib diisi (minimal 3 karakter).');
+  }
+  const cleanRef = (input.reference || '').trim().slice(0, 120);
+
+  if (input.adminSdkConfigured) {
+    const token = await getAuthBearer();
+    const res = await fetch('/api/admin/level-overrides', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        operationId: cleanOpId,
+        action: input.action,
+        identifier: input.identifier,
+        memberUid: input.memberUid,
+        targetLevel: input.targetLevel,
+        reason: cleanReason,
+        reference: cleanRef,
+      }),
+    });
+    const data = (await res.json()) as {
+      record?: LevelOverrideRecord;
+      newLevel?: LevelId;
+      newLevelMode?: 'AUTOMATIC' | 'MANUAL_OVERRIDE';
+      error?: string;
+    };
+    if (!res.ok || !data.record) {
+      throw new Error(data.error || 'Gagal memproses level override.');
+    }
+    return {
+      record: data.record,
+      newLevel: data.newLevel ?? data.record.newLevel,
+      newLevelMode: data.newLevelMode ?? data.record.newLevelMode,
+    };
+  }
+
+  // Client Firestore Transactional Execution (when Admin SDK service account not set)
+  let targetUid = (input.memberUid || '').trim();
+  if (!targetUid) {
+    const found = await findMemberByIdentifierAdmin(input.identifier);
+    if (!found) {
+      throw new Error('Member dengan username atau nomor WhatsApp tersebut tidak ditemukan.');
+    }
+    targetUid = found.uid;
+  }
+
+  const { settings, levels } = await getSettingsAndLevelsClient();
+  const ovrDocId = `ovr_${cleanOpId}`;
+
+  try {
+    return await runTransaction(db, async (tx) => {
+      const now = Date.now();
+      const ovrRef = doc(db, 'levelOverrides', ovrDocId);
+      const existingOvr = await tx.get(ovrRef);
+      if (existingOvr.exists()) {
+        throw new Error('Operasi Level Override dengan ID ini sudah diproses sebelumnya.');
+      }
+
+      const memberRef = doc(db, 'members', targetUid);
+      const memberSnap = await tx.get(memberRef);
+      if (!memberSnap.exists()) {
+        throw new Error('Profil member tidak ditemukan.');
+      }
+
+      const member = memberSnap.data() as MemberProfile;
+      if (member.status === 'DELETED') {
+        throw new Error('Member berstatus DELETED dan tidak dapat diubah levelnya.');
+      }
+
+      const computed =
+        input.action === 'MANUAL_OVERRIDE'
+          ? calculateManualLevelOverride({
+              currentXpProgress: member.xpProgress,
+              currentLevel: member.currentLevel,
+              currentLevelMode: member.levelMode,
+              targetLevel: input.targetLevel as LevelId,
+            })
+          : calculateRecalculateLevelFromXp({
+              currentXpProgress: member.xpProgress,
+              currentLevel: member.currentLevel,
+              currentLevelMode: member.levelMode,
+              levels,
+            });
+
+      // CRITICAL INVARIANT: XP Progress & XP Reward NEVER change on level override / recalculate!
+      tx.update(memberRef, {
+        currentLevel: computed.newLevel,
+        levelMode: computed.newLevelMode,
+        updatedAt: now,
+      });
+
+      const auditId = genId('audit');
+      const overrideRecord: LevelOverrideRecord = {
+        id: ovrDocId,
+        operationId: cleanOpId,
+        action: input.action,
+        memberId: member.memberId,
+        memberUid: member.uid,
+        memberUsername: member.username,
+        xpProgressSnapshot: member.xpProgress,
+        previousLevel: computed.previousLevel,
+        newLevel: computed.newLevel,
+        previousLevelMode: computed.previousLevelMode,
+        newLevelMode: computed.newLevelMode,
+        reason: cleanReason,
+        reference: cleanRef,
+        auditId,
+        adminId: input.admin.uid,
+        adminEmail: input.admin.email,
+        adminRole: input.admin.role,
+        cycleId: settings.currentCycleId,
+        timestamp: now,
+      };
+
+      tx.set(ovrRef, overrideRecord);
+
+      const lhId = genId('lvl');
+      tx.set(doc(db, 'levelHistory', lhId), {
+        id: lhId,
+        memberId: member.memberId,
+        memberUid: member.uid,
+        fromLevel: computed.previousLevel,
+        toLevel: computed.newLevel,
+        xpProgressAtEvent: member.xpProgress,
+        source: input.action === 'MANUAL_OVERRIDE' ? 'ADMIN_MANUAL_OVERRIDE' : 'ADMIN_RECALCULATE',
+        cycleId: settings.currentCycleId,
+        createdAt: now,
+      });
+
+      const notifId = genId('notif');
+      tx.set(doc(db, 'memberNotifications', notifId), {
+        id: notifId,
+        memberId: member.memberId,
+        memberUid: member.uid,
+        notificationCampaignId: null,
+        category: 'SYSTEM',
+        title:
+          input.action === 'MANUAL_OVERRIDE'
+            ? `Penyesuaian Level Membership: ${computed.newLevel}`
+            : `Rekalkulasi Level Otomatis: ${computed.newLevel}`,
+        message:
+          input.action === 'MANUAL_OVERRIDE'
+            ? `Level membership Anda disesuaikan oleh Admin dari ${computed.previousLevel} ke ${computed.newLevel} (XP Progress tetap ${member.xpProgress} XP). Alasan: ${cleanReason}`
+            : `Level membership Anda dihitung ulang otomatis dari XP Progress (${member.xpProgress} XP) menjadi ${computed.newLevel}. Alasan: ${cleanReason}`,
+        read: false,
+        readAt: null,
+        status: 'SENT',
+        sentAt: now,
+        createdAt: now,
+      });
+
+      tx.set(doc(db, 'auditLogs', auditId), {
+        id: auditId,
+        actorId: input.admin.uid,
+        actorRole: input.admin.role,
+        action:
+          input.action === 'MANUAL_OVERRIDE' ? 'LEVEL_MANUAL_OVERRIDE' : 'LEVEL_RECALCULATE_FROM_XP',
+        targetType: 'member',
+        targetId: member.uid,
+        before: {
+          currentLevel: computed.previousLevel,
+          levelMode: computed.previousLevelMode,
+          xpProgress: member.xpProgress,
+          xpReward: member.xpReward,
+        },
+        after: {
+          currentLevel: computed.newLevel,
+          levelMode: computed.newLevelMode,
+          xpProgress: member.xpProgress,
+          xpReward: member.xpReward,
+        },
+        metadata: {
+          overrideId: ovrDocId,
+          operationId: cleanOpId,
+          action: input.action,
+          reason: cleanReason,
+          reference: cleanRef,
+          memberId: member.memberId,
+          memberUsername: member.username,
+        },
+        timestamp: now,
+      });
+
+      return {
+        record: overrideRecord,
+        newLevel: computed.newLevel,
+        newLevelMode: computed.newLevelMode,
+      };
+    });
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      (err.message.includes('sudah diproses') ||
+        err.message.includes('tidak ditemukan') ||
+        err.message.includes('DELETED') ||
+        err.message.includes('Target level') ||
+        err.message.includes('wajib diisi'))
+    ) {
+      throw err;
+    }
+    handleFirestoreError(err, OperationType.WRITE, `levelOverrides/${ovrDocId}`);
+  }
+}
+
+export async function fetchRecentLevelOverrides(input?: {
+  actionFilter?: 'ALL' | LevelOverrideAction;
+  pageSize?: number;
+  cursor?: QueryDocumentSnapshot<DocumentData> | null;
+}): Promise<PaginatedResult<LevelOverrideRecord>> {
+  const constraints: QueryConstraint[] = [];
+  if (input?.actionFilter && input.actionFilter !== 'ALL') {
+    constraints.push(where('action', '==', input.actionFilter));
+  }
+  return fetchPaginatedCollection<LevelOverrideRecord>({
+    collectionName: 'levelOverrides',
+    constraints,
+    orderByField: 'timestamp',
+    orderDirection: 'desc',
+    pageSize: input?.pageSize ?? 15,
+    cursor: input?.cursor ?? null,
+  });
+}
+
+// ---------- PHASE D: Admin Password Management ----------
+export async function changeMemberPasswordByAdmin(input: {
+  operationId: string;
+  memberUid: string;
+  newPassword: string;
+  confirmPassword: string;
+  reason: string;
+  reference?: string;
+  revokeSessions?: boolean;
+}): Promise<AdminPasswordChangeResult> {
+  const token = await getAuthBearer();
+  const res = await fetch(`/api/admin/members/${encodeURIComponent(input.memberUid)}/password`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      operationId: input.operationId,
+      newPassword: input.newPassword,
+      confirmPassword: input.confirmPassword,
+      reason: input.reason,
+      reference: input.reference || '',
+      revokeSessions: input.revokeSessions !== false,
+    }),
+  });
+  const data = (await res.json()) as AdminPasswordChangeResult & { error?: string; code?: string };
+  if (!res.ok) {
+    throw new Error(data.error || 'Gagal mengubah password member.');
+  }
+  return data;
+}
+
+export async function fetchPasswordChangeAuditLogs(input?: {
+  pageSize?: number;
+  cursor?: QueryDocumentSnapshot<DocumentData> | null;
+}): Promise<PaginatedResult<AuditLogRecord>> {
+  return fetchPaginatedCollection<AuditLogRecord>({
+    collectionName: 'auditLogs',
+    constraints: [where('action', '==', 'PASSWORD_CHANGED_BY_ADMIN')],
+    orderByField: 'timestamp',
+    orderDirection: 'desc',
+    pageSize: input?.pageSize ?? 15,
+    cursor: input?.cursor ?? null,
+  });
+}
+
+// ---------- PHASE E: Inactive Members (Indexed Cursor Pagination) ----------
+export interface InactiveMembersPageResult {
+  rows: InactiveMemberRow[];
+  nextCursor: QueryDocumentSnapshot<DocumentData> | null;
+  hasMore: boolean;
+}
+
+export async function fetchInactiveMembersPage(input: {
+  thresholdDays: number;
+  mode: 'PLAYED' | 'NEVER_PLAYED';
+  branchFilter?: 'ALL' | BranchId;
+  levelFilter?: 'ALL' | LevelId;
+  search?: string;
+  pageSize?: number;
+  cursor?: QueryDocumentSnapshot<DocumentData> | null;
+}): Promise<InactiveMembersPageResult> {
+  const now = Date.now();
+  const cutoff = now - input.thresholdDays * 24 * 60 * 60 * 1000;
+  const pageSize = Math.min(Math.max(input.pageSize ?? 25, 10), 50);
+  const searchNorm = (input.search || '').trim().toLowerCase();
+
+  try {
+    const constraints: QueryConstraint[] = [where('status', '==', 'ACTIVE')];
+    if (input.mode === 'PLAYED') {
+      // Uses composite index (status ASC, lastPlayAt ASC) — oldest/longest inactive first
+      constraints.push(where('lastPlayAt', '<=', cutoff));
+      constraints.push(orderBy('lastPlayAt', 'asc'));
+    } else {
+      // Never-played members registered at or before cutoff
+      constraints.push(where('lastPlayAt', '==', null));
+      constraints.push(where('createdAt', '<=', cutoff));
+      constraints.push(orderBy('createdAt', 'asc'));
+    }
+    if (input.cursor) {
+      constraints.push(startAfter(input.cursor));
+    }
+    constraints.push(limit(pageSize + 1));
+
+    const snap = await getDocs(query(collection(db, 'members'), ...constraints));
+    const hasMore = snap.docs.length > pageSize;
+    const docs = hasMore ? snap.docs.slice(0, pageSize) : snap.docs;
+    const nextCursor = docs.length > 0 ? docs[docs.length - 1] : null;
+
+    const rows: InactiveMemberRow[] = [];
+    for (const d of docs) {
+      const m = d.data() as MemberProfile;
+      if (input.branchFilter && input.branchFilter !== 'ALL') {
+        const effBranch = m.lastPlayBranch ?? m.preferredBranch;
+        if (effBranch !== input.branchFilter) continue;
+      }
+      if (input.levelFilter && input.levelFilter !== 'ALL' && m.currentLevel !== input.levelFilter) {
+        continue;
+      }
+      if (searchNorm) {
+        const hay = `${m.fullName} ${m.username} ${m.whatsapp} ${m.memberId}`.toLowerCase();
+        if (!hay.includes(searchNorm)) continue;
+      }
+      const calc = calculateMemberInactivity(m, now);
+      rows.push({
+        member: m,
+        daysInactive: calc.daysInactive,
+        baselineTimestamp: calc.baselineTimestamp,
+        neverPlayed: calc.neverPlayed,
+      });
+    }
+
+    return {
+      rows: sortInactiveRowsLongestFirst(rows),
+      nextCursor,
+      hasMore,
+    };
+  } catch (err) {
+    handleFirestoreError(err, OperationType.LIST, 'members');
+  }
+}
+
+// ---------- PHASES F, G, H, I, K: Backup, Verification, Restore, Integrity & System Health APIs ----------
+async function authedApiJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const token = await getAuthBearer();
+  const res = await fetch(url, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+      ...((init?.headers as Record<string, string>) || {}),
+    },
+  });
+  const body = (await res.json().catch(() => ({}))) as T & { error?: string };
+  if (!res.ok) {
+    throw new Error(body.error || `Permintaan gagal (HTTP ${res.status}).`);
+  }
+  return body;
+}
+
+export async function fetchSystemHealthApi(): Promise<SystemHealthReport> {
+  return authedApiJson<SystemHealthReport>('/api/admin/system-health', { method: 'GET' });
+}
+
+export async function runIntegrityAuditApi(): Promise<IntegrityAuditReport> {
+  return authedApiJson<IntegrityAuditReport>('/api/admin/integrity-audit', { method: 'POST' });
+}
+
+export async function fetchSystemBackupsApi(): Promise<SystemBackupRecord[]> {
+  const res = await authedApiJson<{ backups: SystemBackupRecord[] }>('/api/admin/backups', {
+    method: 'GET',
+  });
+  return res.backups;
+}
+
+export async function createSystemBackupApi(input: {
+  kind?: BackupKind;
+  note?: string;
+}): Promise<{
+  record: SystemBackupRecord;
+  manifest: BackupManifest;
+  verification: BackupVerificationResult;
+}> {
+  return authedApiJson('/api/admin/backups', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function fetchBackupManifestApi(backupId: string): Promise<BackupManifest> {
+  const res = await authedApiJson<{ manifest: BackupManifest }>(
+    `/api/admin/backups/${encodeURIComponent(backupId)}`,
+    { method: 'GET' }
+  );
+  return res.manifest;
+}
+
+export async function verifySystemBackupApi(backupId: string): Promise<BackupVerificationResult> {
+  return authedApiJson<BackupVerificationResult>(
+    `/api/admin/backups/${encodeURIComponent(backupId)}/verify`,
+    { method: 'POST' }
+  );
+}
+
+export async function deleteSystemBackupApi(backupId: string): Promise<void> {
+  await authedApiJson<{ deleted: boolean }>(
+    `/api/admin/backups/${encodeURIComponent(backupId)}`,
+    { method: 'DELETE' }
+  );
+}
+
+export async function fetchBackupRetentionApi(): Promise<BackupRetentionConfig> {
+  return authedApiJson<BackupRetentionConfig>('/api/admin/backup-retention', { method: 'GET' });
+}
+
+export async function saveBackupRetentionApi(
+  config: Omit<BackupRetentionConfig, 'id' | 'updatedAt' | 'updatedBy'>
+): Promise<BackupRetentionConfig> {
+  return authedApiJson<BackupRetentionConfig>('/api/admin/backup-retention', {
+    method: 'PUT',
+    body: JSON.stringify(config),
+  });
+}
+
+export async function fetchRestoreJobsApi(): Promise<{
+  jobs: RestoreJobRecord[];
+  lock: RestoreLockState;
+}> {
+  return authedApiJson('/api/admin/restores', { method: 'GET' });
+}
+
+export async function previewRestoreApi(backupId: string): Promise<RestorePreviewResult> {
+  return authedApiJson<RestorePreviewResult>('/api/admin/restores/preview', {
+    method: 'POST',
+    body: JSON.stringify({ backupId }),
+  });
+}
+
+export async function executeRestoreApi(input: {
+  backupId: string;
+  confirmationPhrase: string;
+  reason: string;
+}): Promise<RestoreJobRecord> {
+  const token = await getAuthBearer();
+  const res = await fetch('/api/admin/restores/execute', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(input),
+  });
+  const body = (await res.json().catch(() => ({}))) as RestoreJobRecord & { error?: string };
+  // HTTP 422 returns the full VERIFICATION_FAILED RestoreJobRecord so UI can inspect exact failures
+  if (res.status === 422 && body.restoreJobId) {
+    return body;
+  }
+  if (!res.ok) {
+    throw new Error(body.error || `Gagal menjalankan restore (HTTP ${res.status}).`);
+  }
+  return body;
+}
+
+export async function forceUnlockRestoreApi(reason: string): Promise<RestoreLockState> {
+  return authedApiJson<RestoreLockState>('/api/admin/restores/force-unlock', {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  });
+}
+
+

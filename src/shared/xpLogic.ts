@@ -5,6 +5,7 @@ import type {
   CampaignStatus,
   LevelConfig,
   LevelId,
+  LevelMode,
   SystemSettings,
 } from '../types/xpplay.ts';
 
@@ -277,6 +278,158 @@ export function isLevelEligible(
 }
 
 /**
+ * Resolve effective member level respecting MANUAL_OVERRIDE / RESET mode.
+ * Never overwrites or discards a manually overridden level on read/render.
+ */
+export function resolveEffectiveMemberLevel(
+  member: { xpProgress: number; currentLevel: LevelId; levelMode?: LevelMode },
+  levels: LevelConfig[] = DEFAULT_LEVELS
+): LevelConfig {
+  const sorted = [...levels].sort((a, b) => a.minXp - b.minXp);
+  if (member.levelMode === 'MANUAL_OVERRIDE' || member.levelMode === 'RESET') {
+    const matched = sorted.find((l) => l.id === member.currentLevel);
+    if (matched) return matched;
+  }
+  return resolveLevelFromXp(member.xpProgress, levels).current;
+}
+
+export interface XpAdjustmentComputation {
+  beforeBalance: number;
+  afterBalance: number;
+  newXpProgress: number;
+  newXpReward: number;
+  levelBefore: LevelId;
+  levelAfter: LevelId;
+  levelChanged: boolean;
+}
+
+/**
+ * Compute XP Progress admin adjustment (positive or negative).
+ * - Recalculates level dynamically from XP Progress using DB level config.
+ * - Never modifies XP Reward.
+ * - Never allows negative XP Progress.
+ */
+export function calculateXpProgressAdjustment(input: {
+  currentXpProgress: number;
+  currentXpReward: number;
+  currentLevel: LevelId;
+  adjustment: number;
+  levels?: LevelConfig[];
+}): XpAdjustmentComputation {
+  if (!Number.isSafeInteger(input.adjustment) || input.adjustment === 0) {
+    throw new Error('Nilai adjustment XP Progress harus berupa bilangan bulat selain 0.');
+  }
+  const afterProgress = input.currentXpProgress + input.adjustment;
+  if (afterProgress < 0) {
+    throw new Error(
+      `XP Progress tidak boleh negatif. Saldo saat ini ${input.currentXpProgress} XP, tidak dapat dikurangi ${Math.abs(input.adjustment)} XP.`
+    );
+  }
+  const levels = input.levels && input.levels.length > 0 ? input.levels : DEFAULT_LEVELS;
+  const levelEval = resolveLevelFromXp(afterProgress, levels);
+  return {
+    beforeBalance: input.currentXpProgress,
+    afterBalance: afterProgress,
+    newXpProgress: afterProgress,
+    newXpReward: input.currentXpReward,
+    levelBefore: input.currentLevel,
+    levelAfter: levelEval.current.id,
+    levelChanged: levelEval.current.id !== input.currentLevel,
+  };
+}
+
+/**
+ * Compute XP Reward admin adjustment (positive or negative).
+ * - Never modifies XP Progress or Level.
+ * - Never allows negative XP Reward.
+ */
+export function calculateXpRewardAdjustment(input: {
+  currentXpProgress: number;
+  currentXpReward: number;
+  currentLevel: LevelId;
+  adjustment: number;
+}): XpAdjustmentComputation {
+  if (!Number.isSafeInteger(input.adjustment) || input.adjustment === 0) {
+    throw new Error('Nilai adjustment XP Reward harus berupa bilangan bulat selain 0.');
+  }
+  const afterReward = input.currentXpReward + input.adjustment;
+  if (afterReward < 0) {
+    throw new Error(
+      `XP Reward tidak boleh negatif. Saldo saat ini ${input.currentXpReward} XP, tidak dapat dikurangi ${Math.abs(input.adjustment)} XP.`
+    );
+  }
+  return {
+    beforeBalance: input.currentXpReward,
+    afterBalance: afterReward,
+    newXpProgress: input.currentXpProgress,
+    newXpReward: afterReward,
+    levelBefore: input.currentLevel,
+    levelAfter: input.currentLevel,
+    levelChanged: false,
+  };
+}
+
+export interface LevelOverrideComputation {
+  xpProgress: number;
+  previousLevel: LevelId;
+  newLevel: LevelId;
+  previousLevelMode: LevelMode;
+  newLevelMode: 'MANUAL_OVERRIDE' | 'AUTOMATIC';
+  levelChanged: boolean;
+}
+
+const VALID_LEVEL_IDS: ReadonlySet<LevelId> = new Set(['BRONZE', 'SILVER', 'JURAGAN', 'SULTAN']);
+
+/**
+ * Compute Admin manual force level override.
+ * - Strictly leaves XP Progress unchanged.
+ * - Sets levelMode = 'MANUAL_OVERRIDE'.
+ */
+export function calculateManualLevelOverride(input: {
+  currentXpProgress: number;
+  currentLevel: LevelId;
+  currentLevelMode?: LevelMode;
+  targetLevel: LevelId;
+}): LevelOverrideComputation {
+  if (!VALID_LEVEL_IDS.has(input.targetLevel)) {
+    throw new Error('Target level tidak valid. Pilih BRONZE, SILVER, JURAGAN, atau SULTAN.');
+  }
+  const prevMode: LevelMode = input.currentLevelMode ?? 'AUTOMATIC';
+  return {
+    xpProgress: input.currentXpProgress,
+    previousLevel: input.currentLevel,
+    newLevel: input.targetLevel,
+    previousLevelMode: prevMode,
+    newLevelMode: 'MANUAL_OVERRIDE',
+    levelChanged: input.targetLevel !== input.currentLevel,
+  };
+}
+
+/**
+ * Compute Admin action RECALCULATE LEVEL FROM XP.
+ * - Strictly leaves XP Progress unchanged.
+ * - Restores levelMode = 'AUTOMATIC' and resolves level from XP Progress.
+ */
+export function calculateRecalculateLevelFromXp(input: {
+  currentXpProgress: number;
+  currentLevel: LevelId;
+  currentLevelMode?: LevelMode;
+  levels?: LevelConfig[];
+}): LevelOverrideComputation {
+  const levels = input.levels && input.levels.length > 0 ? input.levels : DEFAULT_LEVELS;
+  const resolved = resolveLevelFromXp(input.currentXpProgress, levels).current.id;
+  const prevMode: LevelMode = input.currentLevelMode ?? 'AUTOMATIC';
+  return {
+    xpProgress: input.currentXpProgress,
+    previousLevel: input.currentLevel,
+    newLevel: resolved,
+    previousLevelMode: prevMode,
+    newLevelMode: 'AUTOMATIC',
+    levelChanged: resolved !== input.currentLevel,
+  };
+}
+
+/**
  * Compute authoritative campaign status with automatic expiration check (currentTime > endAt).
  */
 export function resolveCampaignStatus(
@@ -323,6 +476,20 @@ export function formatJakartaDate(timestampMs: number | null | undefined): strin
     month: 'short',
     year: 'numeric',
   }).format(new Date(timestampMs));
+}
+
+export function formatDateTimeLocalInput(timestampMs: number): string {
+  const parts = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: XP_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(timestampMs));
+  const map = Object.fromEntries(parts.map((p) => [p.type, p.value]));
+  return `${map.year}-${map.month}-${map.day}T${map.hour}:${map.minute}`;
 }
 
 export function formatIdr(amount: number): string {

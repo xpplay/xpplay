@@ -1,7 +1,11 @@
 import crypto from 'crypto';
 import type { Firestore } from 'firebase-admin/firestore';
 import {
+  calculateManualLevelOverride,
+  calculateRecalculateLevelFromXp,
   calculateTransactionXp,
+  calculateXpProgressAdjustment,
+  calculateXpRewardAdjustment,
   DEFAULT_BRANCHES,
   DEFAULT_LEVELS,
   DEFAULT_SYSTEM_SETTINGS,
@@ -9,21 +13,29 @@ import {
   isLevelEligible,
   normalizeUsername,
   normalizeWhatsapp,
+  resolveEffectiveMemberLevel,
   resolveLevelFromXp,
   validateLevelThresholds,
   validateUsername,
   validateWhatsapp,
 } from '../../shared/xpLogic.ts';
+import { validateAdminNewPassword } from '../../shared/inactiveLogic.ts';
 import type {
+  AdminPasswordChangeResult,
   AdminRole,
   BranchId,
   CampaignItem,
   ClaimRecord,
   LevelConfig,
   LevelId,
+  LevelMode,
+  LevelOverrideAction,
+  LevelOverrideRecord,
   MemberProfile,
   RedemptionRecord,
   SystemSettings,
+  XpAdjustmentKind,
+  XpAdjustmentRecord,
 } from '../../types/xpplay.ts';
 import {
   firebaseAppletConfig,
@@ -235,6 +247,7 @@ export async function registerMemberServer(input: {
         xpProgress: totalInitialXp,
         xpReward: totalInitialXp,
         currentLevel: levelEval.current.id,
+        levelMode: 'AUTOMATIC',
         currentCycleId: settings.currentCycleId,
         referredByUid: referrerSnapData ? referrerSnapData.uid : null,
         referredByUsername: referrerSnapData ? referrerSnapData.username : null,
@@ -351,15 +364,21 @@ export async function registerMemberServer(input: {
           note: `Bonus referral menggunakan username ${referrerSnapData.username}`,
         });
 
-        // Update referrer XP Progress & Reward + Level check
+        // Update referrer XP Progress & Reward + Level check (respect MANUAL_OVERRIDE)
         const nextReferrerProgress = referrerSnapData.xpProgress + refBonus;
         const nextReferrerReward = referrerSnapData.xpReward + refBonus;
+        const isRefManual = referrerSnapData.levelMode === 'MANUAL_OVERRIDE';
         const referrerLevelEval = resolveLevelFromXp(nextReferrerProgress, levels);
+        const nextReferrerLevel: LevelId = isRefManual
+          ? referrerSnapData.currentLevel
+          : referrerLevelEval.current.id;
+        const nextReferrerMode: LevelMode = isRefManual ? 'MANUAL_OVERRIDE' : 'AUTOMATIC';
 
         tx.update(db.collection('members').doc(referrerSnapData.uid), {
           xpProgress: nextReferrerProgress,
           xpReward: nextReferrerReward,
-          currentLevel: referrerLevelEval.current.id,
+          currentLevel: nextReferrerLevel,
+          levelMode: nextReferrerMode,
           referralCount: (referrerSnapData.referralCount || 0) + 1,
           updatedAt: now,
         });
@@ -395,14 +414,14 @@ export async function registerMemberServer(input: {
           note: `Bonus mengajak member baru @${normalizedUsername}`,
         });
 
-        if (referrerLevelEval.current.id !== referrerSnapData.currentLevel) {
+        if (!isRefManual && nextReferrerLevel !== referrerSnapData.currentLevel) {
           const lhId = generateDocId('lvl');
           tx.set(db.collection('levelHistory').doc(lhId), {
             id: lhId,
             memberId: referrerSnapData.memberId,
             memberUid: referrerSnapData.uid,
             fromLevel: referrerSnapData.currentLevel,
-            toLevel: referrerLevelEval.current.id,
+            toLevel: nextReferrerLevel,
             xpProgressAtEvent: nextReferrerProgress,
             source: 'REFERRAL',
             cycleId: settings.currentCycleId,
@@ -549,15 +568,28 @@ export async function recordTransactionXpServer(input: {
   const raw = input.identifier.trim();
   const digits = raw.replace(/\D/g, '');
   const looksLikePhone = /^\+?[0-9\s\-]{8,18}$/.test(raw) && digits.length >= 9;
-  const indexKey = looksLikePhone
-    ? `wa:${normalizeWhatsapp(raw)}`
-    : `username:${normalizeUsername(raw)}`;
+  const normalizedWa = normalizeWhatsapp(raw);
+  const normalizedUser = normalizeUsername(raw);
+  const indexKey = looksLikePhone ? `wa:${normalizedWa}` : `username:${normalizedUser}`;
 
+  let uid: string | null = null;
   const idxSnap = await db.collection('identityIndex').doc(indexKey).get();
-  if (!idxSnap.exists) {
+  if (idxSnap.exists) {
+    uid = (idxSnap.data() as { uid: string }).uid;
+  } else {
+    const memberQuerySnap = await db
+      .collection('members')
+      .where(looksLikePhone ? 'whatsapp' : 'username', '==', looksLikePhone ? normalizedWa : normalizedUser)
+      .limit(1)
+      .get();
+    if (!memberQuerySnap.empty) {
+      uid = memberQuerySnap.docs[0].id;
+    }
+  }
+
+  if (!uid) {
     throw new Error('Member dengan username atau nomor WhatsApp tersebut tidak ditemukan.');
   }
-  const { uid } = idxSnap.data() as { uid: string };
 
   return db.runTransaction(async (tx) => {
     const now = Date.now();
@@ -577,7 +609,10 @@ export async function recordTransactionXpServer(input: {
     const xpGenerated = calculateTransactionXp(input.amountIdr, settings.transactionXpRate);
     const newProgress = member.xpProgress + xpGenerated;
     const newReward = member.xpReward + xpGenerated;
+    const isManualOverride = member.levelMode === 'MANUAL_OVERRIDE';
     const levelEval = resolveLevelFromXp(newProgress, levels);
+    const nextLevel: LevelId = isManualOverride ? member.currentLevel : levelEval.current.id;
+    const nextLevelMode: LevelMode = isManualOverride ? 'MANUAL_OVERRIDE' : 'AUTOMATIC';
 
     const txId = generateDocId('trx');
     const txDoc = {
@@ -602,7 +637,8 @@ export async function recordTransactionXpServer(input: {
     tx.update(memberRef, {
       xpProgress: newProgress,
       xpReward: newReward,
-      currentLevel: levelEval.current.id,
+      currentLevel: nextLevel,
+      levelMode: nextLevelMode,
       lastPlayAt: now,
       lastPlayBranch: input.branch,
       updatedAt: now,
@@ -643,14 +679,14 @@ export async function recordTransactionXpServer(input: {
       });
     }
 
-    if (levelEval.current.id !== member.currentLevel) {
+    if (!isManualOverride && nextLevel !== member.currentLevel) {
       const lhId = generateDocId('lvl');
       tx.set(db.collection('levelHistory').doc(lhId), {
         id: lhId,
         memberId: member.memberId,
         memberUid: member.uid,
         fromLevel: member.currentLevel,
-        toLevel: levelEval.current.id,
+        toLevel: nextLevel,
         xpProgressAtEvent: newProgress,
         source: 'TRANSACTION',
         cycleId: settings.currentCycleId,
@@ -690,7 +726,7 @@ export async function recordTransactionXpServer(input: {
       after: {
         xpProgress: newProgress,
         xpReward: newReward,
-        currentLevel: levelEval.current.id,
+        currentLevel: nextLevel,
         amountIdr: input.amountIdr,
         xpGenerated,
         branch: input.branch,
@@ -699,7 +735,7 @@ export async function recordTransactionXpServer(input: {
       timestamp: now,
     });
 
-    return { transaction: txDoc, xpGenerated, newProgress, newReward, newLevel: levelEval.current.id };
+    return { transaction: txDoc, xpGenerated, newProgress, newReward, newLevel: nextLevel };
   });
 }
 
@@ -726,7 +762,11 @@ export async function reviewClaimServer(input: {
     }
 
     const memberRef = db.collection('members').doc(claim.memberUid);
-    const memberSnap = await tx.get(memberRef);
+    const campaignRef = db.collection('campaigns').doc(claim.campaignId);
+    const [memberSnap, campaignSnap] = await Promise.all([
+      tx.get(memberRef),
+      tx.get(campaignRef),
+    ]);
     if (!memberSnap.exists) throw new Error('Member tidak ditemukan.');
     const member = memberSnap.data() as MemberProfile;
 
@@ -776,10 +816,24 @@ export async function reviewClaimServer(input: {
     }
 
     // APPROVED
+    if (campaignSnap.exists) {
+      const campData = campaignSnap.data() as CampaignItem;
+      if (campData.totalClaimLimit !== null && campData.claimsCount >= campData.totalClaimLimit) {
+        throw new Error('Kuota total claim program ini telah habis.');
+      }
+      tx.update(campaignRef, {
+        claimsCount: (campData.claimsCount || 0) + 1,
+        updatedAt: now,
+      });
+    }
+
     const xpAward = claim.xpRewardSnapshot;
     const newProgress = member.xpProgress + xpAward;
     const newReward = member.xpReward + xpAward;
+    const isManualOverride = member.levelMode === 'MANUAL_OVERRIDE';
     const levelEval = resolveLevelFromXp(newProgress, levels);
+    const nextLevel: LevelId = isManualOverride ? member.currentLevel : levelEval.current.id;
+    const nextLevelMode: LevelMode = isManualOverride ? 'MANUAL_OVERRIDE' : 'AUTOMATIC';
 
     tx.update(claimRef, {
       status: 'APPROVED',
@@ -792,7 +846,8 @@ export async function reviewClaimServer(input: {
     tx.update(memberRef, {
       xpProgress: newProgress,
       xpReward: newReward,
-      currentLevel: levelEval.current.id,
+      currentLevel: nextLevel,
+      levelMode: nextLevelMode,
       updatedAt: now,
     });
 
@@ -829,14 +884,14 @@ export async function reviewClaimServer(input: {
       note: `Claim disetujui: ${claim.campaignTitle}`,
     });
 
-    if (levelEval.current.id !== member.currentLevel) {
+    if (!isManualOverride && nextLevel !== member.currentLevel) {
       const lhId = generateDocId('lvl');
       tx.set(db.collection('levelHistory').doc(lhId), {
         id: lhId,
         memberId: member.memberId,
         memberUid: member.uid,
         fromLevel: member.currentLevel,
-        toLevel: levelEval.current.id,
+        toLevel: nextLevel,
         xpProgressAtEvent: newProgress,
         source: claim.campaignType,
         cycleId: settings.currentCycleId,
@@ -952,9 +1007,10 @@ export async function reviewRedemptionServer(input: {
       return { status: 'DENIED', xpReward: member.xpReward, xpProgress: member.xpProgress };
     }
 
-    // APPROVED: Check level requirement & non-negative XP Reward
-    if (!isLevelEligible(member.currentLevel, redemption.levelRequirement, levels)) {
-      throw new Error(`Level member (${member.currentLevel}) belum memenuhi syarat (${redemption.levelRequirement}).`);
+    // APPROVED: Check effective level requirement & non-negative XP Reward
+    const effectiveLevel = resolveEffectiveMemberLevel(member, levels).id;
+    if (!isLevelEligible(effectiveLevel, redemption.levelRequirement, levels)) {
+      throw new Error(`Level member (${effectiveLevel}) belum memenuhi syarat (${redemption.levelRequirement}).`);
     }
 
     const cost = redemption.xpCostSnapshot;
@@ -1122,6 +1178,7 @@ export async function executeCycleResetServer(input: {
       const newProgress = settings.resetXpProgress ? 0 : m.xpProgress;
       const newReward = settings.resetXpReward ? 0 : m.xpReward;
       const newLevel: LevelId = settings.resetLevel ? 'BRONZE' : m.currentLevel;
+      const newLevelMode: LevelMode = settings.resetLevel ? 'RESET' : (m.levelMode ?? 'AUTOMATIC');
 
       const snapshotId = `${prevCycleId}__${m.uid}`;
       batch.set(db.collection('cycleSnapshots').doc(snapshotId), {
@@ -1146,6 +1203,7 @@ export async function executeCycleResetServer(input: {
         xpProgress: newProgress,
         xpReward: newReward,
         currentLevel: newLevel,
+        levelMode: newLevelMode,
         currentCycleId: nextCycleId,
         updatedAt: now,
       });
@@ -1261,6 +1319,591 @@ export async function executeCycleResetServer(input: {
 
   await batchFinal.commit();
   return { prevCycleId, nextCycleId, processedMembers };
+}
+
+export async function adjustMemberXpServer(input: {
+  operationId: string;
+  kind: XpAdjustmentKind;
+  identifier?: string;
+  memberUid?: string;
+  adjustment: number;
+  reason: string;
+  reference?: string;
+  adminUid: string;
+  adminEmail: string;
+  adminRole: AdminRole;
+}): Promise<{
+  record: XpAdjustmentRecord;
+  newXpProgress: number;
+  newXpReward: number;
+  levelAfter: LevelId;
+}> {
+  const db = getAdminDb();
+  if (!db) throw new Error('ADMIN_SDK_UNAVAILABLE');
+
+  if (input.kind !== 'PROGRESS' && input.kind !== 'REWARD') {
+    throw new Error('Jenis adjustment harus PROGRESS atau REWARD.');
+  }
+
+  const cleanOpId = (input.operationId || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+  if (cleanOpId.length < 6 || cleanOpId.length > 80) {
+    throw new Error('Operation ID tidak valid.');
+  }
+
+  if (!Number.isSafeInteger(input.adjustment) || input.adjustment === 0) {
+    throw new Error('Nilai adjustment harus berupa bilangan bulat selain 0.');
+  }
+
+  const cleanReason = (input.reason || '').trim().slice(0, 300);
+  if (cleanReason.length < 3) {
+    throw new Error('Alasan penyesuaian XP wajib diisi (minimal 3 karakter).');
+  }
+  const cleanRef = (input.reference || '').trim().slice(0, 120);
+
+  let uid = (input.memberUid || '').trim();
+  if (!uid) {
+    const raw = (input.identifier || '').trim();
+    if (!raw) {
+      throw new Error('Username atau nomor WhatsApp member wajib diisi.');
+    }
+    const digits = raw.replace(/\D/g, '');
+    const looksLikePhone = /^\+?[0-9\s\-]{8,18}$/.test(raw) && digits.length >= 9;
+    const normalizedWa = normalizeWhatsapp(raw);
+    const normalizedUser = normalizeUsername(raw);
+    const indexKey = looksLikePhone ? `wa:${normalizedWa}` : `username:${normalizedUser}`;
+    const idxSnap = await db.collection('identityIndex').doc(indexKey).get();
+    if (idxSnap.exists) {
+      uid = (idxSnap.data() as { uid: string }).uid;
+    } else {
+      const qSnap = await db
+        .collection('members')
+        .where(looksLikePhone ? 'whatsapp' : 'username', '==', looksLikePhone ? normalizedWa : normalizedUser)
+        .limit(1)
+        .get();
+      if (!qSnap.empty) {
+        uid = qSnap.docs[0].id;
+      }
+    }
+  }
+
+  if (!uid) {
+    throw new Error('Member dengan username atau nomor WhatsApp tersebut tidak ditemukan.');
+  }
+
+  const adjDocId = `adj_${cleanOpId}`;
+
+  return db.runTransaction(async (tx) => {
+    const now = Date.now();
+    const adjRef = db.collection('xpAdjustments').doc(adjDocId);
+    const existingAdj = await tx.get(adjRef);
+    if (existingAdj.exists) {
+      throw new Error('Penyesuaian XP dengan ID operasi ini sudah diproses sebelumnya.');
+    }
+
+    const { settings, levels } = await getSettingsAndLevels(db);
+    const memberRef = db.collection('members').doc(uid);
+    const memberSnap = await tx.get(memberRef);
+    if (!memberSnap.exists) {
+      throw new Error('Profil member tidak ditemukan.');
+    }
+
+    const member = memberSnap.data() as MemberProfile;
+    if (member.status === 'DELETED') {
+      throw new Error('Member berstatus DELETED dan tidak dapat disesuaikan saldonya.');
+    }
+
+    const computed =
+      input.kind === 'PROGRESS'
+        ? calculateXpProgressAdjustment({
+            currentXpProgress: member.xpProgress,
+            currentXpReward: member.xpReward,
+            currentLevel: member.currentLevel,
+            adjustment: input.adjustment,
+            levels,
+          })
+        : calculateXpRewardAdjustment({
+            currentXpProgress: member.xpProgress,
+            currentXpReward: member.xpReward,
+            currentLevel: member.currentLevel,
+            adjustment: input.adjustment,
+          });
+
+    const auditId = generateDocId('audit');
+    const ledgerCollection = input.kind === 'PROGRESS' ? 'xpProgressLedger' : 'xpRewardLedger';
+    const ledgerId = generateDocId(input.kind === 'PROGRESS' ? 'xpp' : 'xpr');
+    const ledgerSource = input.kind === 'PROGRESS' ? 'ADMIN_ADJUSTMENT' : 'XP_REWARD_ADMIN_ADJUSTMENT';
+
+    if (input.kind === 'PROGRESS') {
+      tx.update(memberRef, {
+        xpProgress: computed.newXpProgress,
+        currentLevel: computed.levelAfter,
+        levelMode: 'AUTOMATIC',
+        updatedAt: now,
+      });
+    } else {
+      tx.update(memberRef, {
+        xpReward: computed.newXpReward,
+        updatedAt: now,
+      });
+    }
+
+    const notePrefix =
+      input.kind === 'PROGRESS' ? 'Penyesuaian XP Progress' : 'Penyesuaian XP Reward';
+    tx.set(db.collection(ledgerCollection).doc(ledgerId), {
+      id: ledgerId,
+      memberId: member.memberId,
+      memberUid: member.uid,
+      amount: input.adjustment,
+      type: input.kind,
+      direction: input.adjustment > 0 ? 'CREDIT' : 'DEBIT',
+      source: ledgerSource,
+      referenceId: adjDocId,
+      branch: null,
+      cycleId: settings.currentCycleId,
+      createdAt: now,
+      createdBy: input.adminUid,
+      note: `${notePrefix}: ${cleanReason}${cleanRef ? ` (Ref: ${cleanRef})` : ''}`.slice(0, 300),
+    });
+
+    const adjRecord: XpAdjustmentRecord = {
+      id: adjDocId,
+      operationId: cleanOpId,
+      kind: input.kind,
+      memberId: member.memberId,
+      memberUid: member.uid,
+      memberUsername: member.username,
+      adjustment: input.adjustment,
+      beforeBalance: computed.beforeBalance,
+      afterBalance: computed.afterBalance,
+      beforeXpProgress: member.xpProgress,
+      afterXpProgress: computed.newXpProgress,
+      beforeXpReward: member.xpReward,
+      afterXpReward: computed.newXpReward,
+      levelBefore: computed.levelBefore,
+      levelAfter: computed.levelAfter,
+      reason: cleanReason,
+      reference: cleanRef,
+      auditId,
+      adminId: input.adminUid,
+      adminEmail: input.adminEmail,
+      adminRole: input.adminRole,
+      cycleId: settings.currentCycleId,
+      timestamp: now,
+    };
+
+    tx.set(adjRef, adjRecord);
+
+    if (input.kind === 'PROGRESS' && computed.levelChanged) {
+      const lhId = generateDocId('lvl');
+      tx.set(db.collection('levelHistory').doc(lhId), {
+        id: lhId,
+        memberId: member.memberId,
+        memberUid: member.uid,
+        fromLevel: computed.levelBefore,
+        toLevel: computed.levelAfter,
+        xpProgressAtEvent: computed.newXpProgress,
+        source: 'ADMIN_ADJUSTMENT',
+        cycleId: settings.currentCycleId,
+        createdAt: now,
+      });
+    }
+
+    const notifId = generateDocId('notif');
+    const signStr = input.adjustment > 0 ? `+${input.adjustment}` : `${input.adjustment}`;
+    const balanceLabel = input.kind === 'PROGRESS' ? 'XP Progress' : 'XP Reward';
+    tx.set(db.collection('memberNotifications').doc(notifId), {
+      id: notifId,
+      memberId: member.memberId,
+      memberUid: member.uid,
+      notificationCampaignId: null,
+      category: 'SYSTEM',
+      title: `Penyesuaian ${balanceLabel} (${signStr} XP)`,
+      message: `${balanceLabel} Anda disesuaikan sebesar ${signStr} XP (saldo baru: ${computed.afterBalance} XP${
+        input.kind === 'PROGRESS' && computed.levelChanged ? `, Level: ${computed.levelAfter}` : ''
+      }). Alasan: ${cleanReason}`,
+      read: false,
+      readAt: null,
+      status: 'SENT',
+      sentAt: now,
+      createdAt: now,
+    });
+
+    tx.set(db.collection('auditLogs').doc(auditId), {
+      id: auditId,
+      actorId: input.adminUid,
+      actorRole: input.adminRole,
+      action: input.kind === 'PROGRESS' ? 'XP_PROGRESS_ADMIN_ADJUSTMENT' : 'XP_REWARD_ADMIN_ADJUSTMENT',
+      targetType: 'member',
+      targetId: member.uid,
+      before: {
+        xpProgress: member.xpProgress,
+        xpReward: member.xpReward,
+        currentLevel: member.currentLevel,
+      },
+      after: {
+        xpProgress: computed.newXpProgress,
+        xpReward: computed.newXpReward,
+        currentLevel: computed.levelAfter,
+      },
+      metadata: {
+        adjustmentId: adjDocId,
+        operationId: cleanOpId,
+        kind: input.kind,
+        adjustment: input.adjustment,
+        reason: cleanReason,
+        reference: cleanRef,
+        memberId: member.memberId,
+        memberUsername: member.username,
+      },
+      timestamp: now,
+    });
+
+    return {
+      record: adjRecord,
+      newXpProgress: computed.newXpProgress,
+      newXpReward: computed.newXpReward,
+      levelAfter: computed.levelAfter,
+    };
+  });
+}
+
+export async function overrideMemberLevelServer(input: {
+  operationId: string;
+  action: LevelOverrideAction;
+  identifier?: string;
+  memberUid?: string;
+  targetLevel?: LevelId;
+  reason: string;
+  reference?: string;
+  adminUid: string;
+  adminEmail: string;
+  adminRole: AdminRole;
+}): Promise<{
+  record: LevelOverrideRecord;
+  newLevel: LevelId;
+  newLevelMode: 'AUTOMATIC' | 'MANUAL_OVERRIDE';
+}> {
+  const db = getAdminDb();
+  if (!db) throw new Error('ADMIN_SDK_UNAVAILABLE');
+
+  if (input.action !== 'MANUAL_OVERRIDE' && input.action !== 'RECALCULATE') {
+    throw new Error('Aksi level harus MANUAL_OVERRIDE atau RECALCULATE.');
+  }
+
+  const cleanOpId = (input.operationId || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+  if (cleanOpId.length < 6 || cleanOpId.length > 80) {
+    throw new Error('Operation ID tidak valid.');
+  }
+
+  const cleanReason = (input.reason || '').trim().slice(0, 300);
+  if (cleanReason.length < 3) {
+    throw new Error('Alasan perubahan level wajib diisi (minimal 3 karakter).');
+  }
+  const cleanRef = (input.reference || '').trim().slice(0, 120);
+
+  let uid = (input.memberUid || '').trim();
+  if (!uid) {
+    const raw = (input.identifier || '').trim();
+    if (!raw) {
+      throw new Error('Username atau nomor WhatsApp member wajib diisi.');
+    }
+    const digits = raw.replace(/\D/g, '');
+    const looksLikePhone = /^\+?[0-9\s\-]{8,18}$/.test(raw) && digits.length >= 9;
+    const normalizedWa = normalizeWhatsapp(raw);
+    const normalizedUser = normalizeUsername(raw);
+    const indexKey = looksLikePhone ? `wa:${normalizedWa}` : `username:${normalizedUser}`;
+    const idxSnap = await db.collection('identityIndex').doc(indexKey).get();
+    if (idxSnap.exists) {
+      uid = (idxSnap.data() as { uid: string }).uid;
+    } else {
+      const qSnap = await db
+        .collection('members')
+        .where(looksLikePhone ? 'whatsapp' : 'username', '==', looksLikePhone ? normalizedWa : normalizedUser)
+        .limit(1)
+        .get();
+      if (!qSnap.empty) {
+        uid = qSnap.docs[0].id;
+      }
+    }
+  }
+
+  if (!uid) {
+    throw new Error('Member dengan username atau nomor WhatsApp tersebut tidak ditemukan.');
+  }
+
+  const ovrDocId = `ovr_${cleanOpId}`;
+
+  return db.runTransaction(async (tx) => {
+    const now = Date.now();
+    const ovrRef = db.collection('levelOverrides').doc(ovrDocId);
+    const existingOvr = await tx.get(ovrRef);
+    if (existingOvr.exists) {
+      throw new Error('Operasi Level Override dengan ID ini sudah diproses sebelumnya.');
+    }
+
+    const { settings, levels } = await getSettingsAndLevels(db);
+    const memberRef = db.collection('members').doc(uid);
+    const memberSnap = await tx.get(memberRef);
+    if (!memberSnap.exists) {
+      throw new Error('Profil member tidak ditemukan.');
+    }
+
+    const member = memberSnap.data() as MemberProfile;
+    if (member.status === 'DELETED') {
+      throw new Error('Member berstatus DELETED dan tidak dapat diubah levelnya.');
+    }
+
+    const computed =
+      input.action === 'MANUAL_OVERRIDE'
+        ? calculateManualLevelOverride({
+            currentXpProgress: member.xpProgress,
+            currentLevel: member.currentLevel,
+            currentLevelMode: member.levelMode,
+            targetLevel: input.targetLevel as LevelId,
+          })
+        : calculateRecalculateLevelFromXp({
+            currentXpProgress: member.xpProgress,
+            currentLevel: member.currentLevel,
+            currentLevelMode: member.levelMode,
+            levels,
+          });
+
+    // CRITICAL INVARIANT: XP Progress & XP Reward NEVER change on level override / recalculate!
+    tx.update(memberRef, {
+      currentLevel: computed.newLevel,
+      levelMode: computed.newLevelMode,
+      updatedAt: now,
+    });
+
+    const auditId = generateDocId('audit');
+    const overrideRecord: LevelOverrideRecord = {
+      id: ovrDocId,
+      operationId: cleanOpId,
+      action: input.action,
+      memberId: member.memberId,
+      memberUid: member.uid,
+      memberUsername: member.username,
+      xpProgressSnapshot: member.xpProgress,
+      previousLevel: computed.previousLevel,
+      newLevel: computed.newLevel,
+      previousLevelMode: computed.previousLevelMode,
+      newLevelMode: computed.newLevelMode,
+      reason: cleanReason,
+      reference: cleanRef,
+      auditId,
+      adminId: input.adminUid,
+      adminEmail: input.adminEmail,
+      adminRole: input.adminRole,
+      cycleId: settings.currentCycleId,
+      timestamp: now,
+    };
+
+    tx.set(ovrRef, overrideRecord);
+
+    const lhId = generateDocId('lvl');
+    tx.set(db.collection('levelHistory').doc(lhId), {
+      id: lhId,
+      memberId: member.memberId,
+      memberUid: member.uid,
+      fromLevel: computed.previousLevel,
+      toLevel: computed.newLevel,
+      xpProgressAtEvent: member.xpProgress,
+      source: input.action === 'MANUAL_OVERRIDE' ? 'ADMIN_MANUAL_OVERRIDE' : 'ADMIN_RECALCULATE',
+      cycleId: settings.currentCycleId,
+      createdAt: now,
+    });
+
+    const notifId = generateDocId('notif');
+    tx.set(db.collection('memberNotifications').doc(notifId), {
+      id: notifId,
+      memberId: member.memberId,
+      memberUid: member.uid,
+      notificationCampaignId: null,
+      category: 'SYSTEM',
+      title:
+        input.action === 'MANUAL_OVERRIDE'
+          ? `Penyesuaian Level Membership: ${computed.newLevel}`
+          : `Rekalkulasi Level Otomatis: ${computed.newLevel}`,
+      message:
+        input.action === 'MANUAL_OVERRIDE'
+          ? `Level membership Anda disesuaikan oleh Admin dari ${computed.previousLevel} ke ${computed.newLevel} (XP Progress tetap ${member.xpProgress} XP). Alasan: ${cleanReason}`
+          : `Level membership Anda dihitung ulang otomatis dari XP Progress (${member.xpProgress} XP) menjadi ${computed.newLevel}. Alasan: ${cleanReason}`,
+      read: false,
+      readAt: null,
+      status: 'SENT',
+      sentAt: now,
+      createdAt: now,
+    });
+
+    tx.set(db.collection('auditLogs').doc(auditId), {
+      id: auditId,
+      actorId: input.adminUid,
+      actorRole: input.adminRole,
+      action:
+        input.action === 'MANUAL_OVERRIDE' ? 'LEVEL_MANUAL_OVERRIDE' : 'LEVEL_RECALCULATE_FROM_XP',
+      targetType: 'member',
+      targetId: member.uid,
+      before: {
+        currentLevel: computed.previousLevel,
+        levelMode: computed.previousLevelMode,
+        xpProgress: member.xpProgress,
+        xpReward: member.xpReward,
+      },
+      after: {
+        currentLevel: computed.newLevel,
+        levelMode: computed.newLevelMode,
+        xpProgress: member.xpProgress,
+        xpReward: member.xpReward,
+      },
+      metadata: {
+        overrideId: ovrDocId,
+        operationId: cleanOpId,
+        action: input.action,
+        reason: cleanReason,
+        reference: cleanRef,
+        memberId: member.memberId,
+        memberUsername: member.username,
+      },
+      timestamp: now,
+    });
+
+    return {
+      record: overrideRecord,
+      newLevel: computed.newLevel,
+      newLevelMode: computed.newLevelMode,
+    };
+  });
+}
+
+export async function changeMemberPasswordServer(input: {
+  operationId: string;
+  memberUid: string;
+  newPassword: string;
+  confirmPassword: string;
+  reason: string;
+  reference?: string;
+  revokeSessions?: boolean;
+  adminUid: string;
+  adminEmail: string;
+  adminRole: AdminRole;
+}): Promise<AdminPasswordChangeResult> {
+  const adminAuth = getAdminAuth();
+  const db = getAdminDb();
+  if (!adminAuth || !db) {
+    const err = new Error(
+      'Firebase Admin SDK (FIREBASE_SERVICE_ACCOUNT_JSON) belum dikonfigurasi di server. Perubahan password member oleh Admin wajib menggunakan Firebase Admin SDK agar aman dan tidak boleh dilakukan dari sisi klien.'
+    ) as Error & { statusCode?: number; code?: string };
+    err.statusCode = 503;
+    err.code = 'ADMIN_SDK_UNAVAILABLE';
+    throw err;
+  }
+
+  if (input.adminRole !== 'SUPER_ADMIN' && input.adminRole !== 'ADMIN') {
+    const err = new Error('Hanya SUPER_ADMIN atau ADMIN yang diizinkan mengubah password member.') as Error & {
+      statusCode?: number;
+    };
+    err.statusCode = 403;
+    throw err;
+  }
+
+  const cleanOpId = (input.operationId || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+  if (cleanOpId.length < 6 || cleanOpId.length > 80) {
+    throw new Error('Operation ID tidak valid.');
+  }
+
+  const pwdCheck = validateAdminNewPassword(input.newPassword, input.confirmPassword);
+  if (!pwdCheck.valid) {
+    throw new Error(pwdCheck.error || 'Password baru tidak memenuhi ketentuan keamanan.');
+  }
+
+  const cleanReason = (input.reason || '').trim().slice(0, 300);
+  if (cleanReason.length < 3) {
+    throw new Error('Alasan perubahan password wajib diisi (minimal 3 karakter).');
+  }
+  const cleanRef = (input.reference || '').trim().slice(0, 120);
+  const uid = (input.memberUid || '').trim();
+  if (!uid) {
+    throw new Error('UID member wajib diisi.');
+  }
+
+  const memberSnap = await db.collection('members').doc(uid).get();
+  if (!memberSnap.exists) {
+    throw new Error('Profil member tidak ditemukan.');
+  }
+  const member = memberSnap.data() as MemberProfile;
+  if (member.status === 'DELETED') {
+    throw new Error('Akun member berstatus DELETED dan password-nya tidak dapat diubah.');
+  }
+
+  // Update password securely via Firebase Admin Auth API (NEVER stored in Firestore or logs)
+  await adminAuth.updateUser(uid, { password: input.newPassword });
+
+  const shouldRevoke = input.revokeSessions !== false;
+  if (shouldRevoke) {
+    await adminAuth.revokeRefreshTokens(uid);
+  }
+
+  const now = Date.now();
+  const auditId = generateDocId('audit');
+  const notifId = generateDocId('notif');
+
+  const batch = db.batch();
+  // STRICT SECURITY INVARIANT: ZERO password fields (no oldPassword, no newPassword, no hash)
+  batch.set(db.collection('auditLogs').doc(auditId), {
+    id: auditId,
+    actorId: input.adminUid,
+    actorRole: input.adminRole,
+    action: 'PASSWORD_CHANGED_BY_ADMIN',
+    targetType: 'member',
+    targetId: member.uid,
+    before: null,
+    after: {
+      sessionsRevoked: shouldRevoke,
+      changedAt: now,
+    },
+    metadata: {
+      operationId: cleanOpId,
+      adminId: input.adminUid,
+      adminEmail: input.adminEmail,
+      adminRole: input.adminRole,
+      memberId: member.memberId,
+      memberUid: member.uid,
+      memberUsername: member.username,
+      reason: cleanReason,
+      reference: cleanRef,
+      sessionsRevoked: shouldRevoke,
+    },
+    timestamp: now,
+  });
+
+  batch.set(db.collection('memberNotifications').doc(notifId), {
+    id: notifId,
+    memberId: member.memberId,
+    memberUid: member.uid,
+    notificationCampaignId: null,
+    category: 'SYSTEM',
+    title: 'Password Akun Diperbarui oleh Admin',
+    message: shouldRevoke
+      ? 'Password akun XP PLAY Anda telah diperbarui oleh Admin dan sesi aktif sebelumnya telah dikeluarkan. Silakan login kembali menggunakan password baru Anda.'
+      : 'Password akun XP PLAY Anda telah diperbarui oleh Admin. Jika Anda tidak meminta perubahan ini, segera hubungi petugas XP PLAY.',
+    read: false,
+    readAt: null,
+    status: 'SENT',
+    sentAt: now,
+    createdAt: now,
+  });
+
+  await batch.commit();
+
+  return {
+    operationId: cleanOpId,
+    auditId,
+    memberUid: member.uid,
+    memberId: member.memberId,
+    memberUsername: member.username,
+    sessionsRevoked: shouldRevoke,
+    timestamp: now,
+  };
 }
 
 export { validateLevelThresholds, isCampaignClaimable };

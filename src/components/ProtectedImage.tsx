@@ -15,14 +15,16 @@ export function ProtectedImage({ src, alt, className = '' }: ProtectedImageProps
   useEffect(() => {
     let active = true;
     let createdUrl = '';
+    setFailed(false);
+    setObjectUrl('');
 
     async function load() {
       if (!src) {
-        setFailed(true);
+        if (active) setFailed(true);
         return;
       }
       if (!src.startsWith('/api/claims/evidence/')) {
-        setObjectUrl(src);
+        if (active) setObjectUrl(src);
         return;
       }
       try {
