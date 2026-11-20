@@ -1,14 +1,61 @@
 export type BranchId = 'DEMANG' | 'SEKIP';
 
-export type MemberStatus = 'ACTIVE' | 'SUSPENDED' | 'INACTIVE' | 'DELETED';
+export type MemberStatus = 'PRE_REGISTERED' | 'ACTIVE' | 'SUSPENDED' | 'INACTIVE' | 'DELETED';
 
-export type AdminRole = 'SUPER_ADMIN' | 'ADMIN' | 'STAFF';
+export type RegistrationStage = 'PHONE_ONLY' | 'COMPLETED';
+
+export type MemberCategory = 'MAHASISWA' | 'PELAJAR' | 'PEKERJA' | 'LAINNYA';
+
+export type AdminRole = 'SUPER_ADMIN' | 'ADMIN' | 'CASHIER' | 'STAFF';
+
+export type RolePermissionKey =
+  | 'MEMBER_DASHBOARD'
+  | 'PRE_REGISTER_CUSTOMER'
+  | 'VIEW_MEMBERS_BRANCH'
+  | 'VIEW_MEMBERS_ALL'
+  | 'TRANSACTION_INPUT'
+  | 'XP_PROGRESS_ADJUSTMENT'
+  | 'XP_REWARD_ADJUSTMENT'
+  | 'LEVEL_OVERRIDE'
+  | 'PASSWORD_RESET_MEMBER'
+  | 'BENEFIT_REQUEST_ASSIST'
+  | 'BENEFIT_REQUEST_PROCESS'
+  | 'BENEFIT_CRUD'
+  | 'CHALLENGE_CRUD'
+  | 'EVENT_CRUD'
+  | 'PROMO_CRUD'
+  | 'NOTIFICATIONS_MANAGE'
+  | 'CMS_EDIT'
+  | 'CMS_PUBLISH'
+  | 'BACKUP_EXECUTE'
+  | 'RESTORE_EXECUTE'
+  | 'ADMIN_MANAGEMENT'
+  | 'CASHIER_MANAGEMENT'
+  | 'SYSTEM_SETTINGS'
+  | 'RESET_CYCLE'
+  | 'AUDIT_LOG_VIEW'
+  | 'MEMBER_STATUS_MANAGE';
 
 export type LevelId = 'BRONZE' | 'SILVER' | 'JURAGAN' | 'SULTAN';
 
 export type ClaimStatus = 'ON_PROCESS' | 'APPROVED' | 'DENIED';
 
 export type RedemptionStatus = 'ON_PROCESS' | 'APPROVED' | 'DENIED';
+
+export type BenefitRequestSourceType =
+  | 'CHALLENGE'
+  | 'EVENT'
+  | 'PROMO'
+  | 'GENERAL_BENEFIT'
+  | 'LEVEL_BENEFIT';
+
+export type BenefitRequestStatus =
+  | 'ON_PROCESS'
+  | 'APPROVED'
+  | 'DENIED'
+  | 'USED'
+  | 'EXPIRED'
+  | 'REFUNDED';
 
 export type CampaignType = 'CHALLENGE' | 'EVENT' | 'PROMO';
 
@@ -21,19 +68,29 @@ export type NotificationTargetType =
   | 'SPECIFIC_MEMBER'
   | 'LEVEL'
   | 'BRANCH'
-  | 'INACTIVE_MEMBERS';
+  | 'INACTIVE_MEMBERS'
+  | 'ADMIN_ALERT';
 
 export type XpLedgerSource =
   | 'REGISTRATION'
+  | 'REGISTRATION_BONUS'
   | 'REFERRAL'
   | 'TRANSACTION'
   | 'CHALLENGE'
   | 'EVENT'
   | 'PROMO'
   | 'LEVEL_BONUS'
+  | 'ADMIN_ADD'
   | 'ADMIN_ADJUSTMENT'
   | 'XP_REWARD_ADMIN_ADJUSTMENT'
+  | 'BENEFIT_REQUEST_HOLD'
   | 'REDEMPTION'
+  | 'ADMIN_DEDUCT'
+  | 'TRANSACTION_REVERSAL'
+  | 'DENIED_REFUND'
+  | 'EXPIRY_REFUND'
+  | 'ADMIN_REFUND'
+  | 'REVERSAL_REFUND'
   | 'RESET';
 
 export type XpAdjustmentKind = 'PROGRESS' | 'REWARD';
@@ -65,6 +122,7 @@ export interface SystemSettings {
   transactionXpRate: number; // default 2000 (Rp2.000 = 1 XP)
   registrationBonusXp: number; // default 10
   referralBonusXp: number; // default 5 (to both referrer and referee)
+  refundOnExpiry?: boolean; // default false: expired approved benefit does not auto-refund unless enabled
   currentCycleId: string;
   resetEnabled: boolean;
   resetInterval: number;
@@ -84,9 +142,29 @@ export interface MemberProfile {
   username: string;
   whatsapp: string;
   socialMedia: string;
-  status: MemberStatus;
+  birthDate?: string | null; // YYYY-MM-DD (Asia/Jakarta calendar)
+  birthMonth?: number | null; // 1..12 ready for birthday campaigns
+  birthDay?: number | null; // 1..31 ready for birthday campaigns
+  memberCategory?: MemberCategory | null; // Status Member: MAHASISWA / PELAJAR / PEKERJA / LAINNYA
+  status: MemberStatus; // Account status: PRE_REGISTERED / ACTIVE / INACTIVE / SUSPENDED / DELETED
+  registrationStatus?: MemberStatus; // Explicit compatibility alias mirroring status
+  registrationStage?: RegistrationStage; // PHONE_ONLY (Stage 1) -> COMPLETED (Stage 2)
+  phone?: string; // Compatibility alias for normalized WhatsApp
+  normalizedPhone?: string; // Canonical 628... WhatsApp format
+  branchId?: BranchId | null; // Branch where member was pre-registered / primarily registered
+  preRegisteredAt?: number | null;
+  preRegisteredBy?: string | null;
+  preRegisteredByRole?: AdminRole | null;
+  preRegistrationNotes?: string | null;
+  registrationCompletedAt?: number | null;
+  verifiedPhoneAt?: number | null;
+  registrationBonusGranted?: boolean;
+  authUid?: string | null;
+  migratedFromUid?: string | null;
+  mergedIntoUid?: string | null;
   xpProgress: number;
-  xpReward: number;
+  xpReward: number; // Available XP Reward balance
+  reservedXp?: number; // XP Reward currently held for ON_PROCESS benefit requests
   currentLevel: LevelId;
   levelMode?: LevelMode;
   currentCycleId: string;
@@ -106,8 +184,11 @@ export interface AdminUser {
   fullName: string;
   role: AdminRole;
   branchScope: BranchId | 'ALL';
+  branchId?: BranchId | null;
+  cashierCode?: string | null;
   permissions: {
     manageMembers: boolean;
+    preRegisterCustomer?: boolean;
     inputTransactions: boolean;
     reviewClaims: boolean;
     reviewRedemptions: boolean;
@@ -116,6 +197,12 @@ export interface AdminUser {
     manageNotifications: boolean;
     manageSettings: boolean;
     manageAdmins: boolean;
+    manageCashiers?: boolean;
+    manageCms?: boolean;
+    manageBackupRestore?: boolean;
+    adjustXp?: boolean;
+    overrideLevel?: boolean;
+    resetMemberPassword?: boolean;
     executeReset: boolean;
   };
   active: boolean;
@@ -127,7 +214,10 @@ export interface XpLedgerEntry {
   id: string;
   memberId: string;
   memberUid: string;
+  memberUsername?: string;
   amount: number;
+  beforeBalance?: number;
+  afterBalance?: number;
   type: 'PROGRESS' | 'REWARD';
   direction: 'CREDIT' | 'DEBIT';
   source: XpLedgerSource;
@@ -137,6 +227,47 @@ export interface XpLedgerEntry {
   createdAt: number;
   createdBy: string;
   note: string;
+}
+
+export interface BenefitRequestRecord {
+  id: string;
+  memberId: string;
+  memberUid: string;
+  memberUsername: string;
+  memberName: string;
+  memberWhatsapp: string;
+  sourceType: BenefitRequestSourceType;
+  sourceId: string;
+  title: string;
+  xpCost: number;
+  xpRewardGrant: number;
+  levelRequirement: LevelId;
+  evidenceUrl: string;
+  evidencePath: string;
+  note: string;
+  status: BenefitRequestStatus;
+  resolution: 'DENIED' | 'EXPIRED' | null;
+  holdLedgerId: string | null;
+  refundLedgerId: string | null;
+  branch: BranchId | null;
+  approvedAt: number | null;
+  approvedBy: string | null;
+  approvedByRole: AdminRole | null;
+  deniedAt: number | null;
+  deniedBy: string | null;
+  deniedReason: string | null;
+  expiresAt: number | null;
+  expiredAt: number | null;
+  usedAt: number | null;
+  usedBy: string | null;
+  usedBranch: BranchId | null;
+  receiptReference: string | null;
+  refundedAt: number | null;
+  refundReason: string | null;
+  refundedAmount: number;
+  cycleId: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface TransactionRecord {
@@ -317,6 +448,11 @@ export interface NotificationCampaign {
   targetType: NotificationTargetType;
   targetFilter: string;
   inactivityDays: number | null;
+  category?: 'CAMPAIGN' | 'NEW_MEMBER_REGISTERED' | 'NEW_PRE_REGISTERED';
+  memberUid?: string | null;
+  memberUsername?: string | null;
+  memberName?: string | null;
+  referralUsername?: string | null;
   startAt: number;
   endAt: number | null;
   active: boolean;
@@ -330,7 +466,7 @@ export interface MemberNotification {
   memberId: string;
   memberUid: string;
   notificationCampaignId: string | null;
-  category: 'SYSTEM' | 'LEVEL_UP' | 'CLAIM' | 'REDEMPTION' | 'PROMO' | 'INACTIVITY' | 'RESET';
+  category: 'SYSTEM' | 'LEVEL_UP' | 'CLAIM' | 'REDEMPTION' | 'BENEFIT_REQUEST' | 'PROMO' | 'INACTIVITY' | 'RESET';
   title: string;
   message: string;
   read: boolean;
@@ -707,7 +843,10 @@ export type IntegrityCheckCode =
   | 'NO_ORPHAN_REDEMPTIONS'
   | 'TRANSACTION_INTEGRITY'
   | 'STORAGE_OBJECT_INTEGRITY'
-  | 'CMS_ASSET_INTEGRITY';
+  | 'CMS_ASSET_INTEGRITY'
+  | 'NO_ORPHAN_BENEFIT_REQUESTS'
+  | 'NO_DUPLICATE_DEDUCTION_OR_REFUND'
+  | 'VALID_MEMBER_STATUS_AND_PROFILE';
 
 export interface IntegrityCheckItem {
   code: IntegrityCheckCode;
@@ -786,5 +925,57 @@ export interface SystemHealthReport {
   schemaVersion: string;
   components: SystemHealthComponent[];
 }
+
+export interface OnboardingPublicStatusDoc {
+  status: MemberStatus;
+  hasActiveCode: boolean;
+  branchId: BranchId;
+  updatedAt: number;
+}
+
+export interface OnboardingVerificationRecord {
+  wHash: string;
+  preMemberUid: string;
+  memberId: string;
+  branchId: BranchId;
+  codeHmac: string;
+  codeSalt: string;
+  status: 'PENDING' | 'VERIFIED' | 'USED' | 'REVOKED' | 'EXPIRED';
+  used: boolean;
+  attempts: number;
+  maxAttempts: number;
+  expiresAt: number;
+  issuedBy: string;
+  issuedByRole: AdminRole;
+  issuedAt: number;
+  updatedAt: number;
+}
+
+export interface PreRegistrationResult {
+  alreadyExists: boolean;
+  member: MemberProfile;
+  verificationCode?: string;
+  verificationExpiresAt?: number;
+  onboardingUrl?: string;
+  whatsappShareMessage?: string;
+  message: string;
+}
+
+export interface PhoneCheckResult {
+  state: 'NOT_FOUND' | 'PRE_REGISTERED' | 'ACTIVE' | 'SUSPENDED' | 'INACTIVE' | 'DELETED';
+  canCompleteOnline: boolean;
+  hasActiveCode: boolean;
+  branchId: BranchId | null;
+  normalizedWhatsapp: string;
+  message: string;
+}
+
+export interface IncompleteRegistrationRow {
+  member: MemberProfile;
+  daysSincePreRegistered: number;
+  hasTransactions: boolean;
+  branchId: BranchId | null;
+}
+
 
 

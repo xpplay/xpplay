@@ -37,6 +37,7 @@
         "transactionXpRate": { "type": "integer" },
         "registrationBonusXp": { "type": "integer" },
         "referralBonusXp": { "type": "integer" },
+        "refundOnExpiry": { "type": "boolean" },
         "currentCycleId": { "type": "string", "minLength": 2, "maxLength": 64 },
         "resetEnabled": { "type": "boolean" },
         "resetInterval": { "type": "integer" },
@@ -66,14 +67,16 @@
     },
     "AdminUser": {
       "title": "AdminUser",
-      "description": "Operator dan pengelola sistem dengan RBAC (SUPER_ADMIN, ADMIN, STAFF)",
+      "description": "Operator dan pengelola sistem dengan RBAC 4-Role (SUPER_ADMIN, ADMIN, CASHIER, STAFF legacy)",
       "type": "object",
       "properties": {
         "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
         "email": { "type": "string", "format": "email", "maxLength": 160 },
         "fullName": { "type": "string", "minLength": 2, "maxLength": 100 },
-        "role": { "type": "string", "enum": ["SUPER_ADMIN", "ADMIN", "STAFF"] },
+        "role": { "type": "string", "enum": ["SUPER_ADMIN", "ADMIN", "CASHIER", "STAFF"] },
         "branchScope": { "type": "string", "enum": ["ALL", "DEMANG", "SEKIP"] },
+        "branchId": { "type": "string", "enum": ["DEMANG", "SEKIP"] },
+        "cashierCode": { "type": "string", "maxLength": 40 },
         "active": { "type": "boolean" },
         "createdAt": { "type": "integer" },
         "updatedAt": { "type": "integer" }
@@ -88,12 +91,32 @@
         "uid": { "type": "string", "minLength": 1, "maxLength": 128 },
         "memberId": { "type": "string", "minLength": 4, "maxLength": 40 },
         "fullName": { "type": "string", "minLength": 2, "maxLength": 100 },
-        "username": { "type": "string", "minLength": 3, "maxLength": 24, "pattern": "^[a-z0-9][a-z0-9._]*[a-z0-9]$" },
+        "username": { "type": "string", "maxLength": 24 },
         "whatsapp": { "type": "string", "minLength": 10, "maxLength": 16, "pattern": "^628[1-9][0-9]{6,11}$" },
         "socialMedia": { "type": "string", "maxLength": 100 },
-        "status": { "type": "string", "enum": ["ACTIVE", "SUSPENDED", "INACTIVE", "DELETED"] },
+        "birthDate": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "birthMonth": { "type": "integer" },
+        "birthDay": { "type": "integer" },
+        "memberCategory": { "type": "string", "enum": ["MAHASISWA", "PELAJAR", "PEKERJA", "LAINNYA"] },
+        "status": { "type": "string", "enum": ["PRE_REGISTERED", "ACTIVE", "SUSPENDED", "INACTIVE", "DELETED"] },
+        "registrationStatus": { "type": "string", "enum": ["PRE_REGISTERED", "ACTIVE", "SUSPENDED", "INACTIVE", "DELETED"] },
+        "registrationStage": { "type": "string", "enum": ["PHONE_ONLY", "COMPLETED"] },
+        "phone": { "type": "string", "maxLength": 20 },
+        "normalizedPhone": { "type": "string", "maxLength": 20 },
+        "branchId": { "type": "string", "enum": ["DEMANG", "SEKIP"] },
+        "preRegisteredAt": { "type": "integer" },
+        "preRegisteredBy": { "type": "string", "maxLength": 128 },
+        "preRegisteredByRole": { "type": "string", "enum": ["SUPER_ADMIN", "ADMIN", "CASHIER", "STAFF"] },
+        "preRegistrationNotes": { "type": "string", "maxLength": 300 },
+        "registrationCompletedAt": { "type": "integer" },
+        "verifiedPhoneAt": { "type": "integer" },
+        "registrationBonusGranted": { "type": "boolean" },
+        "authUid": { "type": "string", "maxLength": 128 },
+        "migratedFromUid": { "type": "string", "maxLength": 128 },
+        "mergedIntoUid": { "type": "string", "maxLength": 128 },
         "xpProgress": { "type": "integer" },
         "xpReward": { "type": "integer" },
+        "reservedXp": { "type": "integer" },
         "currentLevel": { "type": "string", "enum": ["BRONZE", "SILVER", "JURAGAN", "SULTAN"] },
         "levelMode": { "type": "string", "enum": ["AUTOMATIC", "MANUAL_OVERRIDE", "RESET"] },
         "currentCycleId": { "type": "string", "minLength": 2, "maxLength": 64 },
@@ -155,22 +178,34 @@
         "id": { "type": "string", "minLength": 1, "maxLength": 128 },
         "memberId": { "type": "string", "minLength": 4, "maxLength": 40 },
         "memberUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberUsername": { "type": "string", "minLength": 3, "maxLength": 24 },
         "amount": { "type": "integer" },
+        "beforeBalance": { "type": "integer" },
+        "afterBalance": { "type": "integer" },
         "type": { "type": "string", "enum": ["PROGRESS", "REWARD"] },
         "direction": { "type": "string", "enum": ["CREDIT", "DEBIT"] },
         "source": {
           "type": "string",
           "enum": [
             "REGISTRATION",
+            "REGISTRATION_BONUS",
             "REFERRAL",
             "TRANSACTION",
             "CHALLENGE",
             "EVENT",
             "PROMO",
             "LEVEL_BONUS",
+            "ADMIN_ADD",
             "ADMIN_ADJUSTMENT",
             "XP_REWARD_ADMIN_ADJUSTMENT",
+            "BENEFIT_REQUEST_HOLD",
             "REDEMPTION",
+            "ADMIN_DEDUCT",
+            "TRANSACTION_REVERSAL",
+            "DENIED_REFUND",
+            "EXPIRY_REFUND",
+            "ADMIN_REFUND",
+            "REVERSAL_REFUND",
             "RESET"
           ]
         },
@@ -181,6 +216,52 @@
         "note": { "type": "string", "maxLength": 300 }
       },
       "required": ["id", "memberId", "memberUid", "amount", "type", "direction", "source", "referenceId", "cycleId", "createdAt", "createdBy", "note"]
+    },
+    "BenefitRequestRecord": {
+      "title": "BenefitRequestRecord",
+      "description": "Pengajuan benefit terpadu (Benefit Umum/Level, Challenge, Event, Promo) dengan sistem XP Hold, masa berlaku 7 hari, verifikasi kasir MARK AS USED, dan refund otomatis",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberId": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "memberUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberUsername": { "type": "string", "maxLength": 24 },
+        "memberName": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "memberWhatsapp": { "type": "string", "minLength": 8, "maxLength": 20 },
+        "sourceType": { "type": "string", "enum": ["CHALLENGE", "EVENT", "PROMO", "GENERAL_BENEFIT", "LEVEL_BENEFIT"] },
+        "sourceId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "xpCost": { "type": "integer" },
+        "xpRewardGrant": { "type": "integer" },
+        "levelRequirement": { "type": "string", "enum": ["BRONZE", "SILVER", "JURAGAN", "SULTAN"] },
+        "evidenceUrl": { "type": "string", "maxLength": 500 },
+        "evidencePath": { "type": "string", "maxLength": 500 },
+        "note": { "type": "string", "maxLength": 400 },
+        "status": { "type": "string", "enum": ["ON_PROCESS", "APPROVED", "DENIED", "USED", "EXPIRED", "REFUNDED"] },
+        "resolution": { "type": "string", "enum": ["DENIED", "EXPIRED"] },
+        "holdLedgerId": { "type": "string", "maxLength": 128 },
+        "refundLedgerId": { "type": "string", "maxLength": 128 },
+        "branch": { "type": "string", "enum": ["DEMANG", "SEKIP"] },
+        "approvedAt": { "type": "integer" },
+        "approvedBy": { "type": "string", "maxLength": 128 },
+        "approvedByRole": { "type": "string", "enum": ["SUPER_ADMIN", "ADMIN", "CASHIER", "STAFF"] },
+        "deniedAt": { "type": "integer" },
+        "deniedBy": { "type": "string", "maxLength": 128 },
+        "deniedReason": { "type": "string", "maxLength": 300 },
+        "expiresAt": { "type": "integer" },
+        "expiredAt": { "type": "integer" },
+        "usedAt": { "type": "integer" },
+        "usedBy": { "type": "string", "maxLength": 128 },
+        "usedBranch": { "type": "string", "enum": ["DEMANG", "SEKIP"] },
+        "receiptReference": { "type": "string", "maxLength": 100 },
+        "refundedAt": { "type": "integer" },
+        "refundReason": { "type": "string", "maxLength": 400 },
+        "refundedAmount": { "type": "integer" },
+        "cycleId": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "createdAt": { "type": "integer" },
+        "updatedAt": { "type": "integer" }
+      },
+      "required": ["id", "memberId", "memberUid", "memberUsername", "memberName", "memberWhatsapp", "sourceType", "sourceId", "title", "xpCost", "xpRewardGrant", "levelRequirement", "status", "refundedAmount", "cycleId", "createdAt", "updatedAt"]
     },
     "XpAdjustmentRecord": {
       "title": "XpAdjustmentRecord",
@@ -433,14 +514,19 @@
     },
     "NotificationCampaign": {
       "title": "NotificationCampaign",
-      "description": "Kampanye notifikasi admin termasuk target member tidak aktif",
+      "description": "Kampanye notifikasi admin termasuk target member tidak aktif dan notifikasi pendaftaran member baru (ADMIN_ALERT)",
       "type": "object",
       "properties": {
         "id": { "type": "string", "minLength": 1, "maxLength": 128 },
         "title": { "type": "string", "minLength": 2, "maxLength": 120 },
         "message": { "type": "string", "minLength": 2, "maxLength": 600 },
-        "targetType": { "type": "string", "enum": ["ALL_MEMBERS", "SPECIFIC_MEMBER", "LEVEL", "BRANCH", "INACTIVE_MEMBERS"] },
+        "targetType": { "type": "string", "enum": ["ALL_MEMBERS", "SPECIFIC_MEMBER", "LEVEL", "BRANCH", "INACTIVE_MEMBERS", "ADMIN_ALERT"] },
         "targetFilter": { "type": "string", "maxLength": 128 },
+        "category": { "type": "string", "enum": ["CAMPAIGN", "NEW_MEMBER_REGISTERED", "NEW_PRE_REGISTERED"] },
+        "memberUid": { "type": "string", "maxLength": 128 },
+        "memberUsername": { "type": "string", "maxLength": 24 },
+        "memberName": { "type": "string", "maxLength": 100 },
+        "referralUsername": { "type": "string", "maxLength": 24 },
         "startAt": { "type": "integer" },
         "active": { "type": "boolean" },
         "status": { "type": "string", "enum": ["DRAFT", "ACTIVE", "EXPIRED"] },
@@ -607,7 +693,7 @@
     },
     "RestoreJobRecord": {
       "title": "RestoreJobRecord",
-      "description": "Riwayat immutable eksekusi Full System Restore termasuk Pre-Restore Backup ID, step logs, dan hasil 12-Point Integrity Verification (khusus SUPER_ADMIN)",
+      "description": "Riwayat immutable eksekusi Full System Restore termasuk Pre-Restore Backup ID, step logs, dan hasil 15-Point Integrity Verification (khusus SUPER_ADMIN)",
       "type": "object",
       "properties": {
         "restoreJobId": { "type": "string", "minLength": 4, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
@@ -650,6 +736,57 @@
         "updatedAt": { "type": "integer" }
       },
       "required": ["id", "updatedAt"]
+    },
+    "OnboardingPublicStatus": {
+      "title": "OnboardingPublicStatus",
+      "description": "Status registrasi zero-PII berdasarkan SHA-256 WhatsApp hash untuk pengecekan Stage 2 tanpa eksposur data pribadi",
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "enum": ["PRE_REGISTERED", "ACTIVE", "SUSPENDED", "INACTIVE", "DELETED"] },
+        "hasActiveCode": { "type": "boolean" },
+        "branchId": { "type": "string", "enum": ["DEMANG", "SEKIP"] },
+        "updatedAt": { "type": "integer" }
+      },
+      "required": ["status", "hasActiveCode", "branchId", "updatedAt"]
+    },
+    "OnboardingVerification": {
+      "title": "OnboardingVerification",
+      "description": "Rekam HMAC-SHA256 kode verifikasi 6 digit sekali pakai untuk penyelesaian pendaftaran online Stage 2 (tanpa plaintext)",
+      "type": "object",
+      "properties": {
+        "wHash": { "type": "string", "minLength": 66, "maxLength": 66, "pattern": "^w_[a-f0-9]{64}$" },
+        "preMemberUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "memberId": { "type": "string", "minLength": 4, "maxLength": 40 },
+        "branchId": { "type": "string", "enum": ["DEMANG", "SEKIP"] },
+        "codeHmac": { "type": "string", "maxLength": 128 },
+        "codeSalt": { "type": "string", "maxLength": 128 },
+        "status": { "type": "string", "enum": ["PENDING", "VERIFIED", "USED", "REVOKED", "EXPIRED"] },
+        "used": { "type": "boolean" },
+        "attempts": { "type": "integer" },
+        "maxAttempts": { "type": "integer" },
+        "expiresAt": { "type": "integer" },
+        "issuedBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "issuedByRole": { "type": "string", "enum": ["SUPER_ADMIN", "ADMIN", "CASHIER", "STAFF"] },
+        "issuedAt": { "type": "integer" },
+        "updatedAt": { "type": "integer" }
+      },
+      "required": [
+        "wHash",
+        "preMemberUid",
+        "memberId",
+        "branchId",
+        "codeHmac",
+        "codeSalt",
+        "status",
+        "used",
+        "attempts",
+        "maxAttempts",
+        "expiresAt",
+        "issuedBy",
+        "issuedByRole",
+        "issuedAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -723,7 +860,11 @@
     },
     "/redemptions/{redemptionId}": {
       "schema": { "$ref": "#/entities/RedemptionRecord" },
-      "description": "Pengajuan redemption benefit oleh member"
+      "description": "Pengajuan redemption benefit legacy (dipertahankan untuk riwayat)"
+    },
+    "/benefitRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/BenefitRequestRecord" },
+      "description": "Pengajuan benefit terpadu dengan XP Hold, masa berlaku 7 hari, verifikasi kasir, dan auto-refund"
     },
     "/notifications/{notificationId}": {
       "schema": { "$ref": "#/entities/NotificationCampaign" },
@@ -763,11 +904,19 @@
     },
     "/restoreJobs/{restoreJobId}": {
       "schema": { "$ref": "#/entities/RestoreJobRecord" },
-      "description": "Riwayat immutable eksekusi Full System Restore & 12-Point Integrity Audit (khusus SUPER_ADMIN)"
+      "description": "Riwayat immutable eksekusi Full System Restore & 15-Point Integrity Audit (khusus SUPER_ADMIN)"
     },
     "/systemOperations/{opId}": {
       "schema": { "$ref": "#/entities/SystemOperationDoc" },
       "description": "Dokumen operasional sistem: restoreLock, backupLock, dan backupRetention"
+    },
+    "/onboardingPublicStatus/{wHash}": {
+      "schema": { "$ref": "#/entities/OnboardingPublicStatus" },
+      "description": "Status registrasi zero-PII berdasarkan exact SHA-256 WhatsApp hash untuk gate Stage 2"
+    },
+    "/onboardingVerifications/{wHash}": {
+      "schema": { "$ref": "#/entities/OnboardingVerification" },
+      "description": "HMAC-SHA256 kode verifikasi 6 digit sekali pakai (expiry 7 hari, maks 5 percobaan, terisolasi per cabang)"
     }
   }
 }

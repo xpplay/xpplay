@@ -1,23 +1,30 @@
-# Authentication & CAPTCHA Guide
+# Authentication, Onboarding Verification & CAPTCHA Guide (v3.1.0)
 
 ## Mekanisme Autentikasi
 1. **Password Security**: Tidak ada password plaintext maupun custom password hash yang disimpan di Firestore. Seluruh kredensial dikelola oleh **Firebase Authentication (Email/Password)**.
-2. **Member Register & Login (Username / Nomor WhatsApp + Password)**:
-   - Pendaftaran dan login Member menggunakan Username atau Nomor WhatsApp + Password + CAPTCHA.
-   - Ketika server Admin SDK belum dikonfigurasi (`FIREBASE_SERVICE_ACCOUNT_JSON` kosong), aplikasi berjalan penuh secara native melalui **Firebase Client SDK (Email/Password)** menggunakan indeks SHA-256 tanpa PII (`authIndex`) yang memetakan hash identifier ke akun opaque internal `@member.xpplay.app`.
-   - Pesan error login selalu generik untuk mencegah *account enumeration*.
-3. **Admin & Operator Login (Email + Password + Email Verification)**:
-   - Admin masuk melalui `/admin/login` menggunakan Email & Password.
-   - Untuk aktivasi pertama kali (termasuk Super Admin awal `spv.xpplay@gmail.com`), gunakan tab **Aktivasi Akun**, buat password, lalu klik link verifikasi email yang dikirim oleh Firebase Authentication (`email_verified == true` diwajibkan oleh Firestore Security Rules).
+2. **Two-Step Member Registration & Login (`/register`, `/complete-membership`, `/login`)**:
+   - **Pendaftaran publik bebas DIBLOKIR**: Pelanggan wajib didaftarkan terlebih dahulu oleh Kasir/Admin (`PRE_REGISTERED` / `PHONE_ONLY`, **tanpa** akun Firebase Auth).
+   - **Verifikasi Status Nomor WhatsApp Zero-PII**: Endpoint `POST /api/onboarding/check` + dokumen publik tanpa PII `onboardingPublicStatus/{wHash}` hanya mengembalikan status registrasi (`NOT_FOUND | PRE_REGISTERED | ACTIVE | SUSPENDED`), status kode aktif, dan cabang — tanpa pernah membocorkan nama, saldo XP, atau data pribadi lain.
+   - **Kode Verifikasi 6-Digit Sekali Pakai**:
+     - Diterbitkan server (`POST /api/onboarding/pre-register` & `POST /api/onboarding/regenerate-code`) menggunakan `crypto.randomInt(0, 1_000_000)` dan disimpan dalam bentuk **HMAC-SHA256** (`ONBOARDING_HMAC_SECRET`) pada `onboardingVerifications/{wHash}`.
+     - Masa berlaku **7 hari**, maksimal **5 percobaan salah**, dan verifikasi sukses (`POST /api/onboarding/verify-code`) menghasilkan `onboardingSessionToken` bertanda tangan HMAC **sekali pakai** (*single-use replay-protected*).
+   - **Aktivasi Akun Firebase Auth**: Akun Firebase Auth (`@member.xpplay.app` melalui `authIndex` berbasis hash SHA-256 tanpa PII) **hanya dibuat** saat pelanggan menyelesaikan Tahap 2 secara penuh (`PRE_REGISTERED -> ACTIVE`).
+   - **Pemblokiran Login `PRE_REGISTERED`**: Pelanggan yang belum menyelesaikan Tahap 2 dilarang masuk ke `/member`. Halaman `/login` mendeteksi status `PRE_REGISTERED` dan mengarahkan ke `/register?wa=<nomor>`.
+   - **Anti-Account-Enumeration**: Pesan kesalahan login untuk kredensial salah tetap generik.
+3. **Staff, Cashier, Admin & Super Admin Login (`/admin/login`)**:
+   - Semua operator (`CASHIER`, legacy `STAFF`, `ADMIN`, `SUPER_ADMIN`) masuk melalui `/admin/login` menggunakan **Email & Password** dengan verifikasi email wajib (`email_verified == true`).
+   - **Auto-Redirect Sesuai Role**:
+     - `CASHIER` / `STAFF` -> `/cashier`
+     - `ADMIN` -> `/admin`
+     - `SUPER_ADMIN` -> `/superadmin`
+   - **Aktivasi Pertama Kali**: Gunakan tab **Aktivasi Akun** untuk mendaftarkan password akun email yang sudah diotorisasi Super Admin (termasuk Super Admin bootstrap `spv.xpplay@gmail.com`), lalu klik tautan verifikasi email dari Firebase Authentication.
 
 ## Konfigurasi Wajib di Firebase Console
-1. Buka **Firebase Console** untuk project `adept-extension-t40px`.
+1. Buka **Firebase Console** untuk project aktif aplikasi (`firebase-applet-config.json`).
 2. Masuk ke **Authentication → Sign-in method** lalu aktifkan provider **Email/Password** → **Save**.
 
-## Konfigurasi CAPTCHA Production (Google reCAPTCHA)
-1. Daftar di Google reCAPTCHA Admin Console dan pilih tipe v2 Checkbox atau v3.
-2. Masukkan domain deployment Anda (`APP_URL` dan `localhost` untuk dev).
-3. Isi environment variable:
-   - `VITE_RECAPTCHA_SITE_KEY` (frontend)
-   - `RECAPTCHA_SECRET_KEY` (server-only)
-4. Jika `RECAPTCHA_SECRET_KEY` belum diisi, server otomatis menggunakan tantangan gambar SVG bertanda tangan HMAC (`CAPTCHA_HMAC_SECRET`) dengan masa berlaku 5 menit dan konsumsi nonce satu kali.
+## Environment Variables Keamanan Produksi
+- `FIREBASE_SERVICE_ACCOUNT_JSON` (server-only): Wajib untuk aktivasi penuh Firebase Admin SDK (penulisan otoritatif server-side, reset password member, full Auth/Firestore backup).
+- `ONBOARDING_HMAC_SECRET` (server-only): Secret kriptografis 32+ byte untuk menandatangani hash kode 6-digit dan `onboardingSessionToken`.
+- `CAPTCHA_HMAC_SECRET` (server-only): Secret fallback CAPTCHA SVG bertanda tangan HMAC (5 menit, nonce satu kali).
+- `VITE_RECAPTCHA_SITE_KEY` & `RECAPTCHA_SECRET_KEY`: Konfigurasi Google reCAPTCHA v2/v3 produksi.

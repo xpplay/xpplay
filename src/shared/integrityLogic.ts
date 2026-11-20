@@ -4,8 +4,15 @@ import {
   normalizeWhatsapp,
   resolveLevelFromXp,
 } from './xpLogic.ts';
+import {
+  VALID_BENEFIT_REQUEST_STATUSES,
+  VALID_MEMBER_CATEGORIES,
+  VALID_MEMBER_STATUSES,
+  validateBirthDate,
+} from './benefitRequestLogic.ts';
 import type {
   BenefitItem,
+  BenefitRequestRecord,
   CampaignItem,
   ClaimRecord,
   CmsDraftDoc,
@@ -29,6 +36,7 @@ export interface IntegrityDataset {
   referrals: ReferralRecord[];
   claims: ClaimRecord[];
   redemptions: RedemptionRecord[];
+  benefitRequests?: BenefitRequestRecord[];
   transactions: TransactionRecord[];
   campaigns: CampaignItem[];
   benefits: BenefitItem[];
@@ -52,7 +60,7 @@ function extractLocalCmsPath(url: string | undefined | null): string | null {
   return null;
 }
 
-function extractLocalClaimPath(claim: ClaimRecord): string | null {
+function extractLocalClaimPath(claim: Pick<ClaimRecord, 'evidencePath' | 'evidenceUrl'>): string | null {
   if (claim.evidencePath && claim.evidencePath.trim()) {
     const clean = claim.evidencePath.trim().replace(/^\/+/, '');
     if (clean.startsWith('claims/')) return clean;
@@ -65,7 +73,7 @@ function extractLocalClaimPath(claim: ClaimRecord): string | null {
 }
 
 /**
- * MODULE 18 — 12-Point Data Integrity Verification Engine.
+ * 15-Point Data Integrity Verification Engine.
  * Pure, deterministic, executable both post-restore and on-demand against live datasets.
  */
 export function runDataIntegrityChecks(
@@ -74,11 +82,17 @@ export function runDataIntegrityChecks(
 ): IntegrityAuditReport {
   const checkedAt = meta.checkedAt ?? Date.now();
   const levels = dataset.levels.length === 4 ? dataset.levels : DEFAULT_LEVELS;
+  const benefitRequests = dataset.benefitRequests ?? [];
   const checks: IntegrityCheckItem[] = [];
 
   const memberByUid = new Map<string, MemberProfile>();
+  const validMemberUids = new Set<string>();
   for (const m of dataset.members) {
     memberByUid.set(m.uid, m);
+    validMemberUids.add(m.uid);
+    if (m.migratedFromUid) {
+      validMemberUids.add(m.migratedFromUid);
+    }
   }
   const campaignIds = new Set(dataset.campaigns.map((c) => c.id));
   const benefitIds = new Set(dataset.benefits.map((b) => b.id));
@@ -115,7 +129,7 @@ export function runDataIntegrityChecks(
       }
     }
     for (const e of dataset.xpProgressLedger) {
-      if (!memberByUid.has(e.memberUid)) {
+      if (!validMemberUids.has(e.memberUid)) {
         issues.push(`Ledger ${e.id}: memberUid ${e.memberUid} tidak ditemukan`);
       } else if (!Number.isFinite(e.amount)) {
         issues.push(`Ledger ${e.id}: nominal XP tidak valid`);
@@ -142,15 +156,18 @@ export function runDataIntegrityChecks(
       if (!Number.isFinite(m.xpReward) || !Number.isInteger(m.xpReward) || m.xpReward < 0) {
         issues.push(`${m.username}: xpReward tidak valid (${String(m.xpReward)})`);
       }
+      const resXp = m.reservedXp ?? 0;
+      if (!Number.isFinite(resXp) || !Number.isInteger(resXp) || resXp < 0) {
+        issues.push(`${m.username}: reservedXp tidak valid (${String(m.reservedXp)})`);
+      }
     }
     for (const e of dataset.xpRewardLedger) {
-      if (!memberByUid.has(e.memberUid)) {
+      if (!validMemberUids.has(e.memberUid)) {
         issues.push(`Reward Ledger ${e.id}: memberUid ${e.memberUid} tidak ditemukan`);
       } else if (!Number.isFinite(e.amount)) {
         issues.push(`Reward Ledger ${e.id}: nominal XP tidak valid`);
       }
     }
-    // Check reward ledger sum mismatches as warnings if member has entries and negative sum
     for (const uid of rewHasEntries) {
       const m = memberByUid.get(uid);
       const sum = rewSumByUid.get(uid) ?? 0;
@@ -214,6 +231,9 @@ export function runDataIntegrityChecks(
       if (m.xpReward < 0) {
         issues.push(`${m.username}: xpReward negatif (${m.xpReward})`);
       }
+      if ((m.reservedXp ?? 0) < 0) {
+        issues.push(`${m.username}: reservedXp negatif (${String(m.reservedXp)})`);
+      }
     }
     checks.push({
       code: 'NO_NEGATIVE_BALANCE',
@@ -224,7 +244,7 @@ export function runDataIntegrityChecks(
       samples: issues.slice(0, 10),
       summary:
         issues.length === 0
-          ? 'Tidak ada saldo XP Progress atau XP Reward bernilai negatif.'
+          ? 'Tidak ada saldo XP Progress, XP Reward, atau Reserved XP bernilai negatif.'
           : `Ditemukan ${issues.length} saldo negatif.`,
     });
   }
@@ -237,6 +257,9 @@ export function runDataIntegrityChecks(
       if (m.status === 'DELETED') continue;
       const norm = normalizeUsername(m.username);
       if (!norm) {
+        if (m.status === 'PRE_REGISTERED' && (m.registrationStage ?? 'PHONE_ONLY') === 'PHONE_ONLY') {
+          continue;
+        }
         issues.push(`UID ${m.uid}: username kosong`);
         continue;
       }
@@ -382,7 +405,7 @@ export function runDataIntegrityChecks(
   {
     const issues: string[] = [];
     for (const t of dataset.transactions) {
-      if (!memberByUid.has(t.memberUid)) {
+      if (!validMemberUids.has(t.memberUid)) {
         issues.push(`Transaksi ${t.id}: memberUid ${t.memberUid} tidak ditemukan`);
       }
       if (t.branch !== 'DEMANG' && t.branch !== 'SEKIP') {
@@ -409,7 +432,7 @@ export function runDataIntegrityChecks(
     });
   }
 
-  // 11. Storage Object Integrity (Claim Evidence)
+  // 11. Storage Object Integrity (Claim & BenefitRequest Evidence)
   {
     const issues: string[] = [];
     for (const c of dataset.claims) {
@@ -418,16 +441,22 @@ export function runDataIntegrityChecks(
         issues.push(`Claim ${c.id}: file bukti "${localPath}" tidak ditemukan di storage`);
       }
     }
+    for (const br of benefitRequests) {
+      const localPath = extractLocalClaimPath(br);
+      if (localPath && !dataset.existingStoragePaths.has(localPath)) {
+        issues.push(`BenefitRequest ${br.id}: file bukti "${localPath}" tidak ditemukan di storage`);
+      }
+    }
     checks.push({
       code: 'STORAGE_OBJECT_INTEGRITY',
-      label: '11. Keberadaan File Storage (Bukti Claim)',
+      label: '11. Keberadaan File Storage (Bukti Claim & Benefit)',
       passed: issues.length === 0,
       severity: 'CRITICAL',
       issueCount: issues.length,
       samples: issues.slice(0, 10),
       summary:
         issues.length === 0
-          ? 'Seluruh referensi file bukti claim tersedia di storage.'
+          ? 'Seluruh referensi file bukti claim & benefit request tersedia di storage.'
           : `Ditemukan ${issues.length} referensi file bukti hilang di storage.`,
     });
   }
@@ -465,6 +494,152 @@ export function runDataIntegrityChecks(
         issues.length === 0
           ? 'Seluruh aset gambar lokal CMS Homepage valid dan tersedia.'
           : `Ditemukan ${issues.length} referensi aset CMS yang rusak/hilang.`,
+    });
+  }
+
+  // 13. No Orphan Benefit Requests & Reserved XP Consistency
+  {
+    const issues: string[] = [];
+    const expectedReservedByUid = new Map<string, number>();
+
+    for (const br of benefitRequests) {
+      if (!validMemberUids.has(br.memberUid)) {
+        issues.push(`BenefitRequest ${br.id}: memberUid ${br.memberUid} tidak ada`);
+      }
+      if (!VALID_BENEFIT_REQUEST_STATUSES.has(br.status)) {
+        issues.push(`BenefitRequest ${br.id}: status tidak valid (${String(br.status)})`);
+      }
+      if (br.sourceType === 'CHALLENGE' || br.sourceType === 'EVENT' || br.sourceType === 'PROMO') {
+        if (dataset.campaigns.length > 0 && !campaignIds.has(br.sourceId)) {
+          issues.push(`BenefitRequest ${br.id}: campaign sourceId ${br.sourceId} tidak ada`);
+        }
+      } else if (dataset.benefits.length > 0 && !benefitIds.has(br.sourceId)) {
+        issues.push(`BenefitRequest ${br.id}: benefit sourceId ${br.sourceId} tidak ada`);
+      }
+      if (br.status === 'ON_PROCESS' && br.xpCost > 0) {
+        expectedReservedByUid.set(
+          br.memberUid,
+          (expectedReservedByUid.get(br.memberUid) ?? 0) + br.xpCost
+        );
+      }
+    }
+
+    for (const m of dataset.members) {
+      const expected = expectedReservedByUid.get(m.uid) ?? 0;
+      const actual = m.reservedXp ?? 0;
+      if (benefitRequests.length > 0 && actual !== expected) {
+        issues.push(
+          `${m.username}: reservedXp (${actual}) tidak sesuai total ON_PROCESS hold (${expected})`
+        );
+      }
+    }
+
+    checks.push({
+      code: 'NO_ORPHAN_BENEFIT_REQUESTS',
+      label: '13. Validitas Benefit Request & Reserved XP',
+      passed: issues.length === 0,
+      severity: 'CRITICAL',
+      issueCount: issues.length,
+      samples: issues.slice(0, 10),
+      summary:
+        issues.length === 0
+          ? `${benefitRequests.length} dokumen Benefit Request & saldo Reserved XP seluruhnya konsisten.`
+          : `Ditemukan ${issues.length} masalah pada Benefit Request / Reserved XP.`,
+    });
+  }
+
+  // 14. No Duplicate XP Hold Deduction, Duplicate Refund, or Duplicate Registration Bonus
+  {
+    const issues: string[] = [];
+    const holdCountByRef = new Map<string, number>();
+    const refundCountByRef = new Map<string, number>();
+    const regBonusCountByMember = new Map<string, number>();
+
+    for (const e of dataset.xpRewardLedger) {
+      if (e.source === 'BENEFIT_REQUEST_HOLD') {
+        const next = (holdCountByRef.get(e.referenceId) ?? 0) + 1;
+        holdCountByRef.set(e.referenceId, next);
+        if (next > 1) {
+          issues.push(`Double hold terdeteksi pada referenceId ${e.referenceId} (${next} entri)`);
+        }
+      } else if (e.source === 'DENIED_REFUND' || e.source === 'EXPIRY_REFUND') {
+        const next = (refundCountByRef.get(e.referenceId) ?? 0) + 1;
+        refundCountByRef.set(e.referenceId, next);
+        if (next > 1) {
+          issues.push(`Double refund terdeteksi pada referenceId ${e.referenceId} (${next} entri)`);
+        }
+      } else if (e.source === 'REGISTRATION_BONUS' || e.source === 'REGISTRATION') {
+        const key = e.memberId || e.memberUid;
+        const next = (regBonusCountByMember.get(key) ?? 0) + 1;
+        regBonusCountByMember.set(key, next);
+        if (next > 1) {
+          issues.push(`Double Registration Bonus terdeteksi pada member ${key} (${next} entri)`);
+        }
+        const m = memberByUid.get(e.memberUid);
+        if (m && m.status === 'PRE_REGISTERED') {
+          issues.push(`Member PRE_REGISTERED ${m.memberId} menerima Registration Bonus sebelum selesai`);
+        }
+      }
+    }
+
+    const progRegBonusCountByMember = new Map<string, number>();
+    for (const e of dataset.xpProgressLedger) {
+      if (e.source === 'REGISTRATION_BONUS' || e.source === 'REGISTRATION') {
+        const key = e.memberId || e.memberUid;
+        const next = (progRegBonusCountByMember.get(key) ?? 0) + 1;
+        progRegBonusCountByMember.set(key, next);
+        if (next > 1) {
+          issues.push(`Double Registration Bonus (XP Progress) terdeteksi pada member ${key} (${next} entri)`);
+        }
+        const m = memberByUid.get(e.memberUid);
+        if (m && m.status === 'PRE_REGISTERED') {
+          issues.push(`Member PRE_REGISTERED ${m.memberId} menerima Registration Bonus (XP Progress) sebelum selesai`);
+        }
+      }
+    }
+
+    checks.push({
+      code: 'NO_DUPLICATE_DEDUCTION_OR_REFUND',
+      label: '14. Proteksi Double Deduction, Double Refund & Double Registration Bonus',
+      passed: issues.length === 0,
+      severity: 'CRITICAL',
+      issueCount: issues.length,
+      samples: issues.slice(0, 10),
+      summary:
+        issues.length === 0
+          ? 'Tidak ada potongan hold ganda, refund ganda, atau bonus registrasi ganda.'
+          : `Ditemukan ${issues.length} duplikasi hold/refund/bonus.`,
+    });
+  }
+
+  // 15. Valid Member Status, Birth Date & Category
+  {
+    const issues: string[] = [];
+    for (const m of dataset.members) {
+      if (!VALID_MEMBER_STATUSES.has(m.status)) {
+        issues.push(`${m.username}: status akun tidak valid (${String(m.status)})`);
+      }
+      if (m.memberCategory !== undefined && m.memberCategory !== null && !VALID_MEMBER_CATEGORIES.has(m.memberCategory)) {
+        issues.push(`${m.username}: kategori status member tidak valid (${String(m.memberCategory)})`);
+      }
+      if (m.birthDate) {
+        const bCheck = validateBirthDate(m.birthDate, checkedAt);
+        if (!bCheck.valid) {
+          issues.push(`${m.username}: tanggal lahir tidak valid (${m.birthDate})`);
+        }
+      }
+    }
+    checks.push({
+      code: 'VALID_MEMBER_STATUS_AND_PROFILE',
+      label: '15. Validitas Status, Tanggal Lahir & Kategori Member',
+      passed: issues.length === 0,
+      severity: 'CRITICAL',
+      issueCount: issues.length,
+      samples: issues.slice(0, 10),
+      summary:
+        issues.length === 0
+          ? `${dataset.members.length} profil member memiliki status akun, tanggal lahir, dan kategori valid.`
+          : `Ditemukan ${issues.length} profil member dengan status/tanggal lahir/kategori tidak valid.`,
     });
   }
 

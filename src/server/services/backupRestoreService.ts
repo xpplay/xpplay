@@ -39,6 +39,7 @@ import type {
   BackupVerificationCheck,
   BackupVerificationResult,
   BenefitItem,
+  BenefitRequestRecord,
   CampaignItem,
   ClaimRecord,
   CmsDraftDoc,
@@ -563,8 +564,8 @@ export class BackupRestoreEngine {
 
       const scopeDescription =
         scopeType === 'FULL_SYSTEM_BACKUP'
-          ? 'Backup penuh Firestore (25 koleksi), Storage (bukti claim & aset CMS), dan Firebase Auth metadata.'
-          : 'Backup Firestore (25 koleksi) & Storage (bukti claim & aset CMS) + metadata akun turunan Firestore. Firebase Auth Admin SDK tidak aktif di environment ini.';
+          ? `Backup penuh Firestore (${BACKUP_COLLECTIONS.length} koleksi), Storage (bukti claim & aset CMS), dan Firebase Auth metadata.`
+          : `Backup Firestore (${BACKUP_COLLECTIONS.length} koleksi) & Storage (bukti claim & aset CMS) + metadata akun turunan Firestore. Firebase Auth Admin SDK tidak aktif di environment ini.`;
 
       const authLimitationNotice =
         authExport.mode === 'FIREBASE_ADMIN_SDK'
@@ -1089,7 +1090,7 @@ export class BackupRestoreEngine {
     });
   }
 
-  // ---------- 12-POINT LIVE INTEGRITY AUDIT (MODULE 18) ----------
+  // ---------- 15-POINT LIVE INTEGRITY AUDIT (FASE 32) ----------
   public async runLiveIntegrityAudit(input: {
     actorUid: string;
     actorRole: AdminRole;
@@ -1104,6 +1105,7 @@ export class BackupRestoreEngine {
       refDocs,
       claimDocs,
       redDocs,
+      benefitReqDocs,
       txDocs,
       campDocs,
       benDocs,
@@ -1117,6 +1119,7 @@ export class BackupRestoreEngine {
       this.store.listCollection('referrals', input.bearerToken),
       this.store.listCollection('claims', input.bearerToken),
       this.store.listCollection('redemptions', input.bearerToken),
+      this.store.listCollection('benefitRequests', input.bearerToken).catch(() => []),
       this.store.listCollection('transactions', input.bearerToken),
       this.store.listCollection('campaigns', input.bearerToken),
       this.store.listCollection('benefits', input.bearerToken),
@@ -1136,6 +1139,7 @@ export class BackupRestoreEngine {
         referrals: refDocs.map((d) => d.data as unknown as ReferralRecord),
         claims: claimDocs.map((d) => d.data as unknown as ClaimRecord),
         redemptions: redDocs.map((d) => d.data as unknown as RedemptionRecord),
+        benefitRequests: benefitReqDocs.map((d) => d.data as unknown as BenefitRequestRecord),
         transactions: txDocs.map((d) => d.data as unknown as TransactionRecord),
         campaigns: campDocs.map((d) => d.data as unknown as CampaignItem),
         benefits: benDocs.map((d) => d.data as unknown as BenefitItem),
@@ -1605,11 +1609,11 @@ export class BackupRestoreEngine {
         await input.onBeforeVerificationHook();
       }
 
-      // STEP 7: Post-Restore Verification + 12-Point Integrity Check (MODULES 17 & 18, TEST 10)
+      // STEP 7: Post-Restore Verification + 15-Point Integrity Check (FASE 31 & 32, TEST 10)
       job.status = 'VERIFYING';
       const sVerify = pushStep(
         'POST_RESTORE_VERIFICATION',
-        'Membandingkan jumlah dokumen/file & menjalankan 12-Point Data Integrity Audit.'
+        'Membandingkan jumlah dokumen/file & menjalankan 15-Point Data Integrity Audit.'
       );
       await this.saveRestoreJobRecord(job, input.bearerToken);
 
@@ -1675,7 +1679,7 @@ export class BackupRestoreEngine {
       finishStep(
         sVerify,
         'DONE',
-        `Seluruh jumlah koleksi, ${restoredStorageCount} file storage, dan 12/12 Data Integrity Checks LULUS.`
+        `Seluruh jumlah koleksi, ${restoredStorageCount} file storage, dan ${integrityReport.passedChecks}/${integrityReport.totalChecks} Data Integrity Checks LULUS.`
       );
       await this.saveRestoreJobRecord(job, input.bearerToken);
 

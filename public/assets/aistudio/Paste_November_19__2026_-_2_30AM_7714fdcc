@@ -1,0 +1,1575 @@
+LANJUTKAN PENGEMBANGAN XP PLAY MEMBER SYSTEM DARI PROJECT EXISTING.
+
+GUNAKAN SELURUH SYSTEM INSTRUCTIONS, MASTER PROMPT, DAN PROMPT SEBELUMNYA SEBAGAI BASELINE.
+
+JANGAN MEMBUAT PROJECT BARU.
+
+JANGAN MELAKUKAN FULL REWRITE.
+
+JANGAN MENGHAPUS DATA PRODUCTION.
+
+JANGAN MENGGANTI FIREBASE / AUTHENTICATION EXISTING TANPA AUDIT.
+
+JANGAN MEMBUAT DUPLICATE FEATURE.
+
+JANGAN MENGGUNAKAN DUMMY DATABASE.
+
+JANGAN MERUSAK FEATURE EXISTING.
+
+================================================================
+TUJUAN PERUBAHAN
+================================================================
+
+Sekarang ubah sistem registrasi membership XP PLAY menjadi:
+
+TWO-STEP MEMBERSHIP REGISTRATION
+
+Tahap 1:
+Pre-registration oleh Kasir/Admin menggunakan Nomor WhatsApp.
+
+Tahap 2:
+Customer menyelesaikan profil membership melalui halaman web.
+
+Member yang baru menjalani Tahap 1 tetapi belum menyelesaikan Tahap 2:
+
+- tetap tercatat sebagai member
+- dapat digunakan melalui Kasir
+- dapat dicari oleh Kasir/Admin
+- dapat melakukan transaksi melalui Kasir
+- dapat menerima benefit tertentu melalui proses Kasir sesuai permission
+- dapat melakukan claim/redeem melalui bantuan Kasir sesuai workflow
+- TIDAK dapat login ke Member Dashboard
+- TIDAK mendapatkan bonus registrasi 10 XP
+- TIDAK dianggap sebagai full active digital member
+
+Setelah Tahap 2 selesai:
+
+- status berubah menjadi ACTIVE
+- customer dapat login ke Member Dashboard
+- customer mendapatkan bonus registrasi 10 XP
+- customer memiliki akses penuh sesuai aturan membership
+- seluruh data tahap 1 tetap dipertahankan
+
+================================================================
+PHASE 1 — MEMBER REGISTRATION STATUS
+================================================================
+
+Jangan hanya menggunakan:
+
+ACTIVE / INACTIVE
+
+Tambahkan status onboarding yang jelas.
+
+Minimal:
+
+PRE_REGISTERED
+ACTIVE
+SUSPENDED
+INACTIVE
+DELETED
+
+PRE_REGISTERED berarti:
+
+Nomor WhatsApp sudah didaftarkan oleh Kasir/Admin tetapi customer belum menyelesaikan form membership digital.
+
+ACTIVE berarti:
+
+Customer sudah menyelesaikan seluruh form registrasi digital.
+
+================================================================
+PHASE 2 — DATA MEMBER PRE-REGISTRATION
+================================================================
+
+Ketika Kasir/Admin melakukan pre-registration:
+
+Input hanya:
+
+Nomor WhatsApp Customer
+
+Opsional jika architecture existing memerlukan:
+
+Branch
+Created By
+Created At
+Notes
+
+Jangan meminta:
+
+Username
+Password
+Tanggal lahir
+Nama lengkap
+
+pada tahap ini jika memang belum diberikan customer.
+
+Simpan data:
+
+memberId
+phone
+normalizedPhone
+status = PRE_REGISTERED
+registrationStage = PHONE_ONLY
+branch
+createdBy
+createdAt
+
+Jika nomor WhatsApp sudah ada:
+
+JANGAN membuat duplicate member.
+
+Tampilkan existing member.
+
+Contoh:
+
+Nomor 089xxxx sudah terdaftar.
+
+Status:
+
+PRE_REGISTERED
+
+atau:
+
+ACTIVE
+
+================================================================
+PHASE 3 — KASIR / ADMIN PRE-REGISTRATION
+================================================================
+
+Buat fitur khusus:
+
+REGISTER CUSTOMER
+
+di Cashier Dashboard dan Admin Dashboard sesuai permission.
+
+Flow:
+
+Kasir login
+
+↓
+
+REGISTER CUSTOMER
+
+↓
+
+Input nomor WhatsApp
+
+↓
+
+CHECK DATABASE
+
+Jika belum ada:
+
+CREATE PRE_REGISTERED MEMBER
+
+Jika sudah ada:
+
+tampilkan status member.
+
+Contoh:
+
+"Member sudah terdaftar."
+
+Jika PRE_REGISTERED:
+
+"Member belum menyelesaikan pendaftaran."
+
+Jika ACTIVE:
+
+"Member sudah aktif."
+
+================================================================
+PHASE 4 — CUSTOMER DIGITAL REGISTRATION
+================================================================
+
+Customer membuka halaman:
+
+Member Registration / Complete Membership
+
+Customer pertama kali melihat form:
+
+NOMOR TELEPON / WHATSAPP
+
+Customer memasukkan nomor WhatsApp.
+
+Tekan:
+
+SUBMIT
+
+Sistem mencari member berdasarkan:
+
+normalizedPhone
+
+Jika tidak ditemukan:
+
+tampilkan:
+
+"Nomor WhatsApp belum didaftarkan. Silakan hubungi Kasir XP PLAY."
+
+JANGAN membuat member baru dari halaman ini jika nomor belum dipre-register oleh Kasir/Admin.
+
+Jika ditemukan tetapi status:
+
+PRE_REGISTERED
+
+lanjutkan ke:
+
+FULL REGISTRATION FORM
+
+Jika status:
+
+ACTIVE
+
+tampilkan:
+
+"Membership sudah aktif."
+
+dan arahkan ke Login.
+
+Jika status:
+
+SUSPENDED
+
+jangan izinkan penyelesaian registration tanpa policy yang sesuai.
+
+================================================================
+PHASE 5 — SECURITY CUSTOMER REGISTRATION
+================================================================
+
+Jangan menganggap hanya mengetahui nomor WhatsApp sudah cukup aman untuk mengambil alih member.
+
+Gunakan mekanisme keamanan yang kompatibel dengan project existing.
+
+Prioritas:
+
+1. WhatsApp/phone verification atau OTP jika infrastructure sudah tersedia.
+2. Jika OTP belum tersedia, gunakan secure one-time onboarding token/session yang dibuat saat proses pre-registration dan tidak dapat digunakan ulang.
+3. Jangan membuat password menjadi bagian dari pre-registration.
+4. Jangan expose memberId/database ID secara langsung sebagai secret.
+5. Jangan memungkinkan customer menyelesaikan pendaftaran member lain hanya dengan mengetahui nomor WhatsApp.
+
+Flow harus tetap mudah bagi customer:
+
+Masukkan WhatsApp
+
+→ verifikasi
+
+→ full registration form.
+
+Jika mekanisme OTP belum ada:
+
+implementasikan architecture yang aman dan dokumentasikan setup yang diperlukan.
+
+================================================================
+PHASE 6 — FULL REGISTRATION FORM
+================================================================
+
+Setelah nomor WhatsApp berhasil diverifikasi:
+
+tampilkan form:
+
+Nama Lengkap
+Username
+Tanggal Lahir
+Status Member
+Social Media
+Password
+Confirm Password
+Referral Username jika ada
+dan field existing lain yang sudah digunakan project.
+
+Status Member:
+
+MAHASISWA
+PELAJAR
+PEKERJA
+LAINNYA
+
+Jangan meminta nomor WhatsApp kedua kali jika nomor sudah berasal dari pre-registration.
+
+Gunakan nomor WhatsApp yang sudah terverifikasi.
+
+================================================================
+PHASE 7 — REGISTRATION COMPLETION
+================================================================
+
+Ketika customer menyelesaikan form:
+
+validasi seluruh field.
+
+Jika berhasil:
+
+status:
+
+PRE_REGISTERED
+→
+ACTIVE
+
+registrationStage:
+
+PHONE_ONLY
+→
+COMPLETED
+
+Kemudian buat:
+
+- Firebase Authentication user jika belum ada
+- username mapping
+- member profile
+- full profile
+- registrationCompletedAt
+- updatedAt
+- audit log
+
+================================================================
+PHASE 8 — REGISTRATION BONUS 10 XP
+================================================================
+
+BONUS REGISTRASI 10 XP HANYA DIBERIKAN SEKALI.
+
+Bonus hanya diberikan ketika:
+
+PRE_REGISTERED
+→ ACTIVE
+
+dan full registration berhasil.
+
+JANGAN memberikan 10 XP ketika Kasir hanya melakukan pre-registration nomor WhatsApp.
+
+JANGAN memberikan 10 XP ketika customer baru memasukkan nomor WhatsApp.
+
+JANGAN memberikan bonus dua kali jika customer mengulang form.
+
+Gunakan idempotent registration completion.
+
+Buat XP source:
+
+REGISTRATION_BONUS
+
+Contoh:
+
+XP Progress +10
+XP Reward +10
+
+Ledger harus menyimpan:
+
+referenceId = memberId / registration event
+
+Jika member kembali mencoba menyelesaikan registration:
+
+JANGAN memberikan bonus kedua.
+
+================================================================
+PHASE 9 — REFERRAL
+================================================================
+
+Referral tetap mengikuti sistem existing.
+
+Tetapi referral hanya diproses ketika full registration berhasil.
+
+Jangan memberikan referral bonus pada tahap pre-registration.
+
+Jika customer mengisi referral username:
+
+validasi referral.
+
+Jika valid:
+
+Referrer:
++5 XP
+
+New Member:
++5 XP
+
+New Member juga:
+
+Registration Bonus:
++10 XP
+
+Jadi:
+
+New member total = 15 XP
+
+Referrer = +5 XP
+
+Semua dilakukan hanya satu kali.
+
+================================================================
+PHASE 10 — PRE-REGISTERED MEMBER ACCESS
+================================================================
+
+Member dengan status:
+
+PRE_REGISTERED
+
+TIDAK BOLEH login ke Member Dashboard.
+
+Jangan membuat Firebase login account yang memberikan akses member dashboard sebelum full registration selesai.
+
+Jika authentication system existing membutuhkan account sementara:
+
+account harus tetap dibatasi.
+
+Preferred:
+
+Member belum dapat login sampai status ACTIVE.
+
+================================================================
+PHASE 11 — PRE-REGISTERED MEMBER MELALUI KASIR
+================================================================
+
+Walaupun belum menyelesaikan full registration:
+
+PRE_REGISTERED MEMBER tetap dapat digunakan oleh Kasir/Admin.
+
+Kasir/Admin dapat:
+
+- mencari member
+- melihat nomor WhatsApp
+- melihat status membership
+- mencatat transaksi
+- memberikan XP transaksi sesuai policy
+- membantu claim/redeem sesuai permission
+- melihat benefit eligibility sesuai policy
+- membantu customer menyelesaikan proses di kasir
+
+Tetapi:
+
+customer tidak memiliki dashboard digital.
+
+customer tidak memiliki login member.
+
+customer belum menerima registration bonus.
+
+================================================================
+PHASE 12 — PRE-REGISTERED XP POLICY
+================================================================
+
+Perhatikan dengan teliti:
+
+Pre-registration member dapat digunakan melalui Kasir.
+
+Apakah XP transaksi dapat diberikan sebelum full registration?
+
+JANGAN mengubah kebijakan ini sembarangan.
+
+Gunakan behavior berikut:
+
+Transaction XP tetap dapat dicatat jika memang workflow existing mengizinkan member PRE_REGISTERED memperoleh XP dari transaksi.
+
+Tetapi:
+
+Registration Bonus 10 XP TIDAK boleh diberikan sampai full registration selesai.
+
+XP transaction history tetap harus disimpan.
+
+Jika business rule existing menyatakan pre-registered tidak boleh mendapatkan XP transaksi, ikuti rule existing dan dokumentasikan.
+
+Jangan menghapus XP transaction yang telah valid hanya karena status berubah.
+
+================================================================
+PHASE 13 — UNIFIED BENEFIT REQUEST UNTUK PRE-REGISTERED
+================================================================
+
+PRE_REGISTERED member tidak memiliki dashboard.
+
+Jika customer ingin claim/redeem:
+
+Kasir membantu.
+
+Flow:
+
+Kasir mencari member berdasarkan:
+
+WhatsApp
+atau
+Member ID
+
+Kasir memilih:
+
+BENEFIT
+
+Kemudian menjalankan workflow Benefit Request existing.
+
+XP tetap mengikuti aturan:
+
+XP HOLD
+→ APPROVED
+→ USED
+
+atau:
+
+XP HOLD
+→ DENIED
+→ REFUNDED
+
+Jika XP tidak cukup:
+
+request ditolak.
+
+Kasir tidak boleh mengubah XP secara manual hanya untuk membuat benefit menjadi available.
+
+================================================================
+PHASE 14 — STATUS DAN DASHBOARD
+================================================================
+
+Buat pemisahan yang jelas:
+
+MEMBER DASHBOARD
+CASHIER DASHBOARD
+ADMIN DASHBOARD
+SUPERADMIN DASHBOARD
+
+Jangan menggabungkan semuanya.
+
+================================================================
+PHASE 15 — MEMBER DASHBOARD
+================================================================
+
+MEMBER DASHBOARD hanya dapat digunakan oleh:
+
+ACTIVE member.
+
+Member melihat:
+
+- profile
+- XP Progress
+- XP Reward
+- Level
+- Benefit
+- Challenge
+- Event
+- Promo
+- Benefit Request
+- History
+- Referral
+- Notification
+- Last Play
+
+PRE_REGISTERED:
+
+tidak dapat membuka dashboard member.
+
+Jika PRE_REGISTERED mencoba login:
+
+tampilkan:
+
+"Membership Anda sudah didaftarkan oleh Kasir, tetapi belum menyelesaikan pendaftaran online."
+
+Kemudian:
+
+"Silakan selesaikan pendaftaran membership."
+
+Arahkan ke halaman completion.
+
+================================================================
+PHASE 16 — CASHIER DASHBOARD
+================================================================
+
+Buat dashboard khusus:
+
+CASHIER DASHBOARD
+
+JANGAN menggunakan Admin Dashboard untuk Kasir.
+
+Kasir hanya melihat menu yang diperlukan untuk operasional.
+
+Menu minimal:
+
+Dashboard
+Register Customer
+Members
+Transactions
+Benefit Requests
+Member Lookup
+Customer Activity
+Notifications
+Profile / Logout
+
+Menu yang TIDAK BOLEH muncul pada Kasir:
+
+XP Settings
+XP Adjustment
+Level Settings
+Level Override
+Benefits Management
+Challenge Management
+Event Management
+Promo Management
+CMS
+Admin Management
+Backup
+Restore
+System Settings
+Security Settings
+Role Management
+
+================================================================
+PHASE 17 — CASHIER PERMISSION
+================================================================
+
+Kasir TIDAK BOLEH:
+
+1. Mengubah password member.
+2. Menambah XP Progress secara manual.
+3. Mengurangi XP Progress.
+4. Menambah XP Reward secara manual.
+5. Mengurangi XP Reward secara manual.
+6. Mengubah level member.
+7. Menurunkan level member.
+8. Menaikkan level member secara manual.
+9. Mengubah threshold level.
+10. Membuat benefit.
+11. Mengedit benefit.
+12. Menghapus benefit.
+13. Membuat challenge.
+14. Mengedit challenge.
+15. Menghapus challenge.
+16. Membuat event.
+17. Mengedit event.
+18. Menghapus event.
+19. Membuat promo.
+20. Mengedit promo.
+21. Menghapus promo.
+22. Mengedit Homepage CMS.
+23. Publish CMS.
+24. Rollback CMS.
+25. Mengelola Admin.
+26. Mengelola Superadmin.
+27. Backup database.
+28. Restore database.
+29. Mengubah Security Rules.
+30. Mengubah system settings.
+31. Mengubah reset period.
+32. Mengubah membership cycle configuration.
+
+================================================================
+PHASE 18 — CASHIER ALLOWED ACTIONS
+================================================================
+
+Kasir diperbolehkan:
+
+- pre-register customer
+- mencari member
+- melihat profile minimal
+- melihat member status
+- melihat XP balance yang diperlukan untuk transaksi/benefit
+- input transaksi sesuai permission
+- membantu member melakukan benefit request
+- memproses approval/denial sesuai permission yang diberikan
+- menandai benefit sebagai USED jika memiliki permission
+- melihat receipt/reference
+- melihat branch
+- melihat aktivitas customer
+- membantu customer menyelesaikan registration
+- logout
+
+Pastikan permission backend/security rules sama dengan permission UI.
+
+JANGAN hanya menyembunyikan menu.
+
+================================================================
+PHASE 19 — CASHIER PER BRANCH
+================================================================
+
+Terdapat:
+
+2 Kasir di DEMANG
+
+2 Kasir di SEKIP
+
+Total:
+
+4 CASHIER ACCOUNT
+
+Jangan hardcode empat account langsung di source code.
+
+Gunakan Admin/Cashier user management.
+
+Setiap cashier mempunyai:
+
+role = CASHIER
+
+branchId:
+
+DEMANG
+atau
+SEKIP
+
+Contoh:
+
+CASHIER_DEMANG_01
+CASHIER_DEMANG_02
+
+CASHIER_SEKIP_01
+CASHIER_SEKIP_02
+
+Nama akun sebenarnya dapat ditentukan Admin/Superadmin.
+
+================================================================
+PHASE 20 — CASHIER BRANCH ISOLATION
+================================================================
+
+Cashier Demang:
+
+hanya dapat melakukan operasi cashier untuk branch DEMANG.
+
+Cashier Sekip:
+
+hanya dapat melakukan operasi cashier untuk branch SEKIP.
+
+Jangan berikan akses cross-branch kecuali permission khusus.
+
+Contoh:
+
+CASHIER_DEMANG
+
+tidak boleh:
+
+- mengubah transaksi Sekip
+- melihat data operasional sensitif Sekip
+- memproses approval yang hanya untuk Sekip
+- membuat transaksi atas nama Sekip
+
+SUPERADMIN tetap dapat melihat seluruh branch.
+
+ADMIN access mengikuti permission yang ditentukan system.
+
+================================================================
+PHASE 21 — CASHIER LOGIN
+================================================================
+
+Cashier memiliki login terpisah secara role-based.
+
+Setelah login:
+
+role = CASHIER
+
+branchId dibaca dari user profile/custom claims.
+
+Redirect:
+
+CASHIER
+→ Cashier Dashboard
+
+ADMIN
+→ Admin Dashboard
+
+SUPERADMIN
+→ Superadmin Dashboard
+
+MEMBER
+→ Member Dashboard
+
+PRE_REGISTERED MEMBER
+→ Tidak boleh login Member Dashboard.
+
+================================================================
+PHASE 22 — ADMIN DASHBOARD
+================================================================
+
+ADMIN tetap memiliki access yang lebih luas daripada Cashier.
+
+Admin dapat:
+
+- Member Management
+- Transaction Management
+- Benefit Request Management
+- Notification
+- Member monitoring
+- XP History
+- Level History
+- Member detail
+- Inactive Member
+- New Member monitoring
+- Content/configuration yang memang diberikan permission
+
+Namun:
+
+gunakan permission matrix yang jelas.
+
+================================================================
+PHASE 23 — SUPERADMIN
+================================================================
+
+SUPERADMIN mempunyai akses penuh.
+
+SUPERADMIN dapat:
+
+- semua Admin feature
+- Cashier Management
+- Role Management
+- Permission Management
+- XP Adjustment
+- Level Override
+- Password Reset
+- Benefits
+- Challenges
+- Events
+- Promos
+- CMS
+- Backup
+- Restore
+- System Settings
+- Level Settings
+- XP Settings
+- Reset Settings
+- Branch Settings
+- Security configuration
+
+================================================================
+PHASE 24 — ROLE-PERMISSION MATRIX
+================================================================
+
+Implementasikan permission secara terstruktur.
+
+Minimal role:
+
+MEMBER
+CASHIER
+ADMIN
+SUPERADMIN
+
+Contoh:
+
+FEATURE                              MEMBER   CASHIER   ADMIN   SUPERADMIN
+
+Member Login                         YES       NO       NO/ADMIN YES
+Member Dashboard                    YES       NO       NO       NO
+Pre-register Customer               NO        YES      YES      YES
+View Member                         SELF      BRANCH   ALL      ALL
+Transaction Input                   NO        YES      YES      YES
+XP Progress Adjustment              NO        NO       YES      YES
+XP Reward Adjustment                NO        NO       YES      YES
+Level Override                      NO        NO       NO/YES  YES
+Password Reset Member               NO        NO       YES      YES
+Benefit Request Processing          SELF      YES      YES      YES
+Benefit CRUD                        NO        NO       YES      YES
+Challenge CRUD                      NO        NO       YES      YES
+Event CRUD                          NO        NO       YES      YES
+Promo CRUD                          NO        NO       YES      YES
+CMS Edit                            NO        NO       NO/YES  YES
+CMS Publish                         NO        NO       NO/YES  YES
+Backup                              NO        NO       NO       YES
+Restore                             NO        NO       NO       YES
+Admin Management                    NO        NO       NO       YES
+Cashier Management                  NO        NO       NO       YES
+System Settings                     NO        NO       NO       YES
+
+Jika business policy existing berbeda:
+
+audit dan dokumentasikan sebelum mengubah.
+
+================================================================
+PHASE 25 — SECURITY ENFORCEMENT
+================================================================
+
+JANGAN hanya menggunakan:
+
+frontend menu hiding.
+
+Permission harus ditegakkan di:
+
+- Firebase Security Rules
+- Cloud Functions
+- Server actions/API
+- Database write validation
+- Storage Rules
+
+Contoh:
+
+Walaupun Cashier membuka URL langsung:
+
+/admin/settings/xp
+
+tetap harus:
+
+403 / unauthorized
+
+Walaupun Cashier memanggil API langsung:
+
+adjustXP()
+
+tetap harus:
+
+DENIED
+
+Walaupun Cashier memanipulasi frontend state:
+
+tetap harus:
+
+DENIED
+
+================================================================
+PHASE 26 — ADMIN MEMBER TABLE
+================================================================
+
+Admin/Superadmin:
+
+Member Table harus dapat:
+
+search
+filter
+sort
+pagination
+
+Search:
+
+username
+name
+WhatsApp
+memberId
+
+Filter:
+
+ACTIVE
+PRE_REGISTERED
+SUSPENDED
+INACTIVE
+
+Level:
+
+Bronze
+Silver
+Juragan
+Sultan
+
+Branch:
+
+Demang
+Sekip
+
+Registration:
+
+Newest
+Oldest
+Date Range
+
+XP:
+
+XP Progress Highest/Lowest
+XP Reward Highest/Lowest
+
+Last Play:
+
+Newest
+Oldest/Longest Inactive
+
+================================================================
+PHASE 27 — PRE-REGISTERED MEMBER INDICATOR
+================================================================
+
+Admin/Cashier table harus jelas membedakan:
+
+PRE-REGISTERED
+
+dan:
+
+ACTIVE
+
+Gunakan badge/status yang berbeda.
+
+Contoh:
+
+PRE-REGISTERED
+"Belum menyelesaikan profil"
+
+ACTIVE
+"Membership Aktif"
+
+================================================================
+PHASE 28 — ADMIN NEW MEMBER
+================================================================
+
+Dashboard Admin:
+
+widget:
+
+MEMBER BARU
+
+Pisahkan:
+
+NEW PRE-REGISTERED
+
+dan:
+
+NEW ACTIVE MEMBERS
+
+Contoh:
+
+Hari ini:
+
+12 Pre-Registered
+7 Active Members
+
+Admin dapat klik dan melihat history.
+
+================================================================
+PHASE 29 — CUSTOMER ONBOARDING UX
+================================================================
+
+Customer yang hanya didaftarkan di kasir:
+
+Mendapat informasi:
+
+"Nomor WhatsApp Anda sudah didaftarkan sebagai member XP PLAY."
+
+Kemudian:
+
+"Lengkapi pendaftaran online untuk mendapatkan akses Member Dashboard dan bonus 10 XP."
+
+Berikan tombol:
+
+LENGKAPI PENDAFTARAN
+
+Jika customer belum menyelesaikan:
+
+tetap dapat bermain melalui Kasir.
+
+Jika customer menyelesaikan:
+
+status Active.
+
+================================================================
+PHASE 30 — REGISTRATION COMPLETION EXPIRY
+================================================================
+
+Jangan menghapus PRE_REGISTERED member hanya karena belum menyelesaikan form.
+
+Member tetap tersedia melalui Kasir.
+
+Jika Admin ingin member inactivity/abandoned registration:
+
+tambahkan report:
+
+INCOMPLETE REGISTRATION
+
+Contoh:
+
+7 hari
+14 hari
+30 hari
+
+Tetapi jangan otomatis menghapus tanpa policy.
+
+================================================================
+PHASE 31 — AUDIT
+================================================================
+
+Audit log untuk:
+
+PRE_REGISTERED_MEMBER_CREATED
+REGISTRATION_STARTED
+REGISTRATION_COMPLETED
+REGISTRATION_BONUS_GRANTED
+REFERRAL_BONUS_GRANTED
+CASHIER_LOGIN
+CASHIER_ACTION
+CASHIER_DENIED_ACTION
+MEMBER_STATUS_CHANGED
+PASSWORD_RESET_BY_ADMIN
+XP_ADJUSTMENT
+LEVEL_OVERRIDE
+
+Setiap action penting:
+
+actorId
+role
+branchId
+targetId
+timestamp
+before
+after
+reason
+
+================================================================
+PHASE 32 — TESTING
+================================================================
+
+WAJIB TEST:
+
+TEST 1
+
+Kasir input WhatsApp baru.
+
+Expected:
+
+PRE_REGISTERED
+
+Tidak ada:
+
+10 XP registration bonus.
+
+Customer belum bisa login member.
+
+------------------------------------------------------------
+
+TEST 2
+
+Customer memasukkan WhatsApp yang sudah PRE_REGISTERED.
+
+Expected:
+
+Full Registration Form muncul.
+
+------------------------------------------------------------
+
+TEST 3
+
+Customer memasukkan WhatsApp yang tidak pernah didaftarkan Kasir/Admin.
+
+Expected:
+
+Registration tidak dilanjutkan.
+
+Pesan:
+
+"Nomor WhatsApp belum didaftarkan oleh XP PLAY."
+
+------------------------------------------------------------
+
+TEST 4
+
+Customer menyelesaikan full registration.
+
+Expected:
+
+PRE_REGISTERED → ACTIVE
+
+Customer dapat login.
+
+Customer mendapat:
+
++10 XP Progress
+
++10 XP Reward
+
+Hanya sekali.
+
+------------------------------------------------------------
+
+TEST 5
+
+Customer mengulang completion form.
+
+Expected:
+
+Tidak mendapat +10 XP kedua kali.
+
+------------------------------------------------------------
+
+TEST 6
+
+Customer menggunakan referral.
+
+Expected:
+
+New Member +5 referral XP
+
+Referrer +5 XP
+
+New Member tetap +10 registration bonus.
+
+------------------------------------------------------------
+
+TEST 7
+
+PRE_REGISTERED customer datang bermain.
+
+Expected:
+
+Kasir dapat mencari customer.
+
+Kasir dapat memproses transaksi.
+
+Customer belum dapat login.
+
+------------------------------------------------------------
+
+TEST 8
+
+Cashier Demang mencoba membuka data operasional Sekip.
+
+Expected:
+
+DENIED jika policy branch-isolation aktif.
+
+------------------------------------------------------------
+
+TEST 9
+
+Cashier mencoba adjust XP.
+
+Expected:
+
+DENIED.
+
+------------------------------------------------------------
+
+TEST 10
+
+Cashier mencoba level override.
+
+Expected:
+
+DENIED.
+
+------------------------------------------------------------
+
+TEST 11
+
+Cashier mencoba reset password member.
+
+Expected:
+
+DENIED.
+
+------------------------------------------------------------
+
+TEST 12
+
+Cashier mencoba membuat Benefit.
+
+Expected:
+
+DENIED.
+
+------------------------------------------------------------
+
+TEST 13
+
+Cashier mencoba membuat Challenge.
+
+Expected:
+
+DENIED.
+
+------------------------------------------------------------
+
+TEST 14
+
+Cashier mencoba membuat Event.
+
+Expected:
+
+DENIED.
+
+------------------------------------------------------------
+
+TEST 15
+
+Cashier mencoba membuat Promo.
+
+Expected:
+
+DENIED.
+
+------------------------------------------------------------
+
+TEST 16
+
+Cashier mencoba edit CMS.
+
+Expected:
+
+DENIED.
+
+------------------------------------------------------------
+
+TEST 17
+
+Cashier mencoba membuka endpoint admin dengan URL langsung.
+
+Expected:
+
+UNAUTHORIZED / FORBIDDEN.
+
+------------------------------------------------------------
+
+TEST 18
+
+Admin membuat XP Adjustment.
+
+Expected:
+
+SUCCESS.
+
+Audit log created.
+
+------------------------------------------------------------
+
+TEST 19
+
+SUPERADMIN membuat Cashier Account.
+
+Expected:
+
+SUCCESS.
+
+Branch dapat ditentukan.
+
+------------------------------------------------------------
+
+TEST 20
+
+Admin dashboard:
+
+New Member.
+
+Expected:
+
+Pre-Registered dan Active dapat dibedakan.
+
+================================================================
+PHASE 33 — DATABASE MIGRATION
+================================================================
+
+Periksa schema existing.
+
+Jangan langsung menambahkan field secara destructive.
+
+Tambahkan seperlunya:
+
+registrationStatus
+registrationStage
+registrationCompletedAt
+preRegisteredAt
+preRegisteredBy
+branchId
+birthDate
+memberStatus
+verifiedPhoneAt
+onboardingToken/reference jika diperlukan
+
+Jika field existing mempunyai nama berbeda:
+
+gunakan nama existing atau buat compatibility layer.
+
+================================================================
+PHASE 34 — FIREBASE AUTH
+================================================================
+
+Jangan membuat Authentication account member aktif pada PRE_REGISTERED jika hal tersebut memberi akses login.
+
+Jika architecture existing memerlukan account:
+
+gunakan disabled/incomplete account sesuai desain yang aman.
+
+Jangan memberi akses Member Dashboard sebelum:
+
+registrationStatus = ACTIVE
+
+dan:
+
+registrationCompletedAt exists
+
+================================================================
+PHASE 35 — FIRESTORE SECURITY
+================================================================
+
+Member:
+
+hanya dapat membaca data sendiri jika ACTIVE.
+
+PRE_REGISTERED:
+
+tidak mendapatkan dashboard access.
+
+CASHIER:
+
+hanya branch dan permission sesuai role.
+
+ADMIN:
+
+sesuai permission.
+
+SUPERADMIN:
+
+full.
+
+Security Rules harus mencerminkan role.
+
+================================================================
+PHASE 36 — DOCUMENTATION
+================================================================
+
+Update:
+
+README.md
+AUTH.md
+DATABASE.md
+SECURITY.md
+MEMBER_REGISTRATION.md
+CASHIER_GUIDE.md
+ADMIN_GUIDE.md
+XP_SYSTEM.md
+ROLE_PERMISSION.md
+TESTING.md
+CHANGELOG.md
+
+Dokumentasikan:
+
+- two-step registration
+- pre-registration
+- active member
+- registration bonus
+- referral
+- cashier workflow
+- branch cashier
+- role permission
+- security
+- customer onboarding
+
+================================================================
+PHASE 37 — FINAL IMPLEMENTATION
+================================================================
+
+Kerjakan semua perubahan di atas dalam satu execution session.
+
+Jangan berhenti setelah satu module.
+
+Urutan:
+
+1. Audit existing registration
+2. Implement PRE_REGISTERED
+3. Implement customer completion
+4. Implement registration bonus
+5. Implement referral compatibility
+6. Implement member status
+7. Implement cashier dashboard
+8. Implement cashier role
+9. Implement branch isolation
+10. Implement permission matrix
+11. Update Admin Dashboard
+12. Update Member Dashboard
+13. Update Member Table
+14. Update Member Detail
+15. Update security rules
+16. Update authentication
+17. Update database
+18. Run tests
+19. Run security audit
+20. Run regression test
+21. Update documentation
+
+================================================================
+PHASE 38 — FINAL ACCEPTANCE
+================================================================
+
+Sistem dianggap selesai jika:
+
+REGISTRATION:
+
+[ ] Cashier pre-register phone
+[ ] Existing phone detection
+[ ] PRE_REGISTERED status
+[ ] Customer completes registration
+[ ] Phone verification/security
+[ ] ACTIVE status
+[ ] Registration bonus only after completion
+[ ] Referral works only after completion
+[ ] No duplicate registration bonus
+
+MEMBER:
+
+[ ] PRE_REGISTERED cannot login
+[ ] ACTIVE can login
+[ ] ACTIVE sees dashboard
+[ ] PRE_REGISTERED can be served by cashier
+[ ] Birth date
+[ ] Member status
+
+CASHIER:
+
+[ ] Separate dashboard
+[ ] Branch-specific
+[ ] Demang has 2 cashier accounts
+[ ] Sekip has 2 cashier accounts
+[ ] No XP adjustment
+[ ] No level adjustment
+[ ] No password reset
+[ ] No benefit management
+[ ] No challenge management
+[ ] No event management
+[ ] No promo management
+[ ] No CMS
+[ ] No backup
+[ ] No restore
+
+ADMIN:
+
+[ ] Member management
+[ ] Member search
+[ ] Member filters
+[ ] Member detail
+[ ] Transaction
+[ ] Benefit request
+[ ] New member notification
+
+SUPERADMIN:
+
+[ ] Full administration
+[ ] Cashier management
+[ ] Permission management
+[ ] Security
+[ ] Backup
+[ ] Restore
+
+SECURITY:
+
+[ ] Frontend permissions
+[ ] Backend permissions
+[ ] Firestore Rules
+[ ] Storage Rules
+[ ] Direct URL protection
+[ ] Direct API protection
+
+================================================================
+FINAL COMMAND
+================================================================
+
+JALANKAN SELURUH PERUBAHAN SEKARANG.
+
+Jangan membuat project baru.
+
+Jangan menghapus project existing.
+
+Jangan menggunakan dummy production data.
+
+Jangan meminta konfirmasi setiap langkah.
+
+Kerjakan semua perubahan secara berurutan dalam satu sesi.
+
+Setelah semua selesai:
+
+1. Run build.
+2. Run tests.
+3. Run lint/typecheck jika tersedia.
+4. Run security audit.
+5. Run data integrity check.
+6. Run regression test.
+7. Update documentation.
+8. Berikan final report.
+
+Final report wajib berisi:
+
+- features implemented
+- files changed
+- files created
+- database changes
+- Firebase changes
+- authentication changes
+- security rules changes
+- cashier role changes
+- admin changes
+- member registration changes
+- XP changes
+- tests
+- security results
+- known issues
+- migration notes
+- deployment notes
+- production readiness
+
+JANGAN menyatakan "READY" apabila masih terdapat critical security issue, data integrity issue, authentication issue, atau build failure.
+
+MULAI SEKARANG.

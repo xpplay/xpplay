@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { MemberXpShowcase } from './MemberXpShowcase.tsx';
 import { sanitizeCmsImageUrl, sanitizeCmsUrl, sanitizeHomepageCmsContent } from '../shared/cmsSanitizer.ts';
+import { getDashboardRouteForRole, isCashierRole } from '../shared/rbac.ts';
 import type {
   AdminUser,
   BranchInfo,
@@ -106,17 +107,28 @@ export function HomepageView({
   const cms = sanitizeHomepageCmsContent(cmsContent);
   const [openFaqId, setOpenFaqId] = useState<string | null>(cms.faqItems[0]?.id ?? null);
 
-  const primaryRouteFallback = adminProfile
-    ? { to: '/admin', label: 'Dashboard Admin' }
-    : memberProfile
-      ? { to: '/member', label: 'Dashboard Member' }
-      : { to: cms.ctaPrimaryUrl || '/register', label: cms.ctaPrimaryText || 'Daftar Member' };
+  const staffTarget = adminProfile
+    ? {
+        to: getDashboardRouteForRole(adminProfile.role),
+        label: isCashierRole(adminProfile.role)
+          ? 'Dashboard Kasir'
+          : adminProfile.role === 'SUPER_ADMIN'
+            ? 'Superadmin Console'
+            : 'Dashboard Admin',
+      }
+    : null;
 
-  const headerCtaTarget = adminProfile
-    ? { to: '/admin', label: 'Dashboard Admin' }
-    : memberProfile
+  const primaryRouteFallback = staffTarget
+    ? staffTarget
+    : memberProfile && memberProfile.status === 'ACTIVE'
       ? { to: '/member', label: 'Dashboard Member' }
-      : { to: cms.ctaPrimaryUrl || '/register', label: cms.headerCtaText || 'Daftar Member' };
+      : { to: cms.ctaPrimaryUrl || '/register', label: cms.ctaPrimaryText || 'Lengkapi Pendaftaran' };
+
+  const headerCtaTarget = staffTarget
+    ? staffTarget
+    : memberProfile && memberProfile.status === 'ACTIVE'
+      ? { to: '/member', label: 'Dashboard Member' }
+      : { to: cms.ctaPrimaryUrl || '/register', label: cms.headerCtaText || 'Lengkapi Pendaftaran' };
 
   const tierAccents: Record<string, { border: string; text: string; Icon: typeof Shield }> = {
     BRONZE: { border: 'border-sky-500/25', text: 'text-sky-300', Icon: Shield },

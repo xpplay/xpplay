@@ -1,0 +1,1770 @@
+# XP PLAY MEMBER SYSTEM
+# MASTER EXECUTION PROMPT
+# EXECUTE ALL PHASES
+
+Gunakan SELURUH:
+
+1. System Instructions
+2. Master Prompt sebelumnya
+3. Continuation Prompt sebelumnya
+4. Seluruh architecture existing project
+5. Seluruh feature existing
+6. Seluruh Firebase/Auth/Firestore/Storage/Cloud Functions existing
+
+sebagai baseline.
+
+JANGAN membuat aplikasi baru.
+
+JANGAN melakukan full rewrite.
+
+JANGAN mengganti project Firebase.
+
+JANGAN mengganti authentication existing tanpa alasan teknis yang sangat kuat.
+
+JANGAN menghapus data production.
+
+JANGAN menggunakan dummy data sebagai pengganti database production.
+
+JANGAN membuat duplicate feature.
+
+JANGAN menghapus feature existing yang masih berfungsi.
+
+============================================================
+PERINTAH UTAMA
+============================================================
+
+SAYA TIDAK INGIN ANDA BERHENTI SETELAH SATU PHASE.
+
+JALANKAN SELURUH PHASE YANG DITENTUKAN DI BAWAH INI DALAM SATU SESI DEVELOPMENT.
+
+Namun:
+
+JANGAN mengerjakan semua perubahan secara asal sekaligus.
+
+Kerjakan secara:
+
+PHASE BY PHASE
+→ IMPLEMENT
+→ TEST
+→ VERIFY
+→ SECURITY CHECK
+→ REGRESSION CHECK
+→ DOCUMENT
+→ LANJUT PHASE BERIKUTNYA
+
+Jangan meminta saya untuk mengonfirmasi setiap phase.
+
+Jika sebuah phase aman dan lolos testing, lanjutkan otomatis ke phase berikutnya.
+
+Jika terdapat error:
+
+1. Identifikasi error.
+2. Perbaiki.
+3. Jalankan test ulang.
+4. Jangan melanjutkan ke phase berikutnya sebelum dependency phase tersebut stabil.
+
+Jika terdapat masalah yang benar-benar memblokir seluruh pengembangan:
+
+jelaskan secara spesifik:
+
+- masalah
+- file
+- dampak
+- penyebab
+- solusi yang aman
+
+Tetapi jangan berhenti hanya karena masalah kecil yang dapat diperbaiki.
+
+============================================================
+FASE 0 — PRE-FLIGHT AUDIT
+============================================================
+
+Sebelum coding:
+
+audit project existing.
+
+Periksa:
+
+- project structure
+- framework
+- package dependencies
+- routing
+- authentication
+- Firebase
+- Firestore
+- Storage
+- Cloud Functions
+- Security Rules
+- Admin system
+- Member system
+- current XP system
+- current Level system
+- Claim system
+- Redemption system
+- Notification system
+- CMS
+- backup system
+- existing tests
+- environment variables
+- deployment configuration
+
+Temukan:
+
+- fitur existing
+- fitur partial
+- fitur duplicate
+- technical debt
+- potential conflicts
+- migration requirements
+
+JANGAN membuat ulang sesuatu yang sudah tersedia.
+
+============================================================
+FASE 1 — UNIFIED BENEFIT REQUEST
+============================================================
+
+Satukan konsep:
+
+CLAIM
+
+dan
+
+REDEEM
+
+ke satu workflow:
+
+BENEFIT REQUEST
+
+Member cukup menggunakan satu menu:
+
+BENEFIT
+
+atau:
+
+CLAIM & REDEEM
+
+Jangan membuat member bingung dengan dua workflow yang sebenarnya sama.
+
+Benefit dapat berasal dari:
+
+- Challenge
+- Event
+- Promo
+- General Benefit
+- Level Benefit
+
+Satu backend workflow menggunakan:
+
+benefitRequests
+
+Jika project sudah memiliki collection claims dan redemptions:
+
+jangan hapus data lama.
+
+Buat compatibility/migration strategy.
+
+============================================================
+FASE 2 — XP HOLD / RESERVED
+============================================================
+
+Ketika member membuat Benefit Request yang memiliki biaya XP:
+
+XP Reward langsung di-reserve/hold.
+
+Contoh:
+
+XP Reward = 300
+
+Member request benefit:
+
+100 XP
+
+Setelah request dibuat:
+
+Available XP = 200
+
+Reserved XP = 100
+
+Status:
+
+ON_PROCESS
+
+XP Progress tetap:
+
+tidak berubah.
+
+JANGAN menunggu approval untuk mengurangi/reserve XP.
+
+============================================================
+XP LEDGER
+============================================================
+
+Gunakan source:
+
+BENEFIT_REQUEST_HOLD
+
+Contoh:
+
+-100 XP
+
+referenceId = requestId
+
+Simpan:
+
+beforeBalance
+afterBalance
+requestId
+memberId
+createdAt
+
+============================================================
+FASE 3 — APPROVAL WORKFLOW
+============================================================
+
+Status:
+
+ON_PROCESS
+APPROVED
+DENIED
+USED
+EXPIRED
+REFUNDED
+
+Flow:
+
+ON_PROCESS
+→ APPROVED
+→ USED
+
+atau:
+
+ON_PROCESS
+→ DENIED
+→ REFUNDED
+
+atau:
+
+APPROVED
+→ EXPIRED
+
+Jika APPROVED:
+
+- XP tidak dikembalikan
+- benefit siap digunakan
+- approvedAt
+- approvedBy
+- expiresAt = approvedAt + 7 hari
+- notification
+
+Jika DENIED:
+
+- status DENIED
+- XP di-refund
+- buat ledger:
+  +XP
+  source = DENIED_REFUND
+- refundedAt
+- refundReason
+- notification
+
+============================================================
+FASE 4 — 7 DAY BENEFIT VALIDITY
+============================================================
+
+Setelah Approved:
+
+benefit valid:
+
+7 hari
+
+Gunakan server timestamp.
+
+Contoh:
+
+Approved:
+18 November
+
+Expiry:
+25 November
+
+Member harus menukarkan benefit di kasir sebelum expiry.
+
+Admin/Kasir dapat:
+
+MARK AS USED
+
+Setelah:
+
+USED
+
+benefit tidak dapat digunakan lagi.
+
+Jangan memberikan refund kedua.
+
+============================================================
+FASE 5 — EXPIRED BENEFIT
+============================================================
+
+Jika APPROVED dan melewati expiry:
+
+status:
+
+EXPIRED
+
+Gunakan system setting:
+
+refundOnExpiry
+
+Default:
+
+FALSE
+
+Jika FALSE:
+
+EXPIRED
+
+tanpa refund.
+
+Jika TRUE:
+
+EXPIRED
+→ REFUNDED
+
+dan XP dikembalikan.
+
+Jangan membuat aturan expiry yang hardcoded jika konfigurasi system memungkinkan.
+
+============================================================
+FASE 6 — CASHIER WORKFLOW
+============================================================
+
+Buat workflow yang sederhana untuk kasir/admin.
+
+Kasir mencari:
+
+Username
+WhatsApp
+Request ID
+
+Menampilkan:
+
+Member
+Benefit
+XP Cost
+Status
+Approved Date
+Expiry Date
+Branch
+
+Jika valid:
+
+MARK AS USED
+
+Simpan:
+
+usedAt
+usedBy
+usedBranch
+receiptReference jika tersedia
+
+Tidak boleh double-use.
+
+============================================================
+FASE 7 — MEMBER PROFILE
+============================================================
+
+Tambahkan:
+
+Tanggal Lahir
+
+Status Member:
+
+MAHASISWA
+PELAJAR
+PEKERJA
+LAINNYA
+
+Tambahkan ke:
+
+Register
+Member Profile
+Admin Member Detail
+Admin Member Edit
+
+Tanggal lahir:
+
+- valid date
+- tidak boleh future date
+- gunakan format konsisten
+- timezone Asia/Jakarta saat ditampilkan
+
+Data harus siap digunakan untuk birthday campaign.
+
+============================================================
+FASE 8 — MEMBER REGISTRATION
+============================================================
+
+Register field:
+
+Nama Lengkap
+Username
+Nomor WhatsApp
+Tanggal Lahir
+Status Member
+Social Media
+Referral Username
+Password
+Confirm Password
+CAPTCHA
+
+Existing registration fields harus tetap berfungsi.
+
+Registration bonus:
+
+10 XP
+
+Referral:
+
+Referrer +5 XP
+New Member +5 XP
+
+New member tetap:
+
++10 XP registration
+
+Total new member dengan referral:
+
+15 XP
+
+============================================================
+FASE 9 — ADMIN MEMBER TABLE
+============================================================
+
+Perbaiki:
+
+ADMIN → MEMBERS
+
+Gunakan pagination.
+
+Kolom:
+
+- Member ID
+- Username
+- Nama
+- WhatsApp
+- Level
+- XP Progress
+- XP Reward
+- Last Play
+- Branch
+- Registration Date
+- Status
+
+============================================================
+MEMBER SEARCH
+============================================================
+
+Search:
+
+- username
+- nama
+- WhatsApp
+- member ID
+
+Search harus efficient.
+
+Gunakan indexed/server query sesuai architecture.
+
+============================================================
+MEMBER FILTER
+============================================================
+
+Filter:
+
+LEVEL:
+
+All
+Bronze
+Silver
+Juragan
+Sultan
+
+STATUS:
+
+All
+Active
+Inactive
+Suspended
+Deleted
+
+BRANCH:
+
+All
+Demang
+Sekip
+
+REGISTRATION:
+
+New Member
+Oldest Member
+Custom Date Range
+
+XP:
+
+XP Progress Highest
+XP Progress Lowest
+XP Reward Highest
+XP Reward Lowest
+
+LAST PLAY:
+
+Most Recent
+Longest Inactive
+
+SORT LEVEL:
+
+Sultan
+Juragan
+Silver
+Bronze
+
+dan reverse order.
+
+============================================================
+FASE 10 — MEMBER DETAIL
+============================================================
+
+Ketika member diklik:
+
+buka:
+
+MEMBER DETAIL
+
+Tampilkan tab:
+
+PROFILE
+TRANSACTIONS
+XP HISTORY
+BENEFIT REQUESTS
+REFERRAL
+LEVEL HISTORY
+NOTIFICATIONS
+ACTIVITY
+
+============================================================
+MEMBER DETAIL PROFILE
+============================================================
+
+Tampilkan:
+
+- Member ID
+- Full Name
+- Username
+- WhatsApp
+- Social Media
+- Birth Date
+- Member Status
+- Level
+- XP Progress
+- XP Reward
+- Registration Date
+- Last Play
+- Last Branch
+- Account Status
+
+============================================================
+MEMBER DETAIL TRANSACTION HISTORY
+============================================================
+
+Tampilkan:
+
+Date
+Receipt
+Amount
+XP
+Branch
+Created By
+Status
+
+Search/filter sesuai transaction system.
+
+============================================================
+MEMBER DETAIL BENEFIT HISTORY
+============================================================
+
+Tampilkan:
+
+Request ID
+Benefit
+Type
+XP Cost
+Status
+Requested At
+Approved At
+Expires At
+Used At
+Denied Reason
+Refunded At
+Processed By
+
+============================================================
+FASE 11 — TRANSACTION ADMIN TABLE
+============================================================
+
+ADMIN → TRANSACTIONS
+
+Kolom:
+
+Transaction ID
+Receipt Number
+Username
+Member Name
+Amount
+XP
+Branch
+Date
+Created By
+Status
+
+============================================================
+TRANSACTION SEARCH
+============================================================
+
+Search:
+
+- Username
+- Member ID
+- WhatsApp
+- Receipt Number
+- Transaction ID
+
+============================================================
+TRANSACTION FILTER
+============================================================
+
+Branch:
+
+All
+Demang
+Sekip
+
+Date:
+
+Today
+Yesterday
+This Week
+This Month
+Custom Range
+
+Sort:
+
+Newest
+Oldest
+
+Amount:
+
+Highest
+Lowest
+
+XP:
+
+Highest
+Lowest
+
+Gunakan indexed query dan pagination.
+
+============================================================
+FASE 12 — XP HISTORY
+============================================================
+
+Admin → XP HISTORY
+
+Tampilkan SEMUA perubahan XP.
+
+Positive:
+
+REGISTRATION
+REFERRAL
+TRANSACTION
+CHALLENGE
+EVENT
+PROMO
+LEVEL_BONUS
+ADMIN_ADD
+
+Negative:
+
+BENEFIT_REQUEST_HOLD
+REDEMPTION
+ADMIN_DEDUCT
+TRANSACTION_REVERSAL
+
+Refund:
+
+DENIED_REFUND
+EXPIRY_REFUND
+ADMIN_REFUND
+REVERSAL_REFUND
+
+Kolom:
+
+Date
+Member
+Username
+Type
+Source
+Amount
+Before
+After
+Reference
+Branch
+Created By
+Reason
+
+============================================================
+XP HISTORY DISPLAY
+============================================================
+
+Pastikan Admin dan Member dapat mengetahui:
+
+XP bertambah
+
+XP berkurang
+
+XP ditahan
+
+XP dikembalikan
+
+Contoh:
+
+18 Nov
+Benefit Request Hold
+-100 XP
+
+20 Nov
+Denied Refund
++100 XP
+
+============================================================
+FASE 13 — ADMIN XP PROGRESS ADJUSTMENT
+============================================================
+
+Admin dapat:
+
+ADD XP PROGRESS
+
+DEDUCT XP PROGRESS
+
+Setiap adjustment:
+
+- before
+- adjustment
+- after
+- reason
+- admin
+- timestamp
+- audit log
+
+Gunakan ledger.
+
+Jangan menghapus history lama.
+
+Jika XP Progress berubah:
+
+hitung ulang level otomatis jika:
+
+levelMode = AUTOMATIC
+
+============================================================
+FASE 14 — ADMIN XP REWARD ADJUSTMENT
+============================================================
+
+Admin dapat:
+
+ADD XP REWARD
+
+DEDUCT XP REWARD
+
+Tetapi:
+
+XP Progress tidak berubah.
+
+Level tidak berubah.
+
+Gunakan XP Reward Adjustment Ledger.
+
+============================================================
+FASE 15 — ADMIN MANUAL LEVEL
+============================================================
+
+Admin dapat:
+
+- naikkan level
+- turunkan level
+- recalculate level
+
+Manual level:
+
+levelMode = MANUAL_OVERRIDE
+
+Jangan otomatis mengubah XP Progress.
+
+Admin harus dapat:
+
+RECALCULATE LEVEL FROM XP
+
+yang mengubah:
+
+levelMode = AUTOMATIC
+
+============================================================
+FASE 16 — ADMIN PASSWORD MANAGEMENT
+============================================================
+
+Admin dapat:
+
+RESET MEMBER PASSWORD
+
+atau:
+
+CHANGE PASSWORD
+
+Gunakan trusted backend/auth provider.
+
+Jangan expose:
+
+old password
+new password
+
+Jangan simpan password di audit log.
+
+Audit:
+
+member
+admin
+timestamp
+action
+result
+
+============================================================
+FASE 17 — INACTIVE MEMBER
+============================================================
+
+Admin → INACTIVE MEMBERS
+
+Filter:
+
+7 hari
+14 hari
+30 hari
+60 hari
+90 hari
+180 hari
+1 tahun
+Custom
+
+Tampilkan:
+
+Username
+Nama
+WhatsApp
+Level
+XP Progress
+XP Reward
+Last Play
+Last Branch
+Days Since Last Play
+Status
+Registration Date
+
+Urutkan:
+
+paling lama tidak bermain.
+
+Gunakan:
+
+lastPlayAt
+
+============================================================
+FASE 18 — NEW MEMBER DASHBOARD
+============================================================
+
+Admin Dashboard harus memiliki:
+
+NEW MEMBERS
+
+Tampilkan:
+
+Hari ini
+7 hari
+30 hari
+
+Data:
+
+- username
+- nama
+- waktu daftar
+- level
+- XP
+- referral jika ada
+
+Tambahkan notification:
+
+NEW_MEMBER_REGISTERED
+
+Admin dapat klik:
+
+VIEW MEMBER
+
+Gunakan notification system existing.
+
+Jangan membuat notification engine kedua.
+
+============================================================
+FASE 19 — HOMEPAGE CMS
+============================================================
+
+Admin dapat mengubah:
+
+- logo
+- nama toko
+- nama XP PLAY
+- header
+- hero
+- title
+- subtitle
+- description
+- banner
+- image
+- CTA
+- WhatsApp
+- Google Maps
+- alamat
+- jam operasional
+- social media
+- footer
+- announcement
+- promotion
+
+Gunakan:
+
+DRAFT
+PREVIEW
+PUBLISHED
+VERSION
+ROLLBACK
+
+Public page membaca:
+
+PUBLISHED ONLY.
+
+Sanitize rich text.
+
+Prevent XSS.
+
+============================================================
+FASE 20 — LEVEL BENEFIT
+============================================================
+
+Admin dapat menentukan benefit setiap level:
+
+Bronze
+Silver
+Juragan
+Sultan
+
+Benefit dapat:
+
+- available
+- locked
+- claimable
+- redeemable
+- XP cost
+- stock
+- expiration
+
+Member hanya melihat benefit sesuai level.
+
+============================================================
+FASE 21 — CHALLENGE / EVENT / PROMO
+============================================================
+
+Admin CRUD:
+
+Challenge
+Event
+Promo
+
+Fields:
+
+title
+description
+startAt
+endAt
+XP
+image
+terms
+claim limit
+status
+
+Member:
+
+CLAIM / REDEEM
+
+masuk ke:
+
+BENEFIT REQUEST
+
+Jangan membuat workflow kedua.
+
+============================================================
+FASE 22 — NOTIFICATION
+============================================================
+
+Admin dapat:
+
+Global Notification
+Branch Notification
+Level Notification
+Specific Member Notification
+Inactive Member Notification
+Campaign Notification
+New Member Notification
+
+Member:
+
+Read / Unread
+
+============================================================
+FASE 23 — RESET / MEMBERSHIP CYCLE
+============================================================
+
+Admin menentukan:
+
+reset period
+
+30
+60
+90
+180
+365
+custom
+
+Gunakan membership cycle.
+
+Jangan menghapus history.
+
+Simpan:
+
+cycleId
+previous XP
+previous level
+previous reward
+resetAt
+new XP
+new level
+new reward
+
+Reset harus idempotent.
+
+============================================================
+FASE 24 — FULL BACKUP
+============================================================
+
+Implementasikan:
+
+BACKUP & RESTORE CENTER
+
+Backup harus mempertimbangkan:
+
+- Firestore
+- Auth metadata
+- Storage
+- CMS
+- Settings
+- Levels
+- Benefits
+- Challenges
+- Events
+- Promos
+- Members
+- Transactions
+- XP Ledger
+- Reward Ledger
+- Referrals
+- Claims/Benefit Requests
+- Redemptions/legacy data
+- Notifications
+- Level history
+- Membership cycles
+- Audit logs
+- Branch configuration
+
+Jangan menyebutnya:
+
+FULL SYSTEM BACKUP
+
+jika salah satu komponen yang diwajibkan belum tersedia.
+
+============================================================
+BACKUP ID
+============================================================
+
+Gunakan unique:
+
+backupId
+
+Setiap backup mempunyai namespace sendiri.
+
+Jangan overwrite backup lain.
+
+============================================================
+BACKUP STATUS
+============================================================
+
+REQUESTED
+PREPARING
+RUNNING
+VERIFYING
+COMPLETED
+FAILED
+CANCELLED
+
+============================================================
+FASE 25 — BACKUP VERIFICATION
+============================================================
+
+Setelah backup:
+
+verifikasi:
+
+- manifest
+- data count
+- storage
+- auth metadata
+- configuration
+- checksums/hash jika tersedia
+
+Jika mismatch:
+
+VERIFICATION_FAILED
+
+Jangan melaporkan SUCCESS.
+
+============================================================
+FASE 26 — BACKUP RETENTION
+============================================================
+
+Admin dapat mengatur:
+
+daily
+weekly
+monthly
+custom
+
+Selalu pertahankan:
+
+latest successful backup
+
+latest pre-restore backup
+
+Jangan delete backup yang sedang digunakan.
+
+============================================================
+FASE 27 — FULL RESTORE
+============================================================
+
+Restore hanya:
+
+SUPER_ADMIN
+
+atau:
+
+BACKUP_RESTORE_ADMIN
+
+Flow:
+
+SELECT BACKUP
+→ VALIDATE
+→ VERIFY
+→ PREVIEW
+→ PRE-RESTORE BACKUP
+→ LOCK
+→ RESTORE
+→ VERIFY
+→ INTEGRITY CHECK
+→ UNLOCK
+
+============================================================
+FASE 28 — PRE-RESTORE BACKUP
+============================================================
+
+Sebelum restore:
+
+buat backup current production.
+
+Jika restore gagal:
+
+gunakan pre-restore backup sebagai recovery point.
+
+============================================================
+FASE 29 — RESTORE LOCK
+============================================================
+
+Selama restore:
+
+block mutation:
+
+transaction
+XP
+claim
+benefit request
+redemption
+member mutation
+CMS publish
+settings
+admin destructive action
+
+Jika memungkinkan:
+
+READ ONLY / MAINTENANCE MODE.
+
+============================================================
+FASE 30 — RESTORE COLLISION PROTECTION
+============================================================
+
+Pastikan tidak ada collision antara:
+
+current production
+backup A
+backup B
+restore A
+restore B
+backup job
+restore job
+
+Gunakan unique:
+
+backupId
+restoreJobId
+operationId
+manifestId
+
+============================================================
+FASE 31 — RESTORE VERIFICATION
+============================================================
+
+Setelah restore:
+
+verify:
+
+members
+transactions
+XP Progress
+XP Reward
+claims
+benefit requests
+redemptions
+referrals
+benefits
+campaigns
+notifications
+settings
+CMS
+storage
+auth metadata
+
+Jalankan:
+
+DATA INTEGRITY CHECK.
+
+Jika mismatch:
+
+VERIFICATION_FAILED
+
+============================================================
+FASE 32 — DATA INTEGRITY CHECK
+============================================================
+
+Cari:
+
+duplicate username
+
+duplicate WhatsApp
+
+negative XP
+
+incorrect XP balance
+
+incorrect level
+
+broken referral
+
+orphan transaction
+
+orphan benefit request
+
+orphan redemption
+
+missing reference
+
+missing storage file
+
+invalid member status
+
+invalid level
+
+duplicate reward deduction
+
+duplicate refund
+
+Jika masalah ditemukan:
+
+catat dalam integrity report.
+
+Jangan silent auto-fix tanpa audit.
+
+============================================================
+FASE 33 — SECURITY AUDIT
+============================================================
+
+Audit:
+
+Firestore Rules
+
+Storage Rules
+
+Authentication
+
+Admin permissions
+
+Cloud Functions
+
+Server endpoints
+
+CMS
+
+XP adjustments
+
+Level override
+
+Backup
+
+Restore
+
+Password management
+
+Pastikan Member tidak dapat melakukan privileged action.
+
+============================================================
+FASE 34 — RACE CONDITION TEST
+============================================================
+
+Wajib test:
+
+double approve
+
+double deny
+
+double refund
+
+double redemption
+
+double claim
+
+double transaction XP
+
+double XP adjustment
+
+double backup
+
+double restore
+
+Pastikan tidak ada:
+
+double XP
+
+double deduction
+
+double refund
+
+double use
+
+double backup overwrite
+
+============================================================
+FASE 35 — ERROR HANDLING
+============================================================
+
+Semua operation:
+
+loading
+success
+error
+retry
+empty state
+
+Jangan tampilkan raw Firebase error.
+
+Jangan menunjukkan success sebelum backend operation benar-benar berhasil.
+
+============================================================
+FASE 36 — PERFORMANCE
+============================================================
+
+Optimalkan:
+
+Firestore reads
+Firestore writes
+Storage
+queries
+pagination
+indexes
+background jobs
+
+Jangan:
+
+fetch seluruh database
+
+Gunakan:
+
+pagination
+cursor
+limit
+indexed queries
+aggregation
+batch
+transactions
+
+============================================================
+FASE 37 — MOBILE
+============================================================
+
+Pastikan Member Dashboard:
+
+mobile friendly
+
+Pastikan:
+
+- table tidak rusak
+- benefit mudah digunakan
+- upload mudah
+- navigation mudah
+- notification mudah dibaca
+- confirmation mudah dipahami
+
+Admin juga harus usable di tablet/desktop/mobile.
+
+============================================================
+FASE 38 — DOCUMENTATION
+============================================================
+
+Update/create:
+
+README.md
+ARCHITECTURE.md
+DATABASE.md
+AUTH.md
+SECURITY.md
+XP_SYSTEM.md
+XP_LEDGER.md
+BENEFIT_REQUEST.md
+ADMIN_GUIDE.md
+MEMBER_GUIDE.md
+CMS_GUIDE.md
+BACKUP_RESTORE.md
+TESTING.md
+DEPLOYMENT.md
+CHANGELOG.md
+
+Dokumentasikan:
+
+- architecture
+- data model
+- XP
+- XP hold
+- refund
+- level
+- member search
+- filters
+- transaction
+- member profile
+- benefit request
+- cashier
+- inactive member
+- CMS
+- backup
+- restore
+- security
+- troubleshooting
+
+============================================================
+FASE 39 — AUTOMATED TEST
+============================================================
+
+Jalankan semua test yang tersedia.
+
+Jika project belum memiliki automated tests:
+
+tambahkan tests untuk business-critical logic sesuai framework existing.
+
+Minimal:
+
+XP calculation
+level calculation
+XP hold
+refund
+approval
+denial
+expiry
+use
+referral
+transaction
+filter
+search
+backup state
+restore state
+permission
+
+============================================================
+FASE 40 — MANUAL QA
+============================================================
+
+Simulasikan:
+
+1. Register member baru.
+2. Referral.
+3. Registration XP.
+4. Transaction XP.
+5. Level up.
+6. Benefit request.
+7. XP hold.
+8. Admin approve.
+9. Kasir mark used.
+10. Admin deny.
+11. XP refund.
+12. Expired benefit.
+13. Admin XP adjustment.
+14. Admin reward adjustment.
+15. Admin level override.
+16. Recalculate level.
+17. Search member.
+18. Filter member.
+19. Open member detail.
+20. Search transaction.
+21. Filter transaction.
+22. View XP history.
+23. Register member with birthday.
+24. New member notification.
+25. Edit homepage.
+26. Create backup.
+27. Verify backup.
+28. Create second backup.
+29. Restore with pre-backup.
+30. Verify restore.
+31. Test restore failure handling.
+
+============================================================
+FASE 41 — FINAL PRODUCTION AUDIT
+============================================================
+
+Setelah seluruh phase selesai:
+
+Lakukan final audit.
+
+Periksa:
+
+AUTH
+
+SECURITY
+
+DATABASE
+
+FIREBASE
+
+STORAGE
+
+XP
+
+LEVEL
+
+REFERRAL
+
+TRANSACTION
+
+BENEFIT
+
+CLAIM
+
+REDEEM
+
+CASHIER
+
+NOTIFICATION
+
+CMS
+
+INACTIVE MEMBER
+
+ADMIN
+
+BACKUP
+
+RESTORE
+
+PERFORMANCE
+
+MOBILE
+
+DOCUMENTATION
+
+============================================================
+FASE 42 — FINAL OUTPUT
+============================================================
+
+Setelah seluruh phase benar-benar selesai, berikan laporan akhir dengan struktur:
+
+1. EXECUTIVE SUMMARY
+
+2. FEATURES IMPLEMENTED
+
+3. FILES CREATED
+
+4. FILES MODIFIED
+
+5. FILES REMOVED
+   Jika tidak ada:
+   NONE
+
+6. DATABASE CHANGES
+
+7. FIREBASE CHANGES
+
+8. FIRESTORE RULE CHANGES
+
+9. STORAGE RULE CHANGES
+
+10. CLOUD FUNCTIONS CHANGES
+
+11. AUTHENTICATION CHANGES
+
+12. XP SYSTEM CHANGES
+
+13. BENEFIT REQUEST FLOW
+
+14. ADMIN CHANGES
+
+15. CMS CHANGES
+
+16. BACKUP CHANGES
+
+17. RESTORE CHANGES
+
+18. SECURITY AUDIT RESULT
+
+19. DATA INTEGRITY RESULT
+
+20. AUTOMATED TEST RESULT
+
+21. MANUAL TEST RESULT
+
+22. BUILD RESULT
+
+23. LINT / TYPECHECK RESULT
+
+24. PERFORMANCE RESULT
+
+25. DOCUMENTATION UPDATED
+
+26. KNOWN ISSUES
+
+27. MIGRATION NOTES
+
+28. DEPLOYMENT NOTES
+
+29. PRODUCTION READINESS STATUS
+
+Gunakan status:
+
+READY
+
+READY WITH WARNING
+
+NOT READY
+
+Jangan mengatakan READY jika masih ada critical issue.
+
+============================================================
+IMPORTANT BEHAVIOR
+============================================================
+
+Jika suatu fitur existing ternyata sudah lebih baik daripada rancangan prompt ini:
+
+PERTAHANKAN IMPLEMENTASI EXISTING.
+
+Jangan mengganti sesuatu yang sudah aman hanya demi mengikuti struktur prompt secara harfiah.
+
+Jika ada konflik:
+
+PRIORITAS:
+
+1. Existing working architecture
+2. Data safety
+3. Security
+4. Business logic
+5. Backward compatibility
+6. UX
+7. New feature
+
+Jika migration diperlukan:
+
+jangan langsung delete data lama.
+
+Jika unified Benefit Request membutuhkan migrasi Claims/Redemptions:
+
+gunakan migration/compatibility layer.
+
+Pastikan historical data tetap dapat dilihat.
+
+============================================================
+FINAL COMMAND
+============================================================
+
+JALANKAN SELURUH PHASE DARI FASE 0 SAMPAI FASE 42 SEKARANG.
+
+Jangan berhenti setelah satu phase.
+
+Kerjakan seluruh phase secara berurutan.
+
+Setelah setiap phase:
+
+IMPLEMENT
+TEST
+VERIFY
+SECURITY CHECK
+REGRESSION CHECK
+DOCUMENT
+
+kemudian otomatis lanjut ke phase berikutnya.
+
+Jangan meminta konfirmasi antar-phase.
+
+Jika ada error yang dapat diperbaiki:
+
+perbaiki sendiri dan lanjutkan.
+
+Jika ada risiko destructive:
+
+backup + validation + confirmation policy harus diterapkan.
+
+Jika ada operasi database besar:
+
+gunakan safe migration dan batch processing.
+
+Jika ada backup/restore:
+
+gunakan isolation, lock, pre-restore backup, verification, dan recovery mechanism.
+
+Jangan mengklaim feature selesai sebelum benar-benar diuji.
+
+MULAI SEKARANG.

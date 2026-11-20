@@ -27,6 +27,13 @@ import {
   DEFAULT_LEVELS,
   DEFAULT_SYSTEM_SETTINGS,
 } from '../shared/xpLogic.ts';
+import {
+  getDashboardRouteForRole,
+  getDefaultPermissionsForRole,
+  isCashierRole,
+  isFullAdminRole,
+} from '../shared/rbac.ts';
+import { isMemberAllowedDashboardAccess } from '../shared/registrationLogic.ts';
 import type {
   AdminUser,
   BranchInfo,
@@ -63,6 +70,8 @@ interface AuthContextValue {
   restoreLock: RestoreLockState | null;
   capabilities: ServerCapabilities;
   loading: boolean;
+  isCompletedMember: boolean;
+  defaultRoute: string;
   signInWithEmail: (email: string, password: string) => Promise<void>;
   registerAdminWithEmail: (email: string, password: string, fullName: string) => Promise<void>;
   resendVerificationEmail: () => Promise<void>;
@@ -218,18 +227,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               fullName: user.displayName || 'Super Admin XP PLAY',
               role: 'SUPER_ADMIN',
               branchScope: 'ALL',
-              permissions: {
-                manageMembers: true,
-                inputTransactions: true,
-                reviewClaims: true,
-                reviewRedemptions: true,
-                manageCampaigns: true,
-                manageBenefits: true,
-                manageNotifications: true,
-                manageSettings: true,
-                manageAdmins: true,
-                executeReset: true,
-              },
+              branchId: null,
+              cashierCode: null,
+              permissions: getDefaultPermissionsForRole('SUPER_ADMIN'),
               active: true,
               createdAt: now,
               updatedAt: now,
@@ -247,8 +247,37 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       }
 
-      if (resolvedAdmin) {
+      if (resolvedAdmin && isFullAdminRole(resolvedAdmin.role)) {
         await ensureClientAdminSeed(resolvedAdmin.uid);
+      }
+
+      if (resolvedAdmin && isCashierRole(resolvedAdmin.role)) {
+        const sessionKey = `xpplay_cashier_login_logged_${resolvedAdmin.uid}`;
+        try {
+          if (typeof sessionStorage !== 'undefined' && !sessionStorage.getItem(sessionKey)) {
+            sessionStorage.setItem(sessionKey, String(Date.now()));
+            const now = Date.now();
+            const auditId = `audit_${now}_${Math.random().toString(36).slice(2, 8)}`;
+            await setDoc(doc(db, 'auditLogs', auditId), {
+              id: auditId,
+              actorId: resolvedAdmin.uid,
+              actorRole: resolvedAdmin.role,
+              action: 'CASHIER_LOGIN',
+              targetType: 'session',
+              targetId: resolvedAdmin.uid,
+              before: null,
+              after: {
+                role: resolvedAdmin.role,
+                branchScope: resolvedAdmin.branchScope,
+                branchId: resolvedAdmin.branchId ?? (resolvedAdmin.branchScope !== 'ALL' ? resolvedAdmin.branchScope : null),
+              },
+              metadata: { email: resolvedAdmin.email },
+              timestamp: now,
+            }).catch(() => {});
+          }
+        } catch {
+          // Non-fatal
+        }
       }
 
       setAdminProfile(resolvedAdmin);
@@ -389,6 +418,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
+  const isCompletedMember = isMemberAllowedDashboardAccess(memberProfile);
+  const defaultRoute = adminProfile
+    ? getDashboardRouteForRole(adminProfile.role)
+    : isCompletedMember
+      ? '/member'
+      : '/';
+
   return (
     <AuthContext.Provider
       value={{
@@ -403,6 +439,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         restoreLock,
         capabilities,
         loading,
+        isCompletedMember,
+        defaultRoute,
         signInWithEmail,
         registerAdminWithEmail,
         resendVerificationEmail,

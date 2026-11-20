@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 import {
-  Award,
   Bell,
+  Check,
+  Clock,
+  Copy,
   Gift,
   History,
   Home,
   LogOut,
   MapPin,
-  Sparkles,
   Upload,
   User as UserIcon,
   Users,
@@ -18,15 +20,29 @@ import { ProtectedImage } from '../components/ProtectedImage.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
 import { mapFriendlyError } from '../lib/firestoreError.ts';
 import {
+  isPreRegisteredMember,
+  PRE_REGISTERED_LOGIN_BLOCKED_MESSAGE,
+} from '../shared/registrationLogic.ts';
+import {
   fetchActiveBenefits,
   fetchActiveCampaigns,
+  fetchBenefitRequestsForMember,
   fetchPaginatedCollection,
   markMemberNotificationRead,
-  submitClaimForMember,
-  submitRedemptionForMember,
+  submitBenefitRequestForMember,
   updateMemberOwnProfile,
   uploadClaimEvidence,
 } from '../services/xpService.ts';
+import {
+  classifyXpLedgerMovement,
+  formatBirthDateJakarta,
+  getBenefitRemainingDaysLabel,
+  getJakartaTodayDateString,
+  getMemberCategoryLabel,
+  getXpLedgerMovementLabel,
+  isBenefitRequestEffectivelyExpired,
+  MEMBER_CATEGORIES,
+} from '../shared/benefitRequestLogic.ts';
 import {
   formatIdr,
   formatJakartaDateTime,
@@ -38,11 +54,12 @@ import {
 } from '../shared/xpLogic.ts';
 import type {
   BenefitItem,
+  BenefitRequestRecord,
   BranchId,
   CampaignItem,
-  CampaignType,
   ClaimRecord,
   LevelHistoryRecord,
+  MemberCategory,
   MemberNotification,
   RedemptionRecord,
   ReferralRecord,
@@ -50,31 +67,49 @@ import type {
   XpLedgerEntry,
 } from '../types/xpplay.ts';
 
-type MemberTab = 'overview' | 'programs' | 'benefits' | 'history' | 'profile';
+// FASE 1 & 37: Simplified 4-tab mobile-first member navigation
+type MemberTab = 'overview' | 'benefits' | 'history' | 'profile';
+type UnifiedCatalogFilter = 'ALL' | 'REWARD_BENEFIT' | 'LEVEL_BENEFIT' | 'CHALLENGE' | 'EVENT' | 'PROMO';
 type HistoryKind = 'xpProgress' | 'xpReward' | 'transactions' | 'referrals' | 'levels';
 
+const STATUS_DISPLAY: Record<string, { label: string; color: string }> = {
+  ON_PROCESS: { label: 'MENUNGGU VERIFIKASI', color: 'text-amber-300' },
+  APPROVED: { label: 'DISETUJUI · SIAP DIPAKAI', color: 'text-emerald-400' },
+  USED: { label: 'SUDAH DIGUNAKAN', color: 'text-sky-300' },
+  EXPIRED: { label: 'KADALUARSA (EXPIRED)', color: 'text-slate-400' },
+  DENIED: { label: 'DITOLAK', color: 'text-rose-400' },
+  REFUNDED: { label: 'XP DIKEMBALIKAN (REFUND)', color: 'text-purple-300' },
+};
+
 export function MemberDashboardPage() {
-  const { memberProfile, levels, branches, systemSettings, restoreLock, logout, refreshProfiles } = useAuth();
+  const { memberProfile, levels, branches, systemSettings, capabilities, restoreLock, logout, refreshProfiles } =
+    useAuth();
   const isMaintenance = Boolean(restoreLock?.locked);
   const [activeTab, setActiveTab] = useState<MemberTab>('overview');
 
-  // Programs & Benefits
+  // Unified Benefit Catalog & Requests
   const [campaigns, setCampaigns] = useState<CampaignItem[]>([]);
-  const [campaignFilter, setCampaignFilter] = useState<'ALL' | CampaignType>('ALL');
   const [benefits, setBenefits] = useState<BenefitItem[]>([]);
-  const [myClaims, setMyClaims] = useState<ClaimRecord[]>([]);
-  const [myRedemptions, setMyRedemptions] = useState<RedemptionRecord[]>([]);
+  const [catalogFilter, setCatalogFilter] = useState<UnifiedCatalogFilter>('ALL');
+  const [myRequests, setMyRequests] = useState<BenefitRequestRecord[]>([]);
+  const [myLegacyClaims, setMyLegacyClaims] = useState<ClaimRecord[]>([]);
+  const [myLegacyRedemptions, setMyLegacyRedemptions] = useState<RedemptionRecord[]>([]);
+  const [showLegacyHistory, setShowLegacyHistory] = useState(false);
   const [notifications, setNotifications] = useState<MemberNotification[]>([]);
   const [loadingCatalog, setLoadingCatalog] = useState(true);
+  const [copiedReqId, setCopiedReqId] = useState<string | null>(null);
 
-  // Claim modal state
-  const [claimTarget, setClaimTarget] = useState<CampaignItem | null>(null);
-  const [claimFile, setClaimFile] = useState<File | null>(null);
-  const [claimNote, setClaimNote] = useState('');
-  const [submittingClaim, setSubmittingClaim] = useState(false);
+  // Campaign Benefit Request modal (Challenge / Event / Promo)
+  const [campaignTarget, setCampaignTarget] = useState<CampaignItem | null>(null);
+  const [evidenceFile, setEvidenceFile] = useState<File | null>(null);
+  const [requestNote, setRequestNote] = useState('');
+  const [submittingRequest, setSubmittingRequest] = useState(false);
+
+  // Benefit confirmation modal (shows immediate XP Hold preview before submitting)
+  const [benefitConfirmTarget, setBenefitConfirmTarget] = useState<BenefitItem | null>(null);
 
   // History pagination state
-  const [historyKind, setHistoryKind] = useState<HistoryKind>('xpProgress');
+  const [historyKind, setHistoryKind] = useState<HistoryKind>('xpReward');
   const [branchFilter, setBranchFilter] = useState<'ALL' | BranchId>('ALL');
   const [historyItems, setHistoryItems] = useState<unknown[]>([]);
   const [historyOwnerKey, setHistoryOwnerKey] = useState<string>('');
@@ -83,14 +118,14 @@ export function MemberDashboardPage() {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const historySeqRef = useRef(0);
 
-  // Redemption submitting guard
-  const [redeemingId, setRedeemingId] = useState<string | null>(null);
-
-  // Profile edit state
+  // Profile edit state (includes Birth Date & Member Status)
   const [editFullName, setEditFullName] = useState('');
   const [editSocial, setEditSocial] = useState('');
   const [editBranch, setEditBranch] = useState<BranchId>('DEMANG');
+  const [editBirthDate, setEditBirthDate] = useState('');
+  const [editCategory, setEditCategory] = useState<MemberCategory | ''>('');
   const [savingProfile, setSavingProfile] = useState(false);
+  const todayJakarta = getJakartaTodayDateString();
 
   // Feedback banner
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -100,20 +135,25 @@ export function MemberDashboardPage() {
       setEditFullName(memberProfile.fullName);
       setEditSocial(memberProfile.socialMedia || '');
       setEditBranch(memberProfile.preferredBranch || 'DEMANG');
+      setEditBirthDate(memberProfile.birthDate || '');
+      setEditCategory(memberProfile.memberCategory || '');
     }
-  }, [memberProfile?.uid]);
+  }, [memberProfile?.uid, memberProfile?.birthDate, memberProfile?.memberCategory]);
 
   const loadMemberFeeds = async () => {
     if (!memberProfile) return;
     setLoadingCatalog(true);
     try {
-      const [camps, bens, claimsRes, redsRes, notifsRes] = await Promise.all([
+      const migratedUid = memberProfile.migratedFromUid || null;
+      const [camps, bens, brqs, preBrqs, claimsRes, redsRes, notifsRes] = await Promise.all([
         fetchActiveCampaigns(),
         fetchActiveBenefits(),
+        fetchBenefitRequestsForMember(memberProfile.uid, 50),
+        migratedUid ? fetchBenefitRequestsForMember(migratedUid, 25).catch(() => []) : Promise.resolve([]),
         fetchPaginatedCollection<ClaimRecord>({
           collectionName: 'claims',
           constraints: [where('memberUid', '==', memberProfile.uid)],
-          pageSize: 30,
+          pageSize: 20,
         }),
         fetchPaginatedCollection<RedemptionRecord>({
           collectionName: 'redemptions',
@@ -123,13 +163,18 @@ export function MemberDashboardPage() {
         fetchPaginatedCollection<MemberNotification>({
           collectionName: 'memberNotifications',
           constraints: [where('memberUid', '==', memberProfile.uid)],
-          pageSize: 20,
+          pageSize: 25,
         }),
       ]);
+      const mergedBrqMap = new Map<string, BenefitRequestRecord>();
+      for (const r of [...brqs, ...preBrqs]) mergedBrqMap.set(r.id, r);
+      const mergedBrqs = Array.from(mergedBrqMap.values()).sort((a, b) => b.createdAt - a.createdAt);
+
       setCampaigns(camps);
       setBenefits(bens);
-      setMyClaims(claimsRes.items);
-      setMyRedemptions(redsRes.items);
+      setMyRequests(mergedBrqs);
+      setMyLegacyClaims(claimsRes.items);
+      setMyLegacyRedemptions(redsRes.items);
       setNotifications(notifsRes.items);
     } catch (err) {
       setFeedback({ type: 'error', text: mapFriendlyError(err) });
@@ -156,20 +201,31 @@ export function MemberDashboardPage() {
     }
     setLoadingHistory(true);
     try {
-      let colName = 'xpProgressLedger';
+      let colName = 'xpRewardLedger';
       const constraints: QueryConstraint[] = [];
+      const migratedUid = memberProfile.migratedFromUid || null;
+      const migratedConstraints: QueryConstraint[] = [];
 
       if (historyKind === 'xpProgress') {
         colName = 'xpProgressLedger';
         constraints.push(where('memberUid', '==', memberProfile.uid));
-        if (branchFilter !== 'ALL') constraints.push(where('branch', '==', branchFilter));
+        if (migratedUid) migratedConstraints.push(where('memberUid', '==', migratedUid));
+        if (branchFilter !== 'ALL') {
+          constraints.push(where('branch', '==', branchFilter));
+          if (migratedUid) migratedConstraints.push(where('branch', '==', branchFilter));
+        }
       } else if (historyKind === 'xpReward') {
         colName = 'xpRewardLedger';
         constraints.push(where('memberUid', '==', memberProfile.uid));
+        if (migratedUid) migratedConstraints.push(where('memberUid', '==', migratedUid));
       } else if (historyKind === 'transactions') {
         colName = 'transactions';
         constraints.push(where('memberUid', '==', memberProfile.uid));
-        if (branchFilter !== 'ALL') constraints.push(where('branch', '==', branchFilter));
+        if (migratedUid) migratedConstraints.push(where('memberUid', '==', migratedUid));
+        if (branchFilter !== 'ALL') {
+          constraints.push(where('branch', '==', branchFilter));
+          if (migratedUid) migratedConstraints.push(where('branch', '==', branchFilter));
+        }
       } else if (historyKind === 'referrals') {
         colName = 'referrals';
         constraints.push(where('referrerUid', '==', memberProfile.uid));
@@ -178,15 +234,30 @@ export function MemberDashboardPage() {
         constraints.push(where('memberUid', '==', memberProfile.uid));
       }
 
-      const res = await fetchPaginatedCollection<unknown>({
-        collectionName: colName,
-        constraints,
-        pageSize: 10,
-        cursor: reset ? null : historyCursor,
-      });
+      const [res, preRes] = await Promise.all([
+        fetchPaginatedCollection<{ id?: string; createdAt?: number }>({
+          collectionName: colName,
+          constraints,
+          pageSize: 12,
+          cursor: reset ? null : historyCursor,
+        }),
+        reset && migratedUid && migratedConstraints.length > 0
+          ? fetchPaginatedCollection<{ id?: string; createdAt?: number }>({
+              collectionName: colName,
+              constraints: migratedConstraints,
+              pageSize: 20,
+            }).catch(() => ({ items: [] as { id?: string; createdAt?: number }[] }))
+          : Promise.resolve({ items: [] as { id?: string; createdAt?: number }[] }),
+      ]);
 
       if (seq !== historySeqRef.current) return;
-      setHistoryItems((prev) => (reset ? res.items : [...prev, ...res.items]));
+      const mergedItems = reset && preRes.items.length > 0
+        ? Array.from(
+            new Map([...res.items, ...preRes.items].map((it, idx) => [it.id || `k_${idx}`, it])).values()
+          ).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))
+        : res.items;
+
+      setHistoryItems((prev) => (reset ? mergedItems : [...prev, ...mergedItems]));
       setHistoryOwnerKey(reqKey);
       setHistoryCursor(res.lastCursor);
       setHistoryHasMore(res.hasMore);
@@ -208,6 +279,32 @@ export function MemberDashboardPage() {
   }, [activeTab, historyKind, branchFilter, memberProfile?.uid]);
 
   if (!memberProfile) return null;
+
+  if (isPreRegisteredMember(memberProfile)) {
+    return (
+      <div className="min-h-screen gaming-canvas flex items-center justify-center p-4">
+        <div className="max-w-md w-full bg-[#0B1124] rounded-2xl border border-amber-400/40 p-8 text-center space-y-4">
+          <h1 className="font-display text-xl font-bold text-white">Pendaftaran Belum Selesai</h1>
+          <p className="text-sm text-slate-300 leading-relaxed">
+            {PRE_REGISTERED_LOGIN_BLOCKED_MESSAGE}
+          </p>
+          <Link
+            to={`/register?wa=${encodeURIComponent(memberProfile.whatsapp || '')}`}
+            className="w-full h-[46px] inline-flex items-center justify-center rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 text-sm font-semibold text-white"
+          >
+            Lengkapi Pendaftaran
+          </Link>
+          <button
+            type="button"
+            onClick={() => void logout()}
+            className="w-full h-[42px] rounded-xl border border-indigo-500/30 text-xs font-medium text-slate-300"
+          >
+            Keluar
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (memberProfile.status !== 'ACTIVE') {
     return (
@@ -231,77 +328,94 @@ export function MemberDashboardPage() {
 
   const effectiveLevel = resolveEffectiveMemberLevel(memberProfile, levels);
   const unreadNotifs = notifications.filter((n) => !n.read).length;
-
-  const unlockedBenefits = benefits.filter(
-    (b) => isLevelEligible(effectiveLevel.id, b.levelRequirement, levels)
+  const reservedXp = memberProfile.reservedXp ?? 0;
+  const activeApprovedVouchers = myRequests.filter(
+    (r) => r.status === 'APPROVED' && !isBenefitRequestEffectivelyExpired(r)
   );
 
-  const handleClaimSubmit = async (e: FormEvent) => {
+  const handleCopyRequestId = async (reqId: string) => {
+    try {
+      await navigator.clipboard.writeText(reqId);
+      setCopiedReqId(reqId);
+      setTimeout(() => setCopiedReqId(null), 1800);
+    } catch {
+      // Clipboard blocked in restricted iframe
+    }
+  };
+
+  const handleCampaignRequestSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!claimTarget) return;
+    if (!campaignTarget || submittingRequest) return;
     setFeedback(null);
-    setSubmittingClaim(true);
+    setSubmittingRequest(true);
     try {
       let evidenceUrl = '';
       let evidencePath = '';
-      if (claimTarget.requiresEvidence) {
-        if (!claimFile) {
+      if (campaignTarget.requiresEvidence) {
+        if (!evidenceFile) {
           throw new Error('Silakan pilih atau ambil foto bukti terlebih dahulu.');
         }
-        const uploaded = await uploadClaimEvidence(claimFile);
+        const uploaded = await uploadClaimEvidence(evidenceFile);
         evidenceUrl = uploaded.evidenceUrl;
         evidencePath = uploaded.evidencePath;
       }
 
-      await submitClaimForMember({
+      const res = await submitBenefitRequestForMember({
         member: memberProfile,
-        campaign: claimTarget,
+        sourceType: campaignTarget.type,
+        sourceId: campaignTarget.id,
+        campaign: campaignTarget,
+        levels,
         evidenceUrl,
         evidencePath,
-        note: claimNote,
+        note: requestNote,
+        branch: memberProfile.preferredBranch ?? null,
+        adminSdkConfigured: capabilities.adminSdkConfigured,
       });
 
       setFeedback({
         type: 'success',
-        text: 'Claim berhasil dikirim dan sedang menunggu pemeriksaan Admin.',
+        text: `Benefit Request ${res.request.id} berhasil dikirim dan menunggu persetujuan Admin.`,
       });
-      setClaimTarget(null);
-      setClaimFile(null);
-      setClaimNote('');
-      await loadMemberFeeds();
+      setCampaignTarget(null);
+      setEvidenceFile(null);
+      setRequestNote('');
+      await Promise.all([refreshProfiles(), loadMemberFeeds()]);
     } catch (err) {
       setFeedback({ type: 'error', text: mapFriendlyError(err) });
     } finally {
-      setSubmittingClaim(false);
+      setSubmittingRequest(false);
     }
   };
 
-  const handleRedeem = async (benefit: BenefitItem) => {
-    if (isMaintenance) {
-      setFeedback({
-        type: 'error',
-        text: restoreLock?.message || 'XP PLAY sedang melakukan maintenance sistem. Silakan kembali beberapa saat lagi.',
-      });
-      return;
-    }
-    if (redeemingId) return;
-    setRedeemingId(benefit.id);
+  const handleConfirmBenefitRequest = async () => {
+    if (!benefitConfirmTarget || submittingRequest) return;
+    setSubmittingRequest(true);
     setFeedback(null);
     try {
-      await submitRedemptionForMember({
+      const sourceType = benefitConfirmTarget.xpCost > 0 ? 'GENERAL_BENEFIT' : 'LEVEL_BENEFIT';
+      const res = await submitBenefitRequestForMember({
         member: memberProfile,
-        benefit,
+        sourceType,
+        sourceId: benefitConfirmTarget.id,
+        benefit: benefitConfirmTarget,
         levels,
+        branch: memberProfile.preferredBranch ?? null,
+        adminSdkConfigured: capabilities.adminSdkConfigured,
       });
       setFeedback({
         type: 'success',
-        text: 'Redemption sedang diproses. XP Reward Anda akan dipotong setelah disetujui Admin.',
+        text:
+          benefitConfirmTarget.xpCost > 0
+            ? `Pengajuan ${res.request.id} dikirim! ${benefitConfirmTarget.xpCost} XP Reward ditahan sementara (Hold). Jika ditolak, XP otomatis kembali.`
+            : `Pengajuan ${res.request.id} berhasil dikirim dan menunggu persetujuan Admin.`,
       });
-      await loadMemberFeeds();
+      setBenefitConfirmTarget(null);
+      await Promise.all([refreshProfiles(), loadMemberFeeds()]);
     } catch (err) {
       setFeedback({ type: 'error', text: mapFriendlyError(err) });
     } finally {
-      setRedeemingId(null);
+      setSubmittingRequest(false);
     }
   };
 
@@ -330,6 +444,8 @@ export function MemberDashboardPage() {
         fullName: editFullName,
         socialMedia: editSocial,
         preferredBranch: editBranch,
+        birthDate: editBirthDate || null,
+        memberCategory: editCategory || null,
       });
       await refreshProfiles();
       setFeedback({ type: 'success', text: 'Profil member berhasil diperbarui.' });
@@ -340,9 +456,23 @@ export function MemberDashboardPage() {
     }
   };
 
-  const filteredCampaigns = campaigns.filter(
-    (c) => campaignFilter === 'ALL' || c.type === campaignFilter
-  );
+  const showBenefits =
+    catalogFilter === 'ALL' || catalogFilter === 'REWARD_BENEFIT' || catalogFilter === 'LEVEL_BENEFIT';
+  const showCampaigns =
+    catalogFilter === 'ALL' || catalogFilter === 'CHALLENGE' || catalogFilter === 'EVENT' || catalogFilter === 'PROMO';
+
+  const visibleBenefits = benefits.filter((b) => {
+    if (catalogFilter === 'REWARD_BENEFIT') return b.xpCost > 0;
+    if (catalogFilter === 'LEVEL_BENEFIT') return b.xpCost === 0;
+    return true;
+  });
+
+  const visibleCampaigns = campaigns.filter((c) => {
+    if (catalogFilter === 'CHALLENGE' || catalogFilter === 'EVENT' || catalogFilter === 'PROMO') {
+      return c.type === catalogFilter;
+    }
+    return true;
+  });
 
   if (isMaintenance) {
     return (
@@ -359,7 +489,7 @@ export function MemberDashboardPage() {
               'XP PLAY sedang melakukan maintenance sistem. Silakan kembali beberapa saat lagi.'}
           </p>
           <p className="text-xs text-slate-400">
-            Pengajuan claim, penukaran reward, dan perubahan profil dinonaktifkan sementara demi menjaga integritas data akun Anda.
+            Pengajuan benefit dan perubahan profil dinonaktifkan sementara demi menjaga integritas data akun Anda.
           </p>
           <div className="pt-2 flex flex-wrap justify-center gap-3">
             <button
@@ -384,21 +514,20 @@ export function MemberDashboardPage() {
 
   return (
     <div className="min-h-screen gaming-canvas text-slate-100 pb-24 md:pb-10 overflow-x-hidden">
-      {/* Top Bar: 3-zone contract */}
+      {/* Top Bar: 3-zone contract with 4 unified nav destinations */}
       <header className="sticky top-0 z-30 bg-[#050814]/90 backdrop-blur-md border-b border-indigo-500/20">
         <div className="max-w-7xl mx-auto px-4 sm:px-8 h-14 sm:h-16 flex items-center justify-between gap-6">
           <div className="font-display text-lg font-extrabold tracking-tight bg-gradient-to-r from-sky-300 via-blue-300 to-purple-300 bg-clip-text text-transparent whitespace-nowrap shrink-0">
             XP PLAY
           </div>
 
-          <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-slate-300">
+          <nav className="hidden md:flex items-center gap-7 text-sm font-medium text-slate-300">
             {(
               [
                 ['overview', 'Ringkasan'],
-                ['programs', 'Challenge & Promo'],
-                ['benefits', 'Benefit & Redeem'],
+                ['benefits', `Benefit${activeApprovedVouchers.length > 0 ? ` (${activeApprovedVouchers.length})` : ''}`],
                 ['history', 'Riwayat'],
-                ['profile', `Notifikasi${unreadNotifs > 0 ? ` (${unreadNotifs})` : ''}`],
+                ['profile', `Profil${unreadNotifs > 0 ? ` (${unreadNotifs})` : ''}`],
               ] as [MemberTab, string][]
             ).map(([id, label]) => (
               <button
@@ -454,7 +583,7 @@ export function MemberDashboardPage() {
           </div>
         )}
 
-        {/* OVERVIEW TAB */}
+        {/* 1. OVERVIEW TAB */}
         {activeTab === 'overview' && (
           <div className="space-y-6">
             <MemberXpShowcase
@@ -464,6 +593,7 @@ export function MemberDashboardPage() {
               cycleId={systemSettings.currentCycleId}
               xpProgress={memberProfile.xpProgress}
               xpReward={memberProfile.xpReward}
+              reservedXp={reservedXp}
               levels={levels}
               currentLevel={memberProfile.currentLevel}
               levelMode={memberProfile.levelMode}
@@ -473,41 +603,45 @@ export function MemberDashboardPage() {
               onOpenBenefits={() => setActiveTab('benefits')}
             />
 
-            {/* Level Benefits Preview & Notifications */}
+            {/* Active Approved Benefits Ready for Cashier + Recent Notifications */}
             <div className="grid lg:grid-cols-2 gap-6">
               <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 sm:p-6 space-y-4">
                 <div className="flex items-center justify-between gap-3">
                   <h2 className="font-display text-lg font-bold text-white">
-                    Benefit Level {effectiveLevel.name}
+                    Benefit Aktif Siap Dipakai
                   </h2>
                   <button
                     type="button"
                     onClick={() => setActiveTab('benefits')}
                     className="text-xs font-semibold text-sky-300 hover:underline min-h-[36px]"
                   >
-                    Lihat Semua
+                    Buka Katalog Benefit
                   </button>
                 </div>
                 {loadingCatalog ? (
                   <div className="h-24 rounded-xl bg-[#070B19] animate-pulse" />
-                ) : unlockedBenefits.length === 0 ? (
-                  <p className="text-sm text-slate-400">Belum ada benefit aktif yang dikonfigurasi admin.</p>
+                ) : activeApprovedVouchers.length === 0 ? (
+                  <p className="text-sm text-slate-400">
+                    Belum ada benefit disetujui yang menunggu dipakai di kasir. Ajukan benefit atau challenge di tab Benefit.
+                  </p>
                 ) : (
                   <ul className="divide-y divide-indigo-500/15">
-                    {unlockedBenefits.slice(0, 4).map((b) => (
-                      <li key={b.id} className="py-3 flex items-center justify-between gap-4">
+                    {activeApprovedVouchers.slice(0, 4).map((r) => (
+                      <li key={r.id} className="py-3 flex items-center justify-between gap-4">
                         <div className="min-w-0">
-                          <p className="text-sm font-semibold text-white truncate">{b.name}</p>
-                          <p className="text-xs text-slate-400">
-                            Level {b.levelRequirement} · {b.xpCost > 0 ? `${b.xpCost} XP` : 'Benefit Level'}
+                          <p className="text-sm font-semibold text-white truncate">{r.title}</p>
+                          <p className="text-xs text-slate-400 font-mono">
+                            ID: <span className="text-sky-300 font-bold">{r.id}</span> · Sisa waktu:{' '}
+                            <span className="text-emerald-400">{getBenefitRemainingDaysLabel(r.expiresAt)}</span>
                           </p>
                         </div>
                         <button
                           type="button"
-                          onClick={() => setActiveTab('benefits')}
-                          className="min-h-[38px] rounded-xl border border-indigo-500/30 bg-[#070B19] px-3.5 py-1.5 text-xs font-semibold text-sky-300 hover:border-sky-400 shrink-0 transition-colors"
+                          onClick={() => void handleCopyRequestId(r.id)}
+                          className="inline-flex items-center gap-1.5 min-h-[38px] rounded-xl border border-emerald-400/35 bg-emerald-500/10 px-3 py-1.5 text-xs font-mono font-semibold text-emerald-300 hover:bg-emerald-500/20 shrink-0"
                         >
-                          Detail
+                          {copiedReqId === r.id ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                          <span>{copiedReqId === r.id ? 'Disalin' : 'Salin ID'}</span>
                         </button>
                       </li>
                     ))}
@@ -559,56 +693,127 @@ export function MemberDashboardPage() {
           </div>
         )}
 
-        {/* PROGRAMS TAB (CHALLENGE / EVENT / PROMO & CLAIM XP) */}
-        {activeTab === 'programs' && (
+        {/* 2. UNIFIED BENEFIT TAB (FASE 1–4: Claim + Redeem + 7-Day Validity) */}
+        {activeTab === 'benefits' && (
           <div className="space-y-6">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
               <div>
-                <h1 className="font-display text-2xl font-bold text-white">Challenge, Event &amp; Promo</h1>
-                <p className="text-sm text-slate-300">
-                  Ajukan Claim XP disertai bukti foto. XP masuk setelah diverifikasi Admin.
+                <h1 className="font-display text-2xl font-bold text-white">Benefit, Challenge &amp; Promo</h1>
+                <p className="text-sm text-slate-300 mt-1">
+                  XP Reward Tersedia:{' '}
+                  <strong className="font-mono text-purple-300 tabular-nums">{memberProfile.xpReward} XP</strong>
+                  {reservedXp > 0 && (
+                    <>
+                      {' '}· Ditahan (Hold):{' '}
+                      <strong className="font-mono text-amber-300 tabular-nums">{reservedXp} XP</strong>
+                    </>
+                  )}{' '}
+                  · Level: <strong className="text-sky-300">{effectiveLevel.name}</strong>
                 </p>
               </div>
+
               <div className="flex items-center gap-1 p-1 rounded-xl bg-[#0B1124] border border-indigo-500/25 self-start overflow-x-auto no-scrollbar max-w-full">
-                {(['ALL', 'CHALLENGE', 'EVENT', 'PROMO'] as const).map((t) => (
+                {(
+                  [
+                    ['ALL', 'Semua'],
+                    ['REWARD_BENEFIT', 'Tukar XP'],
+                    ['LEVEL_BENEFIT', 'Benefit Level'],
+                    ['CHALLENGE', 'Challenge'],
+                    ['EVENT', 'Event'],
+                    ['PROMO', 'Promo'],
+                  ] as [UnifiedCatalogFilter, string][]
+                ).map(([key, label]) => (
                   <button
-                    key={t}
+                    key={key}
                     type="button"
-                    onClick={() => setCampaignFilter(t)}
-                    className={`px-3.5 py-2 min-h-[38px] rounded-lg text-xs font-semibold transition-all whitespace-nowrap shrink-0 ${
-                      campaignFilter === t
+                    onClick={() => setCatalogFilter(key)}
+                    className={`px-3 py-2 min-h-[38px] rounded-lg text-xs font-semibold transition-all whitespace-nowrap shrink-0 ${
+                      catalogFilter === key
                         ? 'bg-gradient-to-r from-blue-600 to-purple-600 text-white'
                         : 'text-slate-300 hover:text-white'
                     }`}
                   >
-                    {t === 'ALL' ? 'Semua' : t}
+                    {label}
                   </button>
                 ))}
               </div>
             </div>
 
-            {filteredCampaigns.length === 0 ? (
-              <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-8 text-center text-sm text-slate-400">
-                Belum ada program Challenge, Event, atau Promo aktif saat ini.
-              </div>
-            ) : (
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-5">
-                {filteredCampaigns.map((camp) => {
-                  const status = resolveCampaignStatus(camp);
-                  const claimable = isCampaignClaimable(camp);
-                  const myCount = myClaims.filter(
-                    (cl) => cl.campaignId === camp.id && (cl.status === 'ON_PROCESS' || cl.status === 'APPROVED')
-                  ).length;
-                  const limitReached = myCount >= camp.maxClaimsPerMember;
+            {/* Unified Catalog Grid */}
+            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-5">
+              {showBenefits &&
+                visibleBenefits.map((b) => {
+                  const eligibleLevel = isLevelEligible(effectiveLevel.id, b.levelRequirement, levels);
+                  const enoughXp = memberProfile.xpReward >= b.xpCost;
+                  const outOfStock = b.stock !== null && b.stock <= 0;
+                  const expired = Boolean(b.expiryAt && Date.now() > b.expiryAt);
+                  const canSubmit = eligibleLevel && (b.claimable || b.redeemable) && enoughXp && !outOfStock && !expired;
+
+                  let buttonLabel = b.xpCost > 0 ? `AJUKAN BENEFIT (${b.xpCost} XP)` : 'AJUKAN BENEFIT LEVEL';
+                  if (!b.claimable && !b.redeemable) buttonLabel = 'INFO SAJA (TERKUNCI)';
+                  else if (!eligibleLevel) buttonLabel = `Minimal Level ${b.levelRequirement}`;
+                  else if (expired) buttonLabel = 'Katalog Berakhir';
+                  else if (outOfStock) buttonLabel = 'Stok Habis';
+                  else if (!enoughXp) buttonLabel = `XP Kurang (Butuh ${b.xpCost} XP)`;
 
                   return (
                     <div
-                      key={camp.id}
+                      key={`ben_${b.id}`}
                       className="bg-[#0B1124] rounded-2xl border border-indigo-500/25 p-5 flex flex-col justify-between gap-4"
                     >
                       <div className="space-y-2">
                         <div className="flex items-center justify-between text-xs">
-                          <span className="text-sky-300 font-mono">
+                          <span className="text-slate-400">
+                            {b.xpCost > 0 ? 'General Benefit' : 'Level Benefit'} · Min. {b.levelRequirement}
+                          </span>
+                          <span className="font-mono font-semibold text-purple-300 tabular-nums">
+                            {b.xpCost > 0 ? `${b.xpCost} XP` : 'Gratis Level'}
+                          </span>
+                        </div>
+                        <h3 className="font-display text-lg font-bold text-white">{b.name}</h3>
+                        <p className="text-sm text-slate-300 leading-relaxed">{b.description}</p>
+                        {b.stock !== null && (
+                          <p className="text-xs text-sky-300 font-mono">Sisa kuota: {b.stock}</p>
+                        )}
+                        {b.terms && (
+                          <p className="text-xs text-slate-400 border-t border-indigo-500/15 pt-2">
+                            Ketentuan: {b.terms}
+                          </p>
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={!canSubmit || submittingRequest}
+                        onClick={() => setBenefitConfirmTarget(b)}
+                        className="w-full h-[46px] rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 text-sm font-semibold text-white hover:from-blue-500 hover:to-purple-500 disabled:bg-none disabled:bg-slate-800 disabled:text-slate-500 transition-all"
+                      >
+                        {buttonLabel}
+                      </button>
+                    </div>
+                  );
+                })}
+
+              {showCampaigns &&
+                visibleCampaigns.map((camp) => {
+                  const status = resolveCampaignStatus(camp);
+                  const claimable = isCampaignClaimable(camp);
+                  const reqCount = myRequests.filter(
+                    (r) => r.sourceId === camp.id && (r.status === 'ON_PROCESS' || r.status === 'APPROVED' || r.status === 'USED')
+                  ).length;
+                  const legacyCount = myLegacyClaims.filter(
+                    (cl) => cl.campaignId === camp.id && (cl.status === 'ON_PROCESS' || cl.status === 'APPROVED')
+                  ).length;
+                  const limitReached = reqCount + legacyCount >= camp.maxClaimsPerMember;
+
+                  return (
+                    <div
+                      key={`camp_${camp.id}`}
+                      className="bg-[#0B1124] rounded-2xl border border-sky-500/25 p-5 flex flex-col justify-between gap-4"
+                    >
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="text-sky-300 font-mono font-semibold">
                             {camp.type} · +{camp.xpReward} XP
                           </span>
                           <span className={status === 'ACTIVE' ? 'text-emerald-400 font-semibold' : 'text-rose-400 font-semibold'}>
@@ -631,62 +836,149 @@ export function MemberDashboardPage() {
                         type="button"
                         disabled={!claimable || limitReached}
                         onClick={() => {
-                          setClaimTarget(camp);
-                          setClaimFile(null);
-                          setClaimNote('');
+                          setCampaignTarget(camp);
+                          setEvidenceFile(null);
+                          setRequestNote('');
                         }}
-                        className="w-full h-[46px] rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 text-sm font-semibold text-white hover:from-blue-500 hover:to-purple-500 disabled:bg-none disabled:bg-slate-800 disabled:text-slate-500 transition-all"
+                        className="w-full h-[46px] rounded-xl bg-gradient-to-r from-sky-600 to-indigo-600 text-sm font-semibold text-white hover:from-sky-500 hover:to-indigo-500 disabled:bg-none disabled:bg-slate-800 disabled:text-slate-500 transition-all"
                       >
                         {!claimable
-                          ? 'Program Berakhir / Tidak Aktif'
+                          ? 'Program Tidak Aktif'
                           : limitReached
-                            ? 'Sudah Diklaim'
-                            : `CLAIM XP (+${camp.xpReward} XP)`}
+                            ? 'Sudah Diajukan'
+                            : `AJUKAN ${camp.type} (+${camp.xpReward} XP)`}
                       </button>
                     </div>
                   );
                 })}
+            </div>
+
+            {(!showBenefits || visibleBenefits.length === 0) && (!showCampaigns || visibleCampaigns.length === 0) && (
+              <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-8 text-center text-sm text-slate-400">
+                Belum ada benefit atau program pada kategori ini.
               </div>
             )}
 
-            {/* My Claims History */}
+            {/* Status Pengajuan Benefit Saya (Unified Benefit Requests) */}
             <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 sm:p-6 space-y-4">
-              <h2 className="font-display text-lg font-bold text-white">Status Pengajuan Claim Saya</h2>
-              {myClaims.length === 0 ? (
-                <p className="text-sm text-slate-400">Belum ada pengajuan claim XP.</p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h2 className="font-display text-lg font-bold text-white">Status Pengajuan Benefit Saya</h2>
+                  <p className="text-xs text-slate-400">
+                    Benefit yang disetujui berlaku 7 hari. Tunjukkan Request ID ke kasir XP PLAY untuk digunakan.
+                  </p>
+                </div>
+                {(myLegacyClaims.length > 0 || myLegacyRedemptions.length > 0) && (
+                  <button
+                    type="button"
+                    onClick={() => setShowLegacyHistory((v) => !v)}
+                    className="text-xs font-semibold text-sky-300 hover:underline min-h-[36px]"
+                  >
+                    {showLegacyHistory
+                      ? 'Sembunyikan Riwayat Legacy'
+                      : `Riwayat Legacy (${myLegacyClaims.length + myLegacyRedemptions.length})`}
+                  </button>
+                )}
+              </div>
+
+              {myRequests.length === 0 ? (
+                <p className="text-sm text-slate-400">Belum ada pengajuan benefit.</p>
               ) : (
                 <div className="divide-y divide-indigo-500/15">
-                  {myClaims.map((cl) => (
-                    <div key={cl.id} className="py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                      <div className="flex items-start gap-3">
-                        {cl.evidenceUrl && (
-                          <ProtectedImage
-                            src={cl.evidenceUrl}
-                            alt={`Bukti ${cl.campaignTitle}`}
-                            className="w-16 h-16 rounded-xl object-cover border border-indigo-500/25 shrink-0"
-                          />
-                        )}
-                        <div className="space-y-1">
-                          <p className="text-sm font-semibold text-white">{cl.campaignTitle}</p>
-                          <p className="text-xs text-slate-400">
-                            {cl.campaignType} · +{cl.xpRewardSnapshot} XP · {formatJakartaDateTime(cl.createdAt)} WIB
-                          </p>
-                          {cl.denialReason && (
-                            <p className="text-xs text-rose-400">Alasan ditolak: {cl.denialReason}</p>
+                  {myRequests.map((req) => {
+                    const effectiveExpired = isBenefitRequestEffectivelyExpired(req);
+                    const displayStatus = effectiveExpired ? 'EXPIRED' : req.status;
+                    const stInfo = STATUS_DISPLAY[displayStatus] ?? { label: displayStatus, color: 'text-slate-300' };
+                    return (
+                      <div key={req.id} className="py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div className="flex items-start gap-3 min-w-0">
+                          {req.evidenceUrl && (
+                            <ProtectedImage
+                              src={req.evidenceUrl}
+                              alt={`Bukti ${req.title}`}
+                              className="w-14 h-14 rounded-xl object-cover border border-indigo-500/25 shrink-0"
+                            />
+                          )}
+                          <div className="space-y-1 min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-mono text-xs font-bold text-sky-300">{req.id}</span>
+                              <span className="text-xs text-slate-500">·</span>
+                              <span className="text-xs text-slate-400">{req.sourceType}</span>
+                            </div>
+                            <p className="text-sm font-semibold text-white">{req.title}</p>
+                            <p className="text-xs text-slate-400 font-mono">
+                              {req.xpCost > 0
+                                ? `Biaya: ${req.xpCost} XP`
+                                : req.xpRewardGrant > 0
+                                  ? `Hadiah: +${req.xpRewardGrant} XP`
+                                  : 'Benefit Level'}{' '}
+                              · Diajukan: {formatJakartaDateTime(req.createdAt)} WIB
+                            </p>
+
+                            {req.status === 'APPROVED' && req.expiresAt && (
+                              <p className="text-xs text-emerald-300 flex items-center gap-1.5 font-mono">
+                                <Clock className="w-3.5 h-3.5 shrink-0" />
+                                <span>
+                                  Berlaku s/d {formatJakartaDateTime(req.expiresAt)} WIB (
+                                  {getBenefitRemainingDaysLabel(req.expiresAt)})
+                                </span>
+                              </p>
+                            )}
+                            {req.status === 'USED' && req.usedAt && (
+                              <p className="text-xs text-sky-300 font-mono">
+                                Digunakan {formatJakartaDateTime(req.usedAt)} WIB di {getBranchLabel(req.usedBranch)}
+                              </p>
+                            )}
+                            {req.deniedReason && (
+                              <p className="text-xs text-rose-400">Alasan ditolak: {req.deniedReason}</p>
+                            )}
+                            {req.status === 'REFUNDED' && req.refundedAmount > 0 && (
+                              <p className="text-xs text-purple-300 font-mono">
+                                +{req.refundedAmount} XP telah dikembalikan ke saldo XP Reward Anda.
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex sm:flex-col items-center sm:items-end justify-between gap-2 shrink-0">
+                          <span className={`text-xs font-mono font-bold ${stInfo.color}`}>{stInfo.label}</span>
+                          {req.status === 'APPROVED' && !effectiveExpired && (
+                            <button
+                              type="button"
+                              onClick={() => void handleCopyRequestId(req.id)}
+                              className="inline-flex items-center gap-1.5 min-h-[34px] rounded-lg border border-sky-400/35 bg-[#070B19] px-2.5 text-[11px] font-mono text-sky-300 hover:border-sky-300"
+                            >
+                              {copiedReqId === req.id ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+                              <span>{copiedReqId === req.id ? 'ID Disalin' : 'Salin Request ID'}</span>
+                            </button>
                           )}
                         </div>
                       </div>
-                      <span
-                        className={`text-xs font-mono font-bold shrink-0 ${
-                          cl.status === 'APPROVED'
-                            ? 'text-emerald-400'
-                            : cl.status === 'DENIED'
-                              ? 'text-rose-400'
-                              : 'text-amber-300'
-                        }`}
-                      >
-                        {cl.status}
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Legacy Claims & Redemptions Compatibility Section */}
+              {showLegacyHistory && (
+                <div className="pt-4 border-t border-indigo-500/20 space-y-3">
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                    Riwayat Legacy (Sebelum Penyatuan Benefit Request)
+                  </p>
+                  {myLegacyClaims.map((cl) => (
+                    <div key={cl.id} className="flex items-center justify-between gap-3 text-xs py-1.5">
+                      <span className="text-slate-300">
+                        [Claim] {cl.campaignTitle} (+{cl.xpRewardSnapshot} XP) · {formatJakartaDateTime(cl.createdAt)}
                       </span>
+                      <span className="font-mono font-semibold text-slate-400">{cl.status}</span>
+                    </div>
+                  ))}
+                  {myLegacyRedemptions.map((rd) => (
+                    <div key={rd.id} className="flex items-center justify-between gap-3 text-xs py-1.5">
+                      <span className="text-slate-300">
+                        [Redeem] {rd.benefitName} ({rd.xpCostSnapshot} XP) · {formatJakartaDateTime(rd.createdAt)}
+                      </span>
+                      <span className="font-mono font-semibold text-slate-400">{rd.status}</span>
                     </div>
                   ))}
                 </div>
@@ -695,135 +987,21 @@ export function MemberDashboardPage() {
           </div>
         )}
 
-        {/* BENEFITS & REDEMPTION TAB */}
-        {activeTab === 'benefits' && (
-          <div className="space-y-6">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div>
-                <h1 className="font-display text-2xl font-bold text-white">Benefit &amp; Redeem XP</h1>
-                <p className="text-sm text-slate-300">
-                  Saldo XP Reward tersedia:{' '}
-                  <strong className="font-mono text-purple-300 tabular-nums">{memberProfile.xpReward} XP</strong>{' '}
-                  · Level Anda:{' '}
-                  <strong className="text-sky-300">
-                    {effectiveLevel.name}
-                    {memberProfile.levelMode === 'MANUAL_OVERRIDE' ? ' (Manual Override)' : ''}
-                  </strong>
-                </p>
-              </div>
-            </div>
-
-            {benefits.length === 0 ? (
-              <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-8 text-center text-sm text-slate-400">
-                Belum ada daftar benefit yang tersedia.
-              </div>
-            ) : (
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-5">
-                {benefits.map((b) => {
-                  const eligibleLevel = isLevelEligible(effectiveLevel.id, b.levelRequirement, levels);
-                  const enoughXp = memberProfile.xpReward >= b.xpCost;
-                  const outOfStock = b.stock !== null && b.stock <= 0;
-                  const expired = Boolean(b.expiryAt && Date.now() > b.expiryAt);
-                  const canRedeem = eligibleLevel && b.claimable && b.redeemable && enoughXp && !outOfStock && !expired;
-
-                  let buttonLabel = `REDEEM (${b.xpCost} XP)`;
-                  if (!b.claimable || !b.redeemable) buttonLabel = 'LOCKED / INFORMATION ONLY';
-                  else if (!eligibleLevel) buttonLabel = `Minimal Level ${b.levelRequirement}`;
-                  else if (expired) buttonLabel = 'Benefit Kadaluarsa';
-                  else if (outOfStock) buttonLabel = 'Stok Habis';
-                  else if (!enoughXp) buttonLabel = `XP Tidak Cukup (Butuh ${b.xpCost} XP)`;
-                  else if (b.xpCost === 0) buttonLabel = 'KLAIM BENEFIT LEVEL';
-
-                  return (
-                    <div
-                      key={b.id}
-                      className="bg-[#0B1124] rounded-2xl border border-indigo-500/25 p-5 flex flex-col justify-between gap-4"
-                    >
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="text-slate-400">Syarat Level: {b.levelRequirement}</span>
-                          <span className="font-mono font-semibold text-purple-300">
-                            {b.xpCost > 0 ? `${b.xpCost} XP` : 'Gratis Level'}
-                          </span>
-                        </div>
-                        <h3 className="font-display text-lg font-bold text-white">{b.name}</h3>
-                        <p className="text-sm text-slate-300">{b.description}</p>
-                        {b.stock !== null && (
-                          <p className="text-xs text-sky-300 font-mono">Sisa kuota: {b.stock}</p>
-                        )}
-                        {b.terms && (
-                          <p className="text-xs text-slate-400 border-t border-indigo-500/15 pt-2">
-                            Ketentuan: {b.terms}
-                          </p>
-                        )}
-                      </div>
-
-                      <button
-                        type="button"
-                        disabled={!canRedeem || redeemingId !== null}
-                        onClick={() => void handleRedeem(b)}
-                        className="w-full h-[46px] rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 text-sm font-semibold text-white hover:from-blue-500 hover:to-purple-500 disabled:bg-none disabled:bg-slate-800 disabled:text-slate-500 transition-all"
-                      >
-                        {redeemingId === b.id ? 'Memproses Redeem...' : buttonLabel}
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* Redemption History */}
-            <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 sm:p-6 space-y-4">
-              <h2 className="font-display text-lg font-bold text-white">Riwayat Redemption</h2>
-              {myRedemptions.length === 0 ? (
-                <p className="text-sm text-slate-400">Belum ada pengajuan redemption.</p>
-              ) : (
-                <div className="divide-y divide-indigo-500/15">
-                  {myRedemptions.map((rd) => (
-                    <div key={rd.id} className="py-3.5 flex items-center justify-between gap-4">
-                      <div>
-                        <p className="text-sm font-semibold text-white">{rd.benefitName}</p>
-                        <p className="text-xs text-slate-400">
-                          {rd.xpCostSnapshot} XP · {formatJakartaDateTime(rd.createdAt)} WIB
-                        </p>
-                        {rd.denialReason && (
-                          <p className="text-xs text-rose-400">Alasan: {rd.denialReason}</p>
-                        )}
-                      </div>
-                      <span
-                        className={`text-xs font-mono font-bold ${
-                          rd.status === 'APPROVED'
-                            ? 'text-emerald-400'
-                            : rd.status === 'DENIED'
-                              ? 'text-rose-400'
-                              : 'text-amber-300'
-                        }`}
-                      >
-                        {rd.status}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* HISTORY TAB */}
+        {/* 3. HISTORY TAB */}
         {activeTab === 'history' && (
           <div className="space-y-5">
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
               <div>
-                <h1 className="font-display text-2xl font-bold text-white">Riwayat &amp; Ledger Member</h1>
+                <h1 className="font-display text-2xl font-bold text-white">Riwayat &amp; Ledger XP</h1>
                 <p className="text-sm text-slate-300">
-                  Seluruh mutasi XP Progress, XP Reward, Transaksi, dan Referral tercatat permanen.
+                  Catatan transparan XP bertambah, ditahan (hold), dikembalikan (refund), dan transaksi.
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 {(
                   [
-                    ['xpProgress', 'XP Progress'],
                     ['xpReward', 'XP Reward'],
+                    ['xpProgress', 'XP Progress'],
                     ['transactions', 'Transaksi'],
                     ['referrals', 'Referral'],
                     ['levels', 'Level Up'],
@@ -867,19 +1045,31 @@ export function MemberDashboardPage() {
                   {activeHistoryItems.map((item, idx) => {
                     if (historyKind === 'xpProgress' || historyKind === 'xpReward') {
                       const entry = item as XpLedgerEntry;
+                      const mov = classifyXpLedgerMovement(entry);
+                      const movLabel = getXpLedgerMovementLabel(entry);
+                      const amountColor =
+                        mov === 'REFUND'
+                          ? 'text-purple-300'
+                          : entry.amount >= 0
+                            ? 'text-emerald-400'
+                            : 'text-rose-400';
+
                       return (
                         <div key={entry.id || idx} className="p-4 flex items-center justify-between gap-4">
                           <div className="space-y-0.5 min-w-0">
                             <p className="text-sm font-semibold text-white">{entry.note}</p>
                             <p className="text-xs text-slate-400">
-                              {entry.source} · {entry.branch ? getBranchLabel(entry.branch) : 'Sistem'} · Cycle {entry.cycleId} · {formatJakartaDateTime(entry.createdAt)} WIB
+                              <span className="text-sky-300">{movLabel}</span> · {entry.source} ·{' '}
+                              {entry.branch ? getBranchLabel(entry.branch) : 'Sistem'} ·{' '}
+                              {formatJakartaDateTime(entry.createdAt)} WIB
                             </p>
+                            {typeof entry.beforeBalance === 'number' && typeof entry.afterBalance === 'number' && (
+                              <p className="text-[11px] font-mono text-slate-500 tabular-nums">
+                                Saldo: {entry.beforeBalance} XP → {entry.afterBalance} XP
+                              </p>
+                            )}
                           </div>
-                          <span
-                            className={`font-mono text-sm font-bold tabular-nums shrink-0 ${
-                              entry.amount >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                            }`}
-                          >
+                          <span className={`font-mono text-sm font-bold tabular-nums shrink-0 ${amountColor}`}>
                             {entry.amount >= 0 ? `+${entry.amount}` : entry.amount} XP
                           </span>
                         </div>
@@ -908,9 +1098,7 @@ export function MemberDashboardPage() {
                       return (
                         <div key={ref.id || idx} className="p-4 flex items-center justify-between gap-4">
                           <div>
-                            <p className="text-sm font-semibold text-white">
-                              Mengajak @{ref.refereeUsername}
-                            </p>
+                            <p className="text-sm font-semibold text-white">Mengajak @{ref.refereeUsername}</p>
                             <p className="text-xs text-slate-400">{formatJakartaDateTime(ref.createdAt)} WIB</p>
                           </div>
                           <span className="font-mono text-sm font-bold text-purple-300 tabular-nums">
@@ -920,17 +1108,11 @@ export function MemberDashboardPage() {
                       );
                     }
                     const lh = item as LevelHistoryRecord;
-                    const transitionPrefix =
-                      lh.source === 'ADMIN_MANUAL_OVERRIDE'
-                        ? 'Override Level'
-                        : lh.source === 'ADMIN_RECALCULATE'
-                          ? 'Rekalkulasi Level'
-                          : 'Perubahan Level';
                     return (
                       <div key={lh.id || idx} className="p-4 flex items-center justify-between gap-4">
                         <div>
                           <p className="text-sm font-semibold text-white">
-                            {transitionPrefix}: {lh.fromLevel} → {lh.toLevel}
+                            Perubahan Level: {lh.fromLevel} → {lh.toLevel}
                           </p>
                           <p className="text-xs text-slate-400">
                             XP Progress: {lh.xpProgressAtEvent} XP · {formatJakartaDateTime(lh.createdAt)} WIB
@@ -959,7 +1141,7 @@ export function MemberDashboardPage() {
           </div>
         )}
 
-        {/* PROFILE & NOTIFICATIONS TAB */}
+        {/* 4. PROFILE & NOTIFICATIONS TAB */}
         {activeTab === 'profile' && (
           <div className="grid lg:grid-cols-12 gap-6">
             <div className="lg:col-span-7 bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 sm:p-6 space-y-4">
@@ -1001,23 +1183,25 @@ export function MemberDashboardPage() {
               <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 sm:p-6 space-y-4">
                 <h2 className="font-display text-lg font-bold text-white">Profil &amp; Pengaturan</h2>
                 <form onSubmit={handleSaveProfile} className="space-y-3.5">
-                  <div>
-                    <label className="block text-xs font-medium text-slate-400 mb-1">Username (Tetap)</label>
-                    <input
-                      type="text"
-                      disabled
-                      value={`@${memberProfile.username}`}
-                      className="w-full h-[44px] rounded-xl border border-indigo-500/20 bg-[#070B19]/60 px-3 text-sm font-mono text-slate-400"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-400 mb-1">Nomor WhatsApp</label>
-                    <input
-                      type="text"
-                      disabled
-                      value={memberProfile.whatsapp}
-                      className="w-full h-[44px] rounded-xl border border-indigo-500/20 bg-[#070B19]/60 px-3 text-sm font-mono text-slate-400"
-                    />
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-400 mb-1">Username</label>
+                      <input
+                        type="text"
+                        disabled
+                        value={`@${memberProfile.username}`}
+                        className="w-full h-[44px] rounded-xl border border-indigo-500/20 bg-[#070B19]/60 px-3 text-xs font-mono text-slate-400"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-400 mb-1">WhatsApp</label>
+                      <input
+                        type="text"
+                        disabled
+                        value={memberProfile.whatsapp}
+                        className="w-full h-[44px] rounded-xl border border-indigo-500/20 bg-[#070B19]/60 px-3 text-xs font-mono text-slate-400"
+                      />
+                    </div>
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-slate-300 mb-1">Nama Lengkap</label>
@@ -1028,6 +1212,37 @@ export function MemberDashboardPage() {
                       onChange={(e) => setEditFullName(e.target.value)}
                       className="w-full h-[44px] rounded-xl border border-indigo-500/30 bg-[#070B19] px-3 text-sm text-white focus:border-sky-400 focus:outline-none"
                     />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-300 mb-1">
+                        Tanggal Lahir ({formatBirthDateJakarta(memberProfile.birthDate)})
+                      </label>
+                      <input
+                        type="date"
+                        max={todayJakarta}
+                        value={editBirthDate}
+                        onChange={(e) => setEditBirthDate(e.target.value)}
+                        className="w-full h-[44px] rounded-xl border border-indigo-500/30 bg-[#070B19] px-3 text-xs font-mono text-white focus:border-sky-400 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-slate-300 mb-1">
+                        Status ({getMemberCategoryLabel(memberProfile.memberCategory)})
+                      </label>
+                      <select
+                        value={editCategory}
+                        onChange={(e) => setEditCategory(e.target.value as MemberCategory | '')}
+                        className="w-full h-[44px] rounded-xl border border-indigo-500/30 bg-[#070B19] px-3 text-sm text-white focus:border-sky-400 focus:outline-none"
+                      >
+                        <option value="">-- Pilih Status --</option>
+                        {MEMBER_CATEGORIES.map((c) => (
+                          <option key={c.value} value={c.value}>
+                            {c.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
                   <div>
                     <label className="block text-xs font-medium text-slate-300 mb-1">Sosial Media</label>
@@ -1090,30 +1305,89 @@ export function MemberDashboardPage() {
         )}
       </main>
 
-      {/* Claim XP Bottom-Sheet / Modal */}
-      {claimTarget && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+      {/* Benefit Request Confirmation Modal (Immediate XP Hold Transparency) */}
+      {benefitConfirmTarget && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="w-full sm:max-w-md bg-[#0B1124] rounded-t-3xl sm:rounded-2xl border border-indigo-500/35 p-5 sm:p-6 space-y-4">
+            <div className="sm:hidden w-10 h-1.5 rounded-full bg-slate-700 mx-auto mb-1" />
+            <div>
+              <p className="text-xs font-mono text-purple-300">
+                {benefitConfirmTarget.xpCost > 0 ? 'Konfirmasi Penukaran XP' : 'Konfirmasi Benefit Level'}
+              </p>
+              <h2 className="font-display text-lg font-bold text-white mt-0.5">{benefitConfirmTarget.name}</h2>
+            </div>
+
+            <div className="rounded-xl bg-[#070B19] border border-indigo-500/20 p-4 space-y-2 text-xs">
+              <div className="flex justify-between">
+                <span className="text-slate-400">XP Reward Tersedia Saat Ini</span>
+                <span className="font-mono font-bold text-white tabular-nums">{memberProfile.xpReward} XP</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-400">Biaya Benefit (Hold Langsung)</span>
+                <span className="font-mono font-bold text-amber-300 tabular-nums">
+                  {benefitConfirmTarget.xpCost > 0 ? `-${benefitConfirmTarget.xpCost} XP` : '0 XP (Gratis)'}
+                </span>
+              </div>
+              <div className="flex justify-between pt-2 border-t border-indigo-500/15">
+                <span className="text-slate-300">Sisa XP Reward Tersedia</span>
+                <span className="font-mono font-bold text-sky-300 tabular-nums">
+                  {memberProfile.xpReward - benefitConfirmTarget.xpCost} XP
+                </span>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              {benefitConfirmTarget.xpCost > 0
+                ? 'XP Reward akan langsung ditahan (Hold) saat diajukan. XP Progress & Level Anda tidak berkurang. Jika ditolak Admin, XP otomatis dikembalikan 100%. Setelah disetujui, benefit berlaku 7 hari.'
+                : 'Pengajuan benefit level akan dikirim ke Admin untuk verifikasi. Setelah disetujui, benefit berlaku 7 hari dan dapat dipakai di kasir.'}
+            </p>
+
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                disabled={submittingRequest}
+                onClick={() => setBenefitConfirmTarget(null)}
+                className="flex-1 h-[46px] rounded-xl border border-indigo-500/30 text-sm font-semibold text-slate-300 hover:text-white disabled:opacity-40"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={submittingRequest}
+                onClick={() => void handleConfirmBenefitRequest()}
+                className="flex-1 h-[46px] rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 text-sm font-semibold text-white hover:from-blue-500 hover:to-purple-500 disabled:opacity-50"
+              >
+                {submittingRequest ? 'Mengirim...' : 'Konfirmasi & Ajukan'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Campaign Benefit Request Modal (Challenge / Event / Promo) */}
+      {campaignTarget && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
           <div className="w-full sm:max-w-md bg-[#0B1124] rounded-t-3xl sm:rounded-2xl border border-indigo-500/35 p-5 sm:p-6 space-y-4">
             <div className="sm:hidden w-10 h-1.5 rounded-full bg-slate-700 mx-auto mb-1" />
             <div className="flex items-start justify-between gap-4">
               <div>
                 <p className="text-xs font-medium text-sky-300 font-mono">
-                  {claimTarget.type} · +{claimTarget.xpReward} XP
+                  {campaignTarget.type} · +{campaignTarget.xpReward} XP
                 </p>
-                <h2 className="font-display text-lg font-bold text-white">{claimTarget.title}</h2>
+                <h2 className="font-display text-lg font-bold text-white">{campaignTarget.title}</h2>
               </div>
               <button
                 type="button"
-                disabled={submittingClaim}
-                onClick={() => setClaimTarget(null)}
+                disabled={submittingRequest}
+                onClick={() => setCampaignTarget(null)}
                 className="min-h-[36px] px-2 text-xs font-semibold text-slate-400 hover:text-white disabled:opacity-40"
               >
                 Tutup
               </button>
             </div>
 
-            <form onSubmit={handleClaimSubmit} className="space-y-4">
-              {claimTarget.requiresEvidence && (
+            <form onSubmit={handleCampaignRequestSubmit} className="space-y-4">
+              {campaignTarget.requiresEvidence && (
                 <div>
                   <label className="block text-xs font-medium text-slate-300 mb-1.5">
                     Upload Bukti Foto (JPG/PNG/WEBP, maks. 5 MB) *
@@ -1121,13 +1395,13 @@ export function MemberDashboardPage() {
                   <label className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-indigo-500/35 bg-[#070B19] p-4 cursor-pointer hover:border-sky-400/60 transition-colors">
                     <Upload className="w-5 h-5 text-sky-300 mb-1.5" />
                     <span className="text-xs font-medium text-slate-200 text-center">
-                      {claimFile ? claimFile.name : 'Pilih foto dari galeri / kamera'}
+                      {evidenceFile ? evidenceFile.name : 'Pilih foto dari galeri / kamera'}
                     </span>
                     <input
                       type="file"
                       accept="image/jpeg,image/png,image/webp"
                       className="hidden"
-                      onChange={(e) => setClaimFile(e.target.files?.[0] || null)}
+                      onChange={(e) => setEvidenceFile(e.target.files?.[0] || null)}
                     />
                   </label>
                 </div>
@@ -1139,8 +1413,8 @@ export function MemberDashboardPage() {
                 </label>
                 <textarea
                   rows={3}
-                  value={claimNote}
-                  onChange={(e) => setClaimNote(e.target.value)}
+                  value={requestNote}
+                  onChange={(e) => setRequestNote(e.target.value)}
                   placeholder="Contoh: Sudah follow & tag story IG @xpplay"
                   className="w-full rounded-xl border border-indigo-500/30 bg-[#070B19] p-3 text-sm text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
                 />
@@ -1149,18 +1423,18 @@ export function MemberDashboardPage() {
               <div className="flex items-center gap-3">
                 <button
                   type="button"
-                  disabled={submittingClaim}
-                  onClick={() => setClaimTarget(null)}
+                  disabled={submittingRequest}
+                  onClick={() => setCampaignTarget(null)}
                   className="flex-1 h-[46px] rounded-xl border border-indigo-500/30 text-sm font-semibold text-slate-300 hover:text-white disabled:opacity-40"
                 >
                   Batal
                 </button>
                 <button
                   type="submit"
-                  disabled={submittingClaim}
+                  disabled={submittingRequest}
                   className="flex-1 h-[46px] rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 text-sm font-semibold text-white hover:from-blue-500 hover:to-purple-500 disabled:opacity-50"
                 >
-                  {submittingClaim ? 'Mengirim...' : 'Kirim Claim'}
+                  {submittingRequest ? 'Mengirim...' : 'Kirim Pengajuan'}
                 </button>
               </div>
             </form>
@@ -1168,16 +1442,15 @@ export function MemberDashboardPage() {
         </div>
       )}
 
-      {/* Mobile Bottom Tab Bar (<= 15% viewport height, 44px+ hitboxes) */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#070B1A]/95 backdrop-blur-md border-t border-indigo-500/25 grid grid-cols-5 h-16">
+      {/* Mobile Bottom Tab Bar — Clean 4-Tab Navigation (44px+ hitboxes) */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#070B1A]/95 backdrop-blur-md border-t border-indigo-500/25 grid grid-cols-4 h-16">
         {(
           [
             ['overview', 'Home', Home],
-            ['programs', 'Program', Sparkles],
             ['benefits', 'Benefit', Gift],
             ['history', 'Riwayat', History],
             ['profile', 'Profil', unreadNotifs > 0 ? Bell : UserIcon],
-          ] as [MemberTab, string, typeof Award][]
+          ] as [MemberTab, string, typeof Home][]
         ).map(([id, label, Icon]) => {
           const active = activeTab === id;
           return (
@@ -1190,7 +1463,7 @@ export function MemberDashboardPage() {
               }`}
             >
               <Icon className={`w-5 h-5 ${active ? 'text-sky-300' : ''}`} />
-              <span className="text-[10px] mt-1 leading-none">{label}</span>
+              <span className="text-[11px] mt-1 leading-none">{label}</span>
             </button>
           );
         })}

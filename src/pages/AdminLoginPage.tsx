@@ -4,6 +4,7 @@ import { ArrowLeft, MailCheck, RefreshCw, ShieldCheck } from 'lucide-react';
 import { CaptchaWidget } from '../components/CaptchaWidget.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
 import { mapFriendlyError } from '../lib/firestoreError.ts';
+import { getDashboardRouteForRole } from '../shared/rbac.ts';
 
 type AdminAuthMode = 'login' | 'activate';
 
@@ -33,7 +34,7 @@ export function AdminLoginPage() {
 
   useEffect(() => {
     if (!loading && adminProfile) {
-      navigate('/admin', { replace: true });
+      navigate(getDashboardRouteForRole(adminProfile.role), { replace: true });
     }
   }, [loading, adminProfile, navigate]);
 

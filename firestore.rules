@@ -12,6 +12,10 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_.\\-:]+$');
     }
 
+    function isPreRegId(id) {
+      return id is string && id.size() >= 10 && id.size() <= 80 && id.matches('^pre_[0-9]+_[a-f0-9]+$');
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -44,9 +48,15 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/admins/$(request.auth.uid)).data;
     }
 
+    // Strictly ADMIN and SUPER_ADMIN (NEVER includes CASHIER / STAFF)
     function isAdmin() {
       return isBootstrappedSuperAdmin()
-        || (isVerifiedEmailUser() && adminDocExists() && adminData().active == true);
+        || (
+          isVerifiedEmailUser()
+          && adminDocExists()
+          && adminData().active == true
+          && adminData().role in ['SUPER_ADMIN', 'ADMIN']
+        );
     }
 
     function isSuperAdmin() {
@@ -55,8 +65,24 @@ service cloud.firestore {
     }
 
     function isFullAdminOrSuper() {
-      return isBootstrappedSuperAdmin()
-        || (isAdmin() && (adminData().role == 'SUPER_ADMIN' || adminData().role == 'ADMIN'));
+      return isAdmin();
+    }
+
+    // Branch-isolated CASHIER (and legacy STAFF alias) — MUST have fixed branchScope DEMANG or SEKIP
+    function isCashier() {
+      return isVerifiedEmailUser()
+        && adminDocExists()
+        && adminData().active == true
+        && adminData().role in ['CASHIER', 'STAFF']
+        && adminData().branchScope in ['DEMANG', 'SEKIP'];
+    }
+
+    function cashierBranch() {
+      return adminData().branchScope;
+    }
+
+    function isStaffOperator() {
+      return isFullAdminOrSuper() || isCashier();
     }
 
     function isOwner(uid) {
@@ -75,7 +101,11 @@ service cloud.firestore {
     function isActiveMember(uid) {
       return isSignedIn()
         && exists(/databases/$(database)/documents/members/$(uid))
-        && get(/databases/$(database)/documents/members/$(uid)).data.status == 'ACTIVE';
+        && get(/databases/$(database)/documents/members/$(uid)).data.status == 'ACTIVE'
+        && (
+          !('registrationStage' in get(/databases/$(database)/documents/members/$(uid)).data)
+          || get(/databases/$(database)/documents/members/$(uid)).data.registrationStage == 'COMPLETED'
+        );
     }
 
     function regBonusSetting() {
@@ -94,6 +124,10 @@ service cloud.firestore {
       return id is string && id.size() == 66 && id.matches('^[uw]_[a-f0-9]{64}$');
     }
 
+    function isValidWhatsappHash(id) {
+      return id is string && id.size() == 66 && id.matches('^w_[a-f0-9]{64}$');
+    }
+
     function isValidAuthIndex(data) {
       return data.keys().hasAll(['uid', 'authEmail', 'kind', 'createdAt'])
         && data.keys().hasOnly(['uid', 'authEmail', 'kind', 'createdAt'])
@@ -102,6 +136,45 @@ service cloud.firestore {
         && data.authEmail.matches('^m_[a-zA-Z0-9_\\-]+@member\\.xpplay\\.app$')
         && data.kind in ['USERNAME', 'WHATSAPP']
         && data.createdAt is int;
+    }
+
+    function isValidOnboardingPublicStatus(data) {
+      return data.keys().hasAll(['status', 'hasActiveCode', 'branchId', 'updatedAt'])
+        && data.keys().hasOnly(['status', 'hasActiveCode', 'branchId', 'updatedAt'])
+        && data.status in ['PRE_REGISTERED', 'ACTIVE', 'SUSPENDED', 'INACTIVE', 'DELETED']
+        && data.hasActiveCode is bool
+        && (data.branchId == null || data.branchId in ['DEMANG', 'SEKIP'])
+        && data.updatedAt is int;
+    }
+
+    function isValidOnboardingVerification(data) {
+      return data.keys().hasAll([
+          'wHash', 'preMemberUid', 'memberId', 'branchId',
+          'codeHmac', 'codeSalt', 'status', 'used',
+          'attempts', 'maxAttempts', 'expiresAt',
+          'issuedBy', 'issuedByRole', 'issuedAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'wHash', 'preMemberUid', 'memberId', 'branchId',
+          'codeHmac', 'codeSalt', 'status', 'used',
+          'attempts', 'maxAttempts', 'expiresAt',
+          'issuedBy', 'issuedByRole', 'issuedAt', 'updatedAt'
+        ])
+        && isValidWhatsappHash(data.wHash)
+        && data.preMemberUid is string && data.preMemberUid.size() >= 1 && data.preMemberUid.size() <= 128
+        && data.memberId is string && data.memberId.size() >= 4 && data.memberId.size() <= 40
+        && data.branchId in ['DEMANG', 'SEKIP']
+        && data.codeHmac is string && data.codeHmac.size() <= 128
+        && data.codeSalt is string && data.codeSalt.size() <= 128
+        && data.status in ['PENDING', 'VERIFIED', 'USED', 'REVOKED', 'EXPIRED']
+        && data.used is bool
+        && data.attempts is int && data.attempts >= 0 && data.attempts <= 20
+        && data.maxAttempts is int && data.maxAttempts >= 1 && data.maxAttempts <= 10
+        && data.expiresAt is int
+        && data.issuedBy is string && data.issuedBy.size() >= 1 && data.issuedBy.size() <= 128
+        && data.issuedByRole in ['SUPER_ADMIN', 'ADMIN', 'CASHIER', 'STAFF']
+        && data.issuedAt is int
+        && data.updatedAt is int;
     }
 
     // ---------- Entity Validation Helpers ----------
@@ -136,7 +209,7 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'id', 'transactionXpRate', 'registrationBonusXp', 'referralBonusXp',
-          'currentCycleId', 'resetEnabled', 'resetInterval', 'resetUnit',
+          'refundOnExpiry', 'currentCycleId', 'resetEnabled', 'resetInterval', 'resetUnit',
           'nextResetAt', 'resetXpProgress', 'resetLevel', 'resetXpReward',
           'updatedAt', 'updatedBy'
         ])
@@ -144,6 +217,7 @@ service cloud.firestore {
         && data.transactionXpRate is int && data.transactionXpRate >= 100 && data.transactionXpRate <= 10000000
         && data.registrationBonusXp is int && data.registrationBonusXp >= 0 && data.registrationBonusXp <= 10000
         && data.referralBonusXp is int && data.referralBonusXp >= 0 && data.referralBonusXp <= 10000
+        && (!('refundOnExpiry' in data) || data.refundOnExpiry is bool)
         && data.currentCycleId is string && data.currentCycleId.size() >= 2 && data.currentCycleId.size() <= 64
         && data.resetEnabled is bool
         && data.resetInterval is int && data.resetInterval >= 1 && data.resetInterval <= 3650
@@ -162,21 +236,27 @@ service cloud.firestore {
           'permissions', 'active', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'uid', 'email', 'fullName', 'role', 'branchScope',
+          'uid', 'email', 'fullName', 'role', 'branchScope', 'branchId', 'cashierCode',
           'permissions', 'active', 'createdAt', 'updatedAt'
         ])
         && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128
         && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
         && data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 100
-        && data.role in ['SUPER_ADMIN', 'ADMIN', 'STAFF']
-        && data.branchScope in ['ALL', 'DEMANG', 'SEKIP']
+        && data.role in ['SUPER_ADMIN', 'ADMIN', 'CASHIER', 'STAFF']
+        && (
+          data.role in ['CASHIER', 'STAFF']
+            ? data.branchScope in ['DEMANG', 'SEKIP']
+            : data.branchScope in ['ALL', 'DEMANG', 'SEKIP']
+        )
+        && (!('branchId' in data) || data.branchId == null || data.branchId in ['DEMANG', 'SEKIP'])
+        && (!('cashierCode' in data) || data.cashierCode == null || (data.cashierCode is string && data.cashierCode.size() <= 40))
         && data.permissions is map
         && data.active is bool
         && data.createdAt is int
         && data.updatedAt is int;
     }
 
-    function isValidMemberProfile(data) {
+    function isValidMemberProfileCore(data) {
       return data.keys().hasAll([
           'uid', 'memberId', 'fullName', 'username', 'whatsapp',
           'socialMedia', 'status', 'xpProgress', 'xpReward',
@@ -186,7 +266,13 @@ service cloud.firestore {
         ])
         && data.keys().hasOnly([
           'uid', 'memberId', 'fullName', 'username', 'whatsapp',
-          'socialMedia', 'status', 'xpProgress', 'xpReward',
+          'socialMedia', 'birthDate', 'birthMonth', 'birthDay', 'memberCategory',
+          'status', 'registrationStatus', 'registrationStage',
+          'phone', 'normalizedPhone', 'branchId',
+          'preRegisteredAt', 'preRegisteredBy', 'preRegisteredByRole', 'preRegistrationNotes',
+          'registrationCompletedAt', 'verifiedPhoneAt', 'registrationBonusGranted',
+          'authUid', 'migratedFromUid', 'mergedIntoUid',
+          'xpProgress', 'xpReward', 'reservedXp',
           'currentLevel', 'levelMode', 'currentCycleId', 'referredByUid',
           'referredByUsername', 'referralCount', 'lastPlayAt',
           'lastPlayBranch', 'preferredBranch', 'createdAt', 'updatedAt'
@@ -194,14 +280,43 @@ service cloud.firestore {
         && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128
         && data.memberId is string && data.memberId.size() >= 4 && data.memberId.size() <= 40
         && data.fullName is string && data.fullName.size() >= 2 && data.fullName.size() <= 100
-        && data.username is string && data.username.size() >= 3 && data.username.size() <= 24
-        && data.username.matches('^[a-z0-9][a-z0-9._]*[a-z0-9]$')
+        && data.username is string
+        && (
+          (data.status in ['PRE_REGISTERED', 'DELETED'] && data.username == '')
+          || (
+            data.username.size() >= 3 && data.username.size() <= 24
+            && data.username.matches('^[a-z0-9][a-z0-9._]*[a-z0-9]$')
+          )
+        )
         && data.whatsapp is string && data.whatsapp.size() >= 10 && data.whatsapp.size() <= 16
         && data.whatsapp.matches('^628[1-9][0-9]{6,11}$')
         && data.socialMedia is string && data.socialMedia.size() <= 100
-        && data.status in ['ACTIVE', 'SUSPENDED', 'INACTIVE', 'DELETED']
+        && (!('birthDate' in data) || data.birthDate == null || (data.birthDate is string && data.birthDate.matches('^\\d{4}-\\d{2}-\\d{2}$')))
+        && (!('birthMonth' in data) || data.birthMonth == null || (data.birthMonth is int && data.birthMonth >= 1 && data.birthMonth <= 12))
+        && (!('birthDay' in data) || data.birthDay == null || (data.birthDay is int && data.birthDay >= 1 && data.birthDay <= 31))
+        && (!('memberCategory' in data) || data.memberCategory == null || data.memberCategory in ['MAHASISWA', 'PELAJAR', 'PEKERJA', 'LAINNYA'])
+        && data.status in ['PRE_REGISTERED', 'ACTIVE', 'SUSPENDED', 'INACTIVE', 'DELETED'];
+    }
+
+    function isValidMemberProfileExtended(data) {
+      return (!('registrationStatus' in data) || data.registrationStatus in ['PRE_REGISTERED', 'ACTIVE', 'SUSPENDED', 'INACTIVE', 'DELETED'])
+        && (!('registrationStage' in data) || data.registrationStage in ['PHONE_ONLY', 'COMPLETED'])
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 20))
+        && (!('normalizedPhone' in data) || (data.normalizedPhone is string && data.normalizedPhone.size() <= 20))
+        && (!('branchId' in data) || data.branchId == null || data.branchId in ['DEMANG', 'SEKIP'])
+        && (!('preRegisteredAt' in data) || data.preRegisteredAt == null || data.preRegisteredAt is int)
+        && (!('preRegisteredBy' in data) || data.preRegisteredBy == null || (data.preRegisteredBy is string && data.preRegisteredBy.size() <= 128))
+        && (!('preRegisteredByRole' in data) || data.preRegisteredByRole == null || data.preRegisteredByRole in ['SUPER_ADMIN', 'ADMIN', 'CASHIER', 'STAFF'])
+        && (!('preRegistrationNotes' in data) || data.preRegistrationNotes == null || (data.preRegistrationNotes is string && data.preRegistrationNotes.size() <= 300))
+        && (!('registrationCompletedAt' in data) || data.registrationCompletedAt == null || data.registrationCompletedAt is int)
+        && (!('verifiedPhoneAt' in data) || data.verifiedPhoneAt == null || data.verifiedPhoneAt is int)
+        && (!('registrationBonusGranted' in data) || data.registrationBonusGranted is bool)
+        && (!('authUid' in data) || data.authUid == null || (data.authUid is string && data.authUid.size() <= 128))
+        && (!('migratedFromUid' in data) || data.migratedFromUid == null || (data.migratedFromUid is string && data.migratedFromUid.size() <= 128))
+        && (!('mergedIntoUid' in data) || data.mergedIntoUid == null || (data.mergedIntoUid is string && data.mergedIntoUid.size() <= 128))
         && data.xpProgress is int && data.xpProgress >= 0
         && data.xpReward is int && data.xpReward >= 0
+        && (!('reservedXp' in data) || (data.reservedXp is int && data.reservedXp >= 0))
         && data.currentLevel in ['BRONZE', 'SILVER', 'JURAGAN', 'SULTAN']
         && (!('levelMode' in data) || data.levelMode in ['AUTOMATIC', 'MANUAL_OVERRIDE', 'RESET'])
         && data.currentCycleId is string && data.currentCycleId.size() >= 2 && data.currentCycleId.size() <= 64
@@ -213,6 +328,38 @@ service cloud.firestore {
         && (data.preferredBranch == null || data.preferredBranch in ['DEMANG', 'SEKIP'])
         && data.createdAt is int
         && data.updatedAt is int;
+    }
+
+    function isValidMemberProfile(data) {
+      return isValidMemberProfileCore(data) && isValidMemberProfileExtended(data);
+    }
+
+    function isValidTransaction(data) {
+      return data.keys().hasAll([
+          'id', 'memberId', 'memberUid', 'memberUsername', 'branch',
+          'amountIdr', 'xpRateUsed', 'xpGenerated', 'source',
+          'receiptNumber', 'note', 'adminId', 'adminName', 'cycleId', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'memberId', 'memberUid', 'memberUsername', 'branch',
+          'amountIdr', 'xpRateUsed', 'xpGenerated', 'source',
+          'receiptNumber', 'note', 'adminId', 'adminName', 'cycleId', 'createdAt'
+        ])
+        && data.id is string && data.id.size() >= 1 && data.id.size() <= 128
+        && data.memberId is string && data.memberId.size() >= 4 && data.memberId.size() <= 40
+        && data.memberUid is string && data.memberUid.size() >= 1 && data.memberUid.size() <= 128
+        && data.memberUsername is string && data.memberUsername.size() <= 24
+        && data.branch in ['DEMANG', 'SEKIP']
+        && data.amountIdr is int && data.amountIdr > 0 && data.amountIdr <= 1000000000
+        && data.xpRateUsed is int && data.xpRateUsed >= 100 && data.xpRateUsed <= 10000000
+        && data.xpGenerated is int && data.xpGenerated >= 0 && data.xpGenerated <= 500000
+        && data.source == 'TRANSACTION'
+        && data.receiptNumber is string && data.receiptNumber.size() <= 64
+        && data.note is string && data.note.size() <= 300
+        && data.adminId is string && data.adminId.size() >= 1 && data.adminId.size() <= 128
+        && data.adminName is string && data.adminName.size() >= 1 && data.adminName.size() <= 100
+        && data.cycleId is string && data.cycleId.size() >= 2 && data.cycleId.size() <= 64
+        && data.createdAt is int;
     }
 
     function isValidBenefit(data) {
@@ -305,7 +452,7 @@ service cloud.firestore {
         && data.note is string && data.note.size() <= 400
         && data.status in ['ON_PROCESS', 'APPROVED', 'DENIED']
         && (data.reviewedBy == null || (data.reviewedBy is string && data.reviewedBy.size() <= 128))
-        && (data.reviewerRole == null || data.reviewerRole in ['SUPER_ADMIN', 'ADMIN', 'STAFF'])
+        && (data.reviewerRole == null || data.reviewerRole in ['SUPER_ADMIN', 'ADMIN', 'CASHIER', 'STAFF'])
         && (data.reviewedAt == null || data.reviewedAt is int)
         && (data.denialReason == null || (data.denialReason is string && data.denialReason.size() <= 300))
         && data.cycleId is string && data.cycleId.size() >= 2 && data.cycleId.size() <= 64
@@ -336,11 +483,80 @@ service cloud.firestore {
         && data.redemptionKind in ['XP_REWARD', 'LEVEL_BENEFIT']
         && data.status in ['ON_PROCESS', 'APPROVED', 'DENIED']
         && (data.reviewedBy == null || (data.reviewedBy is string && data.reviewedBy.size() <= 128))
-        && (data.reviewerRole == null || data.reviewerRole in ['SUPER_ADMIN', 'ADMIN', 'STAFF'])
+        && (data.reviewerRole == null || data.reviewerRole in ['SUPER_ADMIN', 'ADMIN', 'CASHIER', 'STAFF'])
         && (data.reviewedAt == null || data.reviewedAt is int)
         && (data.denialReason == null || (data.denialReason is string && data.denialReason.size() <= 300))
         && data.cycleId is string && data.cycleId.size() >= 2 && data.cycleId.size() <= 64
         && data.createdAt is int;
+    }
+
+    function isValidBenefitRequestCore(data) {
+      return data.keys().hasAll([
+          'id', 'memberId', 'memberUid', 'memberUsername', 'memberName', 'memberWhatsapp',
+          'sourceType', 'sourceId', 'title', 'xpCost', 'xpRewardGrant', 'levelRequirement',
+          'evidenceUrl', 'evidencePath', 'note', 'status', 'resolution',
+          'holdLedgerId', 'refundLedgerId', 'branch',
+          'approvedAt', 'approvedBy', 'approvedByRole',
+          'deniedAt', 'deniedBy', 'deniedReason',
+          'expiresAt', 'expiredAt', 'usedAt', 'usedBy', 'usedBranch', 'receiptReference',
+          'refundedAt', 'refundReason', 'refundedAmount', 'cycleId', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'memberId', 'memberUid', 'memberUsername', 'memberName', 'memberWhatsapp',
+          'sourceType', 'sourceId', 'title', 'xpCost', 'xpRewardGrant', 'levelRequirement',
+          'evidenceUrl', 'evidencePath', 'note', 'status', 'resolution',
+          'holdLedgerId', 'refundLedgerId', 'branch',
+          'approvedAt', 'approvedBy', 'approvedByRole',
+          'deniedAt', 'deniedBy', 'deniedReason',
+          'expiresAt', 'expiredAt', 'usedAt', 'usedBy', 'usedBranch', 'receiptReference',
+          'refundedAt', 'refundReason', 'refundedAmount', 'cycleId', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id.size() >= 1 && data.id.size() <= 128
+        && data.memberId is string && data.memberId.size() >= 4 && data.memberId.size() <= 40
+        && data.memberUid is string && data.memberUid.size() >= 1 && data.memberUid.size() <= 128
+        && data.memberUsername is string
+        && (data.memberUsername == '' || (data.memberUsername.size() >= 3 && data.memberUsername.size() <= 24))
+        && data.memberName is string && data.memberName.size() >= 1 && data.memberName.size() <= 120
+        && data.memberWhatsapp is string && data.memberWhatsapp.size() >= 8 && data.memberWhatsapp.size() <= 20
+        && data.sourceType in ['CHALLENGE', 'EVENT', 'PROMO', 'GENERAL_BENEFIT', 'LEVEL_BENEFIT']
+        && data.sourceId is string && data.sourceId.size() >= 1 && data.sourceId.size() <= 128
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 140
+        && data.xpCost is int && data.xpCost >= 0 && data.xpCost <= 1000000
+        && data.xpRewardGrant is int && data.xpRewardGrant >= 0 && data.xpRewardGrant <= 1000000
+        && data.levelRequirement in ['BRONZE', 'SILVER', 'JURAGAN', 'SULTAN']
+        && data.evidenceUrl is string && data.evidenceUrl.size() <= 500
+        && data.evidencePath is string && data.evidencePath.size() <= 500
+        && data.note is string && data.note.size() <= 400;
+    }
+
+    function isValidBenefitRequestLifecycle(data) {
+      return data.status in ['ON_PROCESS', 'APPROVED', 'DENIED', 'USED', 'EXPIRED', 'REFUNDED']
+        && (data.resolution == null || data.resolution in ['DENIED', 'EXPIRED'])
+        && (data.holdLedgerId == null || (data.holdLedgerId is string && data.holdLedgerId.size() <= 128))
+        && (data.refundLedgerId == null || (data.refundLedgerId is string && data.refundLedgerId.size() <= 128))
+        && (data.branch == null || data.branch in ['DEMANG', 'SEKIP'])
+        && (data.approvedAt == null || data.approvedAt is int)
+        && (data.approvedBy == null || (data.approvedBy is string && data.approvedBy.size() <= 128))
+        && (data.approvedByRole == null || data.approvedByRole in ['SUPER_ADMIN', 'ADMIN', 'CASHIER', 'STAFF'])
+        && (data.deniedAt == null || data.deniedAt is int)
+        && (data.deniedBy == null || (data.deniedBy is string && data.deniedBy.size() <= 128))
+        && (data.deniedReason == null || (data.deniedReason is string && data.deniedReason.size() <= 300))
+        && (data.expiresAt == null || data.expiresAt is int)
+        && (data.expiredAt == null || data.expiredAt is int)
+        && (data.usedAt == null || data.usedAt is int)
+        && (data.usedBy == null || (data.usedBy is string && data.usedBy.size() <= 128))
+        && (data.usedBranch == null || data.usedBranch in ['DEMANG', 'SEKIP'])
+        && (data.receiptReference == null || (data.receiptReference is string && data.receiptReference.size() <= 100))
+        && (data.refundedAt == null || data.refundedAt is int)
+        && (data.refundReason == null || (data.refundReason is string && data.refundReason.size() <= 400))
+        && data.refundedAmount is int && data.refundedAmount >= 0 && data.refundedAmount <= 1000000
+        && data.cycleId is string && data.cycleId.size() >= 2 && data.cycleId.size() <= 64
+        && data.createdAt is int
+        && data.updatedAt is int;
+    }
+
+    function isValidBenefitRequest(data) {
+      return isValidBenefitRequestCore(data) && isValidBenefitRequestLifecycle(data);
     }
 
     function isValidMemberNotification(data) {
@@ -356,7 +572,7 @@ service cloud.firestore {
         && data.memberId is string && data.memberId.size() >= 4 && data.memberId.size() <= 40
         && data.memberUid is string && data.memberUid.size() >= 1 && data.memberUid.size() <= 128
         && (data.notificationCampaignId == null || (data.notificationCampaignId is string && data.notificationCampaignId.size() <= 128))
-        && data.category in ['SYSTEM', 'LEVEL_UP', 'CLAIM', 'REDEMPTION', 'PROMO', 'INACTIVITY', 'RESET']
+        && data.category in ['SYSTEM', 'LEVEL_UP', 'CLAIM', 'REDEMPTION', 'BENEFIT_REQUEST', 'PROMO', 'INACTIVITY', 'RESET']
         && data.title is string && data.title.size() >= 1 && data.title.size() <= 140
         && data.message is string && data.message.size() >= 1 && data.message.size() <= 600
         && data.read is bool
@@ -622,7 +838,7 @@ service cloud.firestore {
         && (data.durationMs == null || (data.durationMs is int && data.durationMs >= 0))
         && data.createdBy is string && data.createdBy.size() >= 1 && data.createdBy.size() <= 128
         && data.createdByEmail is string && data.createdByEmail.size() <= 160
-        && data.createdByRole in ['SUPER_ADMIN', 'ADMIN', 'STAFF'];
+        && data.createdByRole in ['SUPER_ADMIN', 'ADMIN'];
     }
 
     function isValidSystemBackupMetrics(data) {
@@ -711,10 +927,10 @@ service cloud.firestore {
         && (data.restoreJobId == null || (data.restoreJobId is string && data.restoreJobId.size() <= 128))
         && (data.backupId == null || (data.backupId is string && data.backupId.size() <= 128))
         && (data.lockedBy == null || (data.lockedBy is string && data.lockedBy.size() <= 128))
-        && data.lockedByEmail == null
+        && (data.lockedByEmail == null || (data.lockedByEmail is string && data.lockedByEmail.size() <= 160))
         && (data.lockedAt == null || data.lockedAt is int)
         && data.updatedAt is int
-        && data.message is string && data.message.size() <= 300;
+        && data.message is string && data.message.size() <= 400;
     }
 
     function isValidBackupLock(data) {
@@ -778,15 +994,15 @@ service cloud.firestore {
 
     match /systemSettings/{settingId} {
       allow get: if isValidId(settingId) && isSignedIn();
-      allow list: if isAdmin();
+      allow list: if isFullAdminOrSuper();
       allow create, update: if isSuperAdmin() && isValidId(settingId) && isValidSystemSettings(incoming());
       allow delete: if isSuperAdminRestoring() && isValidId(settingId);
     }
 
-    // ---------- Admin RBAC Collection ----------
+    // ---------- Admin & Cashier RBAC Collection ----------
     match /admins/{uid} {
-      allow get: if isValidId(uid) && (isOwner(uid) || isAdmin());
-      allow list: if isAdmin();
+      allow get: if isValidId(uid) && (isOwner(uid) || isFullAdminOrSuper());
+      allow list: if isFullAdminOrSuper();
       allow create, update: if isSuperAdmin() && isValidId(uid) && isValidAdminUser(incoming());
       allow delete: if isSuperAdminRestoring() && isValidId(uid) && uid != request.auth.uid;
     }
@@ -807,107 +1023,277 @@ service cloud.firestore {
           isSignedIn()
           && !isSystemRestoreLocked()
           && !exists(/databases/$(database)/documents/authIndex/$(hashId))
-          && (isAdmin() || incoming().uid == request.auth.uid)
+          && (isFullAdminOrSuper() || incoming().uid == request.auth.uid)
         )
       );
       allow update: if isSuperAdminRestoring() && isValidAuthIndexHash(hashId) && isValidAuthIndex(incoming());
       allow delete: if isSuperAdminRestoring() && isValidAuthIndexHash(hashId);
     }
 
-    // ---------- Members Collection ----------
+    // ---------- Two-Step Onboarding Zero-PII Status & Cryptographic Verifications ----------
+    match /onboardingPublicStatus/{wHash} {
+      allow get: if isValidWhatsappHash(wHash);
+      allow list: if isSuperAdmin();
+      allow create, update: if isValidWhatsappHash(wHash) && isValidOnboardingPublicStatus(incoming()) && (
+        isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
+          isFullAdminOrSuper()
+          || (
+            isCashier()
+            && incoming().branchId == cashierBranch()
+            && incoming().status == 'PRE_REGISTERED'
+          ) || (
+            isSignedIn()
+            && incoming().status == 'ACTIVE'
+            && incoming().hasActiveCode == false
+            && existsAfter(/databases/$(database)/documents/members/$(request.auth.uid))
+          )
+        ))
+      );
+      allow delete: if isSuperAdminRestoring() && isValidWhatsappHash(wHash);
+    }
+
+    match /onboardingVerifications/{wHash} {
+      allow get: if isValidWhatsappHash(wHash) && (
+        isFullAdminOrSuper() || (isCashier() && existing().branchId == cashierBranch())
+      );
+      allow list: if isSuperAdmin();
+      allow create, update: if isValidWhatsappHash(wHash) && isValidOnboardingVerification(incoming()) && incoming().wHash == wHash && (
+        isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
+          isFullAdminOrSuper()
+          || (
+            isCashier()
+            && incoming().branchId == cashierBranch()
+            && incoming().issuedBy == request.auth.uid
+            && incoming().issuedByRole == adminData().role
+          )
+        ))
+      );
+      allow delete: if isSuperAdminRestoring() && isValidWhatsappHash(wHash);
+    }
+
+    // ---------- Members Collection (Two-Step Registration + Cashier Branch Isolation) ----------
     match /members/{uid} {
-      allow get: if isValidId(uid) && (isOwner(uid) || isAdmin());
-      allow list: if isAdmin();
+      allow get: if isValidId(uid) && (
+        isStaffOperator()
+        || (isOwner(uid) && existing().status != 'PRE_REGISTERED')
+        || (
+          isSignedIn()
+          && !exists(/databases/$(database)/documents/members/$(request.auth.uid))
+          && isPreRegId(uid)
+          && existing().status == 'PRE_REGISTERED'
+        )
+      );
+      allow list: if isStaffOperator();
       allow create: if isValidId(uid) && isValidMemberProfile(incoming()) && (
         isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
-          isAdmin() || (
-          isOwner(uid)
-          && !exists(/databases/$(database)/documents/members/$(uid))
-          && incoming().uid == uid
-          && incoming().status == 'ACTIVE'
-          && (!('levelMode' in incoming()) || incoming().levelMode == 'AUTOMATIC')
-          && (
-            incoming().currentLevel == 'BRONZE' || (
-              incoming().currentLevel in ['SILVER', 'JURAGAN', 'SULTAN']
-              && exists(/databases/$(database)/documents/levels/$(incoming().currentLevel))
-              && incoming().xpProgress >= get(/databases/$(database)/documents/levels/$(incoming().currentLevel)).data.minXp
+          isFullAdminOrSuper() || (
+            // Stage 1: Cashier Pre-Registration ONLY (branch-locked, 0 XP, NO bonus)
+            isCashier()
+            && isPreRegId(uid)
+            && incoming().uid == uid
+            && incoming().status == 'PRE_REGISTERED'
+            && (!('registrationStatus' in incoming()) || incoming().registrationStatus == 'PRE_REGISTERED')
+            && incoming().registrationStage == 'PHONE_ONLY'
+            && incoming().username == ''
+            && incoming().xpProgress == 0
+            && incoming().xpReward == 0
+            && (!('reservedXp' in incoming()) || incoming().reservedXp == 0)
+            && incoming().currentLevel == 'BRONZE'
+            && (!('levelMode' in incoming()) || incoming().levelMode == 'AUTOMATIC')
+            && incoming().branchId == cashierBranch()
+            && incoming().preRegisteredBy == request.auth.uid
+            && incoming().preRegisteredByRole == adminData().role
+            && (!('registrationBonusGranted' in incoming()) || incoming().registrationBonusGranted == false)
+            && incoming().referralCount == 0
+          ) || (
+            // Stage 2: Customer Online Completion ONLY from an existing PRE_REGISTERED record (BLOCKS public self-registration)
+            isOwner(uid)
+            && !exists(/databases/$(database)/documents/members/$(uid))
+            && incoming().uid == uid
+            && incoming().status == 'ACTIVE'
+            && (!('registrationStatus' in incoming()) || incoming().registrationStatus == 'ACTIVE')
+            && incoming().registrationStage == 'COMPLETED'
+            && incoming().registrationBonusGranted == true
+            && ('migratedFromUid' in incoming())
+            && isPreRegId(incoming().migratedFromUid)
+            && exists(/databases/$(database)/documents/members/$(incoming().migratedFromUid))
+            && get(/databases/$(database)/documents/members/$(incoming().migratedFromUid)).data.status == 'PRE_REGISTERED'
+            && incoming().whatsapp == get(/databases/$(database)/documents/members/$(incoming().migratedFromUid)).data.whatsapp
+            && incoming().memberId == get(/databases/$(database)/documents/members/$(incoming().migratedFromUid)).data.memberId
+            && getAfter(/databases/$(database)/documents/members/$(incoming().migratedFromUid)).data.status == 'DELETED'
+            && getAfter(/databases/$(database)/documents/members/$(incoming().migratedFromUid)).data.mergedIntoUid == uid
+            && (!('levelMode' in incoming()) || incoming().levelMode == 'AUTOMATIC')
+            && incoming().referralCount == 0
+            && (
+              incoming().currentLevel == 'BRONZE' || (
+                incoming().currentLevel in ['SILVER', 'JURAGAN', 'SULTAN']
+                && exists(/databases/$(database)/documents/levels/$(incoming().currentLevel))
+                && incoming().xpProgress >= get(/databases/$(database)/documents/levels/$(incoming().currentLevel)).data.minXp
+              )
+            )
+            && (
+              (
+                incoming().referredByUid == null
+                && incoming().referredByUsername == null
+                && incoming().xpProgress == (get(/databases/$(database)/documents/members/$(incoming().migratedFromUid)).data.xpProgress + regBonusSetting())
+                && incoming().xpReward == (get(/databases/$(database)/documents/members/$(incoming().migratedFromUid)).data.xpReward + regBonusSetting())
+              ) || (
+                incoming().referredByUid != null
+                && incoming().referredByUid != uid
+                && incoming().referredByUid != incoming().migratedFromUid
+                && incoming().referredByUsername != null
+                && exists(/databases/$(database)/documents/members/$(incoming().referredByUid))
+                && get(/databases/$(database)/documents/members/$(incoming().referredByUid)).data.status == 'ACTIVE'
+                && incoming().xpProgress == (get(/databases/$(database)/documents/members/$(incoming().migratedFromUid)).data.xpProgress + regBonusSetting() + refBonusSetting())
+                && incoming().xpReward == (get(/databases/$(database)/documents/members/$(incoming().migratedFromUid)).data.xpReward + regBonusSetting() + refBonusSetting())
+                && existsAfter(/databases/$(database)/documents/referrals/$('ref_' + uid))
+              )
             )
           )
-          && incoming().referralCount == 0
-          && incoming().lastPlayAt == null
-          && incoming().lastPlayBranch == null
-          && (
-            (
-              incoming().referredByUid == null
-              && incoming().referredByUsername == null
-              && incoming().xpProgress == regBonusSetting()
-              && incoming().xpReward == regBonusSetting()
-            ) || (
-              incoming().referredByUid != null
-              && incoming().referredByUid != uid
-              && incoming().referredByUsername != null
-              && exists(/databases/$(database)/documents/members/$(incoming().referredByUid))
-              && get(/databases/$(database)/documents/members/$(incoming().referredByUid)).data.status == 'ACTIVE'
-              && incoming().xpProgress == (regBonusSetting() + refBonusSetting())
-              && incoming().xpReward == (regBonusSetting() + refBonusSetting())
-              && existsAfter(/databases/$(database)/documents/referrals/$('ref_' + uid))
-            )
-          )
-        )))
+        ))
       );
       allow update: if isValidId(uid) && isValidMemberProfile(incoming()) && (
         isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
-          isAdmin() || (
-          isOwner(uid)
-          && isActiveMember(uid)
-          && incoming().uid == existing().uid
-          && incoming().memberId == existing().memberId
-          && incoming().username == existing().username
-          && incoming().whatsapp == existing().whatsapp
-          && incoming().status == existing().status
-          && incoming().xpProgress == existing().xpProgress
-          && incoming().xpReward == existing().xpReward
-          && incoming().currentLevel == existing().currentLevel
-          && incoming().currentCycleId == existing().currentCycleId
-          && incoming().referredByUid == existing().referredByUid
-          && incoming().referredByUsername == existing().referredByUsername
-          && incoming().referralCount == existing().referralCount
-          && incoming().lastPlayAt == existing().lastPlayAt
-          && incoming().lastPlayBranch == existing().lastPlayBranch
-          && incoming().createdAt == existing().createdAt
-          && incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'socialMedia', 'preferredBranch', 'updatedAt'])
-        ) || (
-          isSignedIn()
-          && uid != request.auth.uid
-          && existing().status == 'ACTIVE'
-          && !exists(/databases/$(database)/documents/members/$(request.auth.uid))
-          && existsAfter(/databases/$(database)/documents/members/$(request.auth.uid))
-          && existsAfter(/databases/$(database)/documents/referrals/$('ref_' + request.auth.uid))
-          && getAfter(/databases/$(database)/documents/members/$(request.auth.uid)).data.referredByUid == uid
-          && incoming().diff(existing()).affectedKeys().hasOnly(['xpProgress', 'xpReward', 'referralCount', 'updatedAt'])
-          && incoming().xpProgress == existing().xpProgress + refBonusSetting()
-          && incoming().xpReward == existing().xpReward + refBonusSetting()
-          && incoming().referralCount == existing().referralCount + 1
-        )))
+          isFullAdminOrSuper() || (
+            // Cashier Operational Action 1: Transaction XP (branch-locked, non-decreasing equal delta, never manual level override)
+            isCashier()
+            && existing().status in ['PRE_REGISTERED', 'ACTIVE']
+            && incoming().status == existing().status
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'xpProgress', 'xpReward', 'currentLevel', 'levelMode', 'lastPlayAt', 'lastPlayBranch', 'updatedAt'
+            ])
+            && incoming().lastPlayBranch == cashierBranch()
+            && incoming().xpProgress >= existing().xpProgress
+            && incoming().xpReward >= existing().xpReward
+            && (incoming().xpProgress - existing().xpProgress) == (incoming().xpReward - existing().xpReward)
+            && (!('levelMode' in incoming()) || incoming().levelMode == ('levelMode' in existing() ? existing().levelMode : 'AUTOMATIC'))
+          ) || (
+            // Cashier Operational Action 2: Assisted Benefit Request XP Hold
+            isCashier()
+            && existing().status in ['PRE_REGISTERED', 'ACTIVE']
+            && incoming().diff(existing()).affectedKeys().hasOnly(['xpReward', 'reservedXp', 'updatedAt'])
+            && incoming().xpReward >= 0
+            && incoming().xpReward < existing().xpReward
+            && incoming().reservedXp == (('reservedXp' in existing() ? existing().reservedXp : 0) + (existing().xpReward - incoming().xpReward))
+          ) || (
+            // Cashier Operational Action 3: Benefit Request Approve / Deny / Refund Release
+            isCashier()
+            && existing().status in ['PRE_REGISTERED', 'ACTIVE']
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'xpProgress', 'xpReward', 'currentLevel', 'levelMode', 'reservedXp', 'updatedAt'
+            ])
+            && (!('levelMode' in incoming()) || incoming().levelMode == ('levelMode' in existing() ? existing().levelMode : 'AUTOMATIC'))
+            && (
+              (
+                ('reservedXp' in existing())
+                && incoming().reservedXp <= existing().reservedXp
+                && incoming().xpProgress == existing().xpProgress
+                && incoming().xpReward >= existing().xpReward
+                && (incoming().xpReward - existing().xpReward) <= (existing().reservedXp - incoming().reservedXp)
+              ) || (
+                incoming().xpProgress > existing().xpProgress
+                && (incoming().xpProgress - existing().xpProgress) == (incoming().xpReward - existing().xpReward)
+              )
+            )
+          ) || (
+            // Stage 2 Atomic Retirement of Stage 1 PRE_REGISTERED record
+            isSignedIn()
+            && isPreRegId(uid)
+            && existing().status == 'PRE_REGISTERED'
+            && incoming().status == 'DELETED'
+            && incoming().registrationStatus == 'DELETED'
+            && incoming().mergedIntoUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'registrationStatus', 'mergedIntoUid', 'updatedAt'])
+            && existsAfter(/databases/$(database)/documents/members/$(request.auth.uid))
+          ) || (
+            // Completed Active Member safe profile self-update
+            isOwner(uid)
+            && existing().status == 'ACTIVE'
+            && (!('registrationStage' in existing()) || existing().registrationStage == 'COMPLETED')
+            && incoming().uid == existing().uid
+            && incoming().memberId == existing().memberId
+            && incoming().username == existing().username
+            && incoming().whatsapp == existing().whatsapp
+            && incoming().status == existing().status
+            && incoming().xpProgress == existing().xpProgress
+            && incoming().xpReward == existing().xpReward
+            && (
+              (!('reservedXp' in incoming()) && !('reservedXp' in existing()))
+              || (('reservedXp' in incoming()) && incoming().reservedXp == ('reservedXp' in existing() ? existing().reservedXp : 0))
+            )
+            && incoming().currentLevel == existing().currentLevel
+            && incoming().currentCycleId == existing().currentCycleId
+            && incoming().referredByUid == existing().referredByUid
+            && incoming().referredByUsername == existing().referredByUsername
+            && incoming().referralCount == existing().referralCount
+            && incoming().lastPlayAt == existing().lastPlayAt
+            && incoming().lastPlayBranch == existing().lastPlayBranch
+            && incoming().createdAt == existing().createdAt
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'fullName', 'socialMedia', 'preferredBranch',
+              'birthDate', 'birthMonth', 'birthDay', 'memberCategory', 'updatedAt'
+            ])
+          ) || (
+            // Completed Active Member self benefit-request XP Hold
+            isOwner(uid)
+            && existing().status == 'ACTIVE'
+            && (!('registrationStage' in existing()) || existing().registrationStage == 'COMPLETED')
+            && incoming().diff(existing()).affectedKeys().hasOnly(['xpReward', 'reservedXp', 'updatedAt'])
+            && incoming().xpReward is int
+            && incoming().xpReward >= 0
+            && incoming().xpReward < existing().xpReward
+            && incoming().reservedXp is int
+            && incoming().reservedXp == (('reservedXp' in existing() ? existing().reservedXp : 0) + (existing().xpReward - incoming().xpReward))
+          ) || (
+            // Atomic referrer credit during Stage 2 online completion
+            isSignedIn()
+            && uid != request.auth.uid
+            && existing().status == 'ACTIVE'
+            && !exists(/databases/$(database)/documents/members/$(request.auth.uid))
+            && existsAfter(/databases/$(database)/documents/members/$(request.auth.uid))
+            && existsAfter(/databases/$(database)/documents/referrals/$('ref_' + request.auth.uid))
+            && getAfter(/databases/$(database)/documents/members/$(request.auth.uid)).data.referredByUid == uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['xpProgress', 'xpReward', 'referralCount', 'updatedAt'])
+            && incoming().xpProgress == existing().xpProgress + refBonusSetting()
+            && incoming().xpReward == existing().xpReward + refBonusSetting()
+            && incoming().referralCount == existing().referralCount + 1
+          )
+        ))
       );
       allow delete: if isSuperAdminRestoring() && isValidId(uid);
     }
 
     // ---------- Immutable Ledgers & Transactions ----------
     match /xpProgressLedger/{entryId} {
-      allow get: if isValidId(entryId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
-      allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
+      allow get: if isValidId(entryId) && (
+        isFullAdminOrSuper()
+        || (isCashier() && existing().branch == cashierBranch())
+        || (isSignedIn() && existing().memberUid == request.auth.uid)
+      );
+      allow list: if isFullAdminOrSuper()
+        || (isCashier() && resource.data.branch == cashierBranch())
+        || (isSignedIn() && resource.data.memberUid == request.auth.uid);
       allow create: if isValidId(entryId) && (
         isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
-          isAdmin() || (
+          isFullAdminOrSuper() || (
+            // Cashier can ONLY log operational transaction / campaign approval XP for own branch (NEVER ADMIN_ADJUSTMENT)
+            isCashier()
+            && incoming().createdBy == request.auth.uid
+            && incoming().source in ['TRANSACTION', 'CHALLENGE', 'EVENT', 'PROMO']
+            && (incoming().branch == null || incoming().branch == cashierBranch())
+            && incoming().direction == 'CREDIT'
+            && incoming().amount is int && incoming().amount > 0
+          ) || (
+            // Stage 2 Member one-time registration bonus & referral credit
             isSignedIn()
             && !exists(/databases/$(database)/documents/members/$(request.auth.uid))
             && existsAfter(/databases/$(database)/documents/members/$(request.auth.uid))
+            && !exists(/databases/$(database)/documents/xpProgressLedger/$(entryId))
             && incoming().direction == 'CREDIT'
             && (
               (
                 incoming().memberUid == request.auth.uid
-                && incoming().source == 'REGISTRATION'
+                && incoming().source in ['REGISTRATION', 'REGISTRATION_BONUS']
                 && incoming().amount == regBonusSetting()
               ) || (
                 incoming().source == 'REFERRAL'
@@ -926,19 +1312,33 @@ service cloud.firestore {
     }
 
     match /xpRewardLedger/{entryId} {
-      allow get: if isValidId(entryId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
-      allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
+      allow get: if isValidId(entryId) && (
+        isFullAdminOrSuper()
+        || (isCashier() && existing().branch == cashierBranch())
+        || (isSignedIn() && existing().memberUid == request.auth.uid)
+      );
+      allow list: if isFullAdminOrSuper()
+        || (isCashier() && resource.data.branch == cashierBranch())
+        || (isSignedIn() && resource.data.memberUid == request.auth.uid);
       allow create: if isValidId(entryId) && (
         isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
-          isAdmin() || (
+          isFullAdminOrSuper() || (
+            // Cashier operational ledger ONLY for own branch (NEVER XP_REWARD_ADMIN_ADJUSTMENT / ADMIN_ADD / ADMIN_DEDUCT)
+            isCashier()
+            && incoming().createdBy == request.auth.uid
+            && incoming().source in ['TRANSACTION', 'CHALLENGE', 'EVENT', 'PROMO', 'BENEFIT_REQUEST_HOLD', 'DENIED_REFUND', 'EXPIRY_REFUND']
+            && (incoming().branch == null || incoming().branch == cashierBranch())
+          ) || (
+            // Stage 2 Member one-time registration bonus & referral credit
             isSignedIn()
             && !exists(/databases/$(database)/documents/members/$(request.auth.uid))
             && existsAfter(/databases/$(database)/documents/members/$(request.auth.uid))
+            && !exists(/databases/$(database)/documents/xpRewardLedger/$(entryId))
             && incoming().direction == 'CREDIT'
             && (
               (
                 incoming().memberUid == request.auth.uid
-                && incoming().source == 'REGISTRATION'
+                && incoming().source in ['REGISTRATION', 'REGISTRATION_BONUS']
                 && incoming().amount == regBonusSetting()
               ) || (
                 incoming().source == 'REFERRAL'
@@ -950,6 +1350,20 @@ service cloud.firestore {
                 )
               )
             )
+          ) || (
+            // Completed Active Member Benefit Request XP Hold
+            isSignedIn()
+            && isActiveMember(request.auth.uid)
+            && incoming().memberUid == request.auth.uid
+            && incoming().type == 'REWARD'
+            && incoming().direction == 'DEBIT'
+            && incoming().source == 'BENEFIT_REQUEST_HOLD'
+            && incoming().amount is int
+            && incoming().amount < 0
+            && incoming().referenceId is string
+            && existsAfter(/databases/$(database)/documents/benefitRequests/$(incoming().referenceId))
+            && getAfter(/databases/$(database)/documents/benefitRequests/$(incoming().referenceId)).data.holdLedgerId == entryId
+            && getAfter(/databases/$(database)/documents/benefitRequests/$(incoming().referenceId)).data.xpCost == -incoming().amount
           )
         ))
       );
@@ -957,22 +1371,37 @@ service cloud.firestore {
     }
 
     match /transactions/{transactionId} {
-      allow get: if isValidId(transactionId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
-      allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
-      allow create: if isValidId(transactionId) && (isSuperAdminRestoring() || (isAdmin() && !isSystemRestoreLocked()));
+      allow get: if isValidId(transactionId) && (
+        isFullAdminOrSuper()
+        || (isCashier() && existing().branch == cashierBranch())
+        || (isSignedIn() && existing().memberUid == request.auth.uid)
+      );
+      allow list: if isFullAdminOrSuper()
+        || (isCashier() && resource.data.branch == cashierBranch())
+        || (isSignedIn() && resource.data.memberUid == request.auth.uid);
+      allow create: if isValidId(transactionId) && isValidTransaction(incoming()) && incoming().id == transactionId && (
+        isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
+          isFullAdminOrSuper()
+          || (
+            isCashier()
+            && incoming().branch == cashierBranch()
+            && incoming().adminId == request.auth.uid
+          )
+        ))
+      );
       allow update, delete: if isSuperAdminRestoring() && isValidId(transactionId);
     }
 
     match /referrals/{referralId} {
       allow get: if isValidId(referralId) && (
-        isAdmin() || (isSignedIn() && (existing().referrerUid == request.auth.uid || existing().refereeUid == request.auth.uid))
+        isFullAdminOrSuper() || (isSignedIn() && (existing().referrerUid == request.auth.uid || existing().refereeUid == request.auth.uid))
       );
-      allow list: if isAdmin() || (
+      allow list: if isFullAdminOrSuper() || (
         isSignedIn() && (resource.data.referrerUid == request.auth.uid || resource.data.refereeUid == request.auth.uid)
       );
       allow create: if isValidId(referralId) && (
         isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
-          isAdmin() || (
+          isFullAdminOrSuper() || (
             isSignedIn()
             && referralId == ('ref_' + request.auth.uid)
             && !exists(/databases/$(database)/documents/members/$(request.auth.uid))
@@ -988,21 +1417,26 @@ service cloud.firestore {
     }
 
     match /levelHistory/{historyId} {
-      allow get: if isValidId(historyId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
-      allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
-      allow create: if isValidId(historyId) && (isSuperAdminRestoring() || (isAdmin() && !isSystemRestoreLocked()));
+      allow get: if isValidId(historyId) && (isFullAdminOrSuper() || (isSignedIn() && existing().memberUid == request.auth.uid));
+      allow list: if isFullAdminOrSuper() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
+      allow create: if isValidId(historyId) && (
+        isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
+          isFullAdminOrSuper()
+          || (isCashier() && incoming().source in ['TRANSACTION', 'CHALLENGE', 'EVENT', 'PROMO'])
+        ))
+      );
       allow update, delete: if isSuperAdminRestoring() && isValidId(historyId);
     }
 
-    // ---------- Benefits & Campaigns ----------
+    // ---------- Benefits & Campaigns (CRUD STRICTLY ADMIN/SUPER_ADMIN ONLY; Cashier Read + Atomic Stock/Claim Counter Only) ----------
     match /benefits/{benefitId} {
-      allow get: if isValidId(benefitId) && (isAdmin() || (isSignedIn() && existing().active == true));
-      allow list: if isAdmin() || (isSignedIn() && resource.data.active == true);
+      allow get: if isValidId(benefitId) && (isFullAdminOrSuper() || (isSignedIn() && existing().active == true));
+      allow list: if isFullAdminOrSuper() || (isSignedIn() && resource.data.active == true);
       allow create: if isValidId(benefitId) && isValidBenefit(incoming()) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
       allow update: if isValidId(benefitId) && isValidBenefit(incoming()) && (
         isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
           isFullAdminOrSuper() || (
-            isAdmin()
+            isCashier()
             && incoming().diff(existing()).affectedKeys().hasOnly(['stock', 'updatedAt'])
             && existing().stock is int
             && incoming().stock is int
@@ -1014,13 +1448,13 @@ service cloud.firestore {
     }
 
     match /campaigns/{campaignId} {
-      allow get: if isValidId(campaignId) && (isAdmin() || (isSignedIn() && existing().active == true));
-      allow list: if isAdmin() || (isSignedIn() && resource.data.active == true);
+      allow get: if isValidId(campaignId) && (isFullAdminOrSuper() || (isSignedIn() && existing().active == true));
+      allow list: if isFullAdminOrSuper() || (isSignedIn() && resource.data.active == true);
       allow create: if isValidId(campaignId) && isValidCampaign(incoming()) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
       allow update: if isValidId(campaignId) && isValidCampaign(incoming()) && (
         isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
           isFullAdminOrSuper() || (
-            isAdmin()
+            isCashier()
             && incoming().diff(existing()).affectedKeys().hasOnly(['claimsCount', 'updatedAt'])
             && incoming().claimsCount == existing().claimsCount + 1
             && (existing().totalClaimLimit == null || incoming().claimsCount <= existing().totalClaimLimit)
@@ -1030,10 +1464,10 @@ service cloud.firestore {
       allow delete: if isSuperAdminRestoring() && isValidId(campaignId);
     }
 
-    // ---------- Claims & Redemptions ----------
+    // ---------- Legacy Claims & Redemptions ----------
     match /claims/{claimId} {
-      allow get: if isValidId(claimId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
-      allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
+      allow get: if isValidId(claimId) && (isFullAdminOrSuper() || (isSignedIn() && existing().memberUid == request.auth.uid));
+      allow list: if isFullAdminOrSuper() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
       allow create: if isValidId(claimId) && isValidClaim(incoming()) && (
         isSuperAdminRestoring() || (
           isSignedIn()
@@ -1063,8 +1497,8 @@ service cloud.firestore {
     }
 
     match /redemptions/{redemptionId} {
-      allow get: if isValidId(redemptionId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
-      allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
+      allow get: if isValidId(redemptionId) && (isFullAdminOrSuper() || (isSignedIn() && existing().memberUid == request.auth.uid));
+      allow list: if isFullAdminOrSuper() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
       allow create: if isValidId(redemptionId) && isValidRedemption(incoming()) && (
         isSuperAdminRestoring() || (
           isSignedIn()
@@ -1093,23 +1527,164 @@ service cloud.firestore {
       allow delete: if isSuperAdminRestoring() && isValidId(redemptionId);
     }
 
+    // ---------- Unified Benefit Requests (XP Hold, 7-Day Validity, Cashier Assisted + Branch Isolation, Auto-Refund) ----------
+    match /benefitRequests/{requestId} {
+      allow get: if isValidId(requestId) && (
+        isFullAdminOrSuper()
+        || (isCashier() && (existing().branch == null || existing().branch == cashierBranch() || existing().usedBranch == cashierBranch()))
+        || (isSignedIn() && existing().memberUid == request.auth.uid)
+      );
+      allow list: if isFullAdminOrSuper()
+        || (isCashier() && (resource.data.branch == cashierBranch() || resource.data.usedBranch == cashierBranch()))
+        || (isSignedIn() && resource.data.memberUid == request.auth.uid);
+      allow create: if isValidId(requestId) && isValidBenefitRequest(incoming()) && incoming().id == requestId && (
+        isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
+          (
+            // Cashier or Admin assisted Benefit Request (works for PRE_REGISTERED & ACTIVE; branch-locked for Cashier)
+            (isFullAdminOrSuper() || (isCashier() && incoming().branch == cashierBranch()))
+            && incoming().status == 'ON_PROCESS'
+            && incoming().resolution == null
+            && incoming().refundLedgerId == null
+            && incoming().approvedAt == null
+            && incoming().approvedBy == null
+            && incoming().approvedByRole == null
+            && incoming().deniedAt == null
+            && incoming().deniedBy == null
+            && incoming().deniedReason == null
+            && incoming().expiresAt == null
+            && incoming().expiredAt == null
+            && incoming().usedAt == null
+            && incoming().usedBy == null
+            && incoming().usedBranch == null
+            && incoming().receiptReference == null
+            && incoming().refundedAt == null
+            && incoming().refundReason == null
+            && incoming().refundedAmount == 0
+          ) || (
+            // Completed Active Member self Benefit Request
+            isSignedIn()
+            && isActiveMember(request.auth.uid)
+            && incoming().memberUid == request.auth.uid
+            && incoming().status == 'ON_PROCESS'
+            && incoming().resolution == null
+            && incoming().refundLedgerId == null
+            && incoming().approvedAt == null
+            && incoming().approvedBy == null
+            && incoming().approvedByRole == null
+            && incoming().deniedAt == null
+            && incoming().deniedBy == null
+            && incoming().deniedReason == null
+            && incoming().expiresAt == null
+            && incoming().expiredAt == null
+            && incoming().usedAt == null
+            && incoming().usedBy == null
+            && incoming().usedBranch == null
+            && incoming().receiptReference == null
+            && incoming().refundedAt == null
+            && incoming().refundReason == null
+            && incoming().refundedAmount == 0
+            && (
+              (
+                incoming().sourceType in ['CHALLENGE', 'EVENT', 'PROMO']
+                && exists(/databases/$(database)/documents/campaigns/$(incoming().sourceId))
+                && get(/databases/$(database)/documents/campaigns/$(incoming().sourceId)).data.active == true
+                && incoming().xpCost == 0
+                && incoming().xpRewardGrant == get(/databases/$(database)/documents/campaigns/$(incoming().sourceId)).data.xpReward
+                && incoming().holdLedgerId == null
+              ) || (
+                incoming().sourceType in ['GENERAL_BENEFIT', 'LEVEL_BENEFIT']
+                && exists(/databases/$(database)/documents/benefits/$(incoming().sourceId))
+                && get(/databases/$(database)/documents/benefits/$(incoming().sourceId)).data.active == true
+                && incoming().xpCost == get(/databases/$(database)/documents/benefits/$(incoming().sourceId)).data.xpCost
+                && incoming().xpRewardGrant == 0
+                && (
+                  (incoming().xpCost == 0 && incoming().holdLedgerId == null) || (
+                    incoming().xpCost > 0
+                    && incoming().holdLedgerId is string
+                    && existsAfter(/databases/$(database)/documents/xpRewardLedger/$(incoming().holdLedgerId))
+                    && getAfter(/databases/$(database)/documents/members/$(request.auth.uid)).data.xpReward
+                       == get(/databases/$(database)/documents/members/$(request.auth.uid)).data.xpReward - incoming().xpCost
+                    && getAfter(/databases/$(database)/documents/members/$(request.auth.uid)).data.reservedXp
+                       == (('reservedXp' in get(/databases/$(database)/documents/members/$(request.auth.uid)).data
+                          ? get(/databases/$(database)/documents/members/$(request.auth.uid)).data.reservedXp
+                          : 0) + incoming().xpCost)
+                  )
+                )
+              )
+            )
+          )
+        ))
+      );
+      allow update: if isValidId(requestId) && isValidBenefitRequest(incoming()) && (
+        isSuperAdminRestoring() || (
+          !isSystemRestoreLocked()
+          && (
+            isFullAdminOrSuper()
+            || (
+              isCashier()
+              && (existing().branch == null || existing().branch == cashierBranch())
+              && (incoming().usedBranch == null || incoming().usedBranch == cashierBranch())
+            )
+          )
+          && incoming().id == existing().id
+          && incoming().memberId == existing().memberId
+          && incoming().memberUid == existing().memberUid
+          && incoming().sourceType == existing().sourceType
+          && incoming().sourceId == existing().sourceId
+          && incoming().xpCost == existing().xpCost
+          && incoming().xpRewardGrant == existing().xpRewardGrant
+          && incoming().createdAt == existing().createdAt
+          && (
+            (existing().status == 'ON_PROCESS' && incoming().status in ['APPROVED', 'DENIED', 'REFUNDED'])
+            || (existing().status == 'APPROVED' && incoming().status in ['USED', 'EXPIRED', 'REFUNDED'])
+          )
+        )
+      );
+      allow delete: if isSuperAdminRestoring() && isValidId(requestId);
+    }
+
     // ---------- Notifications ----------
     match /notifications/{notificationId} {
-      allow get: if isValidId(notificationId) && isAdmin();
-      allow list: if isAdmin();
-      allow create, update: if isValidId(notificationId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
+      allow get: if isValidId(notificationId) && (
+        isFullAdminOrSuper() || (isCashier() && existing().targetType == 'ADMIN_ALERT')
+      );
+      allow list: if isFullAdminOrSuper() || (isCashier() && resource.data.targetType == 'ADMIN_ALERT');
+      allow create: if isValidId(notificationId) && (
+        isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
+          isFullAdminOrSuper()
+          || (
+            isCashier()
+            && incoming().targetType == 'ADMIN_ALERT'
+            && incoming().category == 'NEW_PRE_REGISTERED'
+            && incoming().createdBy == request.auth.uid
+          ) || (
+            isSignedIn()
+            && notificationId == ('new_member_' + request.auth.uid)
+            && !exists(/databases/$(database)/documents/members/$(request.auth.uid))
+            && existsAfter(/databases/$(database)/documents/members/$(request.auth.uid))
+            && incoming().targetType == 'ADMIN_ALERT'
+            && incoming().category == 'NEW_MEMBER_REGISTERED'
+            && incoming().memberUid == request.auth.uid
+            && incoming().createdBy == request.auth.uid
+          )
+        ))
+      );
+      allow update: if isValidId(notificationId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
       allow delete: if isSuperAdminRestoring() && isValidId(notificationId);
     }
 
     match /memberNotifications/{notificationId} {
-      allow get: if isValidId(notificationId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
-      allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
+      allow get: if isValidId(notificationId) && (isFullAdminOrSuper() || (isSignedIn() && existing().memberUid == request.auth.uid));
+      allow list: if isFullAdminOrSuper() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
       allow create: if isValidId(notificationId) && isValidMemberNotification(incoming()) && (
-        isSuperAdminRestoring() || (isAdmin() && !isSystemRestoreLocked())
+        isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
+          isFullAdminOrSuper()
+          || (isCashier() && incoming().category in ['BENEFIT_REQUEST', 'LEVEL_UP'])
+        ))
       );
       allow update: if isValidId(notificationId) && isValidMemberNotification(incoming()) && (
         isSuperAdminRestoring() || (!isSystemRestoreLocked() && (
-          isAdmin() || (
+          isFullAdminOrSuper() || (
             isOwner(existing().memberUid)
             && incoming().memberUid == existing().memberUid
             && incoming().memberId == existing().memberId
@@ -1132,21 +1707,45 @@ service cloud.firestore {
     }
 
     match /cycleSnapshots/{snapshotId} {
-      allow get: if isValidId(snapshotId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
-      allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
+      allow get: if isValidId(snapshotId) && (isFullAdminOrSuper() || (isSignedIn() && existing().memberUid == request.auth.uid));
+      allow list: if isFullAdminOrSuper() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
       allow create: if isSuperAdmin() && isValidId(snapshotId);
       allow update, delete: if isSuperAdminRestoring() && isValidId(snapshotId);
     }
 
-    // ---------- Immutable Audit Logs (NEVER Deleted or Overwritten Even During Restore) ----------
+    // ---------- Immutable Audit Logs (NEVER Deleted or Overwritten; Cashier Cannot Read Audit Logs) ----------
     match /auditLogs/{logId} {
-      allow get: if isValidId(logId) && isAdmin();
-      allow list: if isAdmin();
-      allow create: if isValidId(logId) && (isSuperAdmin() || (isAdmin() && !isSystemRestoreLocked()));
+      allow get: if isValidId(logId) && isFullAdminOrSuper();
+      allow list: if isFullAdminOrSuper();
+      allow create: if isValidId(logId) && (
+        isSuperAdmin()
+        || (isFullAdminOrSuper() && !isSystemRestoreLocked())
+        || (
+          isCashier()
+          && !isSystemRestoreLocked()
+          && incoming().actorId == request.auth.uid
+          && incoming().actorRole == adminData().role
+          && incoming().action in [
+            'CASHIER_LOGIN',
+            'CASHIER_ACTION',
+            'CASHIER_DENIED_ACTION',
+            'PRE_REGISTERED_MEMBER_CREATED',
+            'ONBOARDING_CODE_REGENERATED',
+            'TRANSACTION_XP',
+            'BENEFIT_REQUEST_CREATED',
+            'BENEFIT_REQUEST_APPROVED',
+            'BENEFIT_REQUEST_DENIED',
+            'BENEFIT_REQUEST_DENIED_REFUNDED',
+            'BENEFIT_REQUEST_USED',
+            'BENEFIT_REQUEST_EXPIRED',
+            'BENEFIT_REQUEST_EXPIRED_REFUNDED'
+          ]
+        )
+      );
       allow update, delete: if false;
     }
 
-    // ---------- CMS Homepage (Draft / Published / Immutable Version History) ----------
+    // ---------- CMS Homepage (STRICTLY ADMIN / SUPER_ADMIN ONLY; Cashier DENIED) ----------
     match /cmsPublished/{docId} {
       allow get: if docId == 'homepage';
       allow list: if isSuperAdmin();
@@ -1175,7 +1774,7 @@ service cloud.firestore {
       allow delete: if isSuperAdminRestoring() && isValidId(versionId);
     }
 
-    // ---------- Immutable Admin XP Adjustment Audit Records ----------
+    // ---------- Immutable Admin XP Adjustment Audit Records (STRICTLY ADMIN / SUPER_ADMIN; Cashier DENIED) ----------
     match /xpAdjustments/{adjustmentId} {
       allow get: if isValidId(adjustmentId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
       allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
@@ -1191,7 +1790,7 @@ service cloud.firestore {
       allow delete: if isSuperAdminRestoring() && isValidId(adjustmentId);
     }
 
-    // ---------- Immutable Admin Level Override & Recalculate Records ----------
+    // ---------- Immutable Admin Level Override & Recalculate Records (STRICTLY ADMIN / SUPER_ADMIN; Cashier DENIED) ----------
     match /levelOverrides/{overrideId} {
       allow get: if isValidId(overrideId) && (isAdmin() || (isSignedIn() && existing().memberUid == request.auth.uid));
       allow list: if isAdmin() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
@@ -1207,7 +1806,7 @@ service cloud.firestore {
       allow delete: if isSuperAdminRestoring() && isValidId(overrideId);
     }
 
-    // ---------- Protected System Collections: Backups, Restore Jobs & System Operations ----------
+    // ---------- Protected System Collections: Backups, Restore Jobs & System Operations (SUPER_ADMIN ONLY) ----------
     match /systemBackups/{backupId} {
       allow get: if isValidId(backupId) && isSuperAdmin();
       allow list: if isSuperAdmin();

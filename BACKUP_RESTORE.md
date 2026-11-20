@@ -1,12 +1,12 @@
 # Full System Backup, Verification, Restore & Data Integrity — XP PLAY
 
-Dokumen ini merupakan referensi operasional lengkap untuk sistem **Backup, Verifikasi, Retensi, Restore, Maintenance Lock, Post-Restore Verification, 12-Point Data Integrity Audit, dan 9-Component System Health** (Phases F–K / MODULES 7–25 & 28).
+Dokumen ini merupakan referensi operasional lengkap untuk sistem **Backup, Verifikasi, Retensi, Restore, Maintenance Lock, Post-Restore Verification, 15-Point Data Integrity Audit, dan 9-Component System Health** (v3.0.0 / `xpplay-schema-v3`).
 
 ---
 
 ## 1. Backup Scope (Cakupan Backup)
 Setiap eksekusi backup membentuk paket snapshot terisolasi pada `.backups/<backupId>/` yang mencakup tiga domain utama:
-1. **Firestore Database**: Seluruh **25 koleksi** sistem (`members`, `identityIndex`, `admins`, `branches`, `levels`, `systemSettings`, `transactions`, `xpProgressLedger`, `xpRewardLedger`, `xpAdjustments`, `levelOverrides`, `levelHistory`, `referrals`, `benefits`, `campaigns`, `claims`, `redemptions`, `notifications`, `memberNotifications`, `membershipCycles`, `cycleSnapshots`, `cmsPublished`, `cmsDrafts`, `cmsVersions`, `auditLogs`).
+1. **Firestore Database**: Seluruh **26 koleksi** sistem (`members`, `identityIndex`, `admins`, `branches`, `levels`, `systemSettings`, `transactions`, `xpProgressLedger`, `xpRewardLedger`, `xpAdjustments`, `levelOverrides`, `levelHistory`, `referrals`, `benefits`, `campaigns`, `benefitRequests`, `claims`, `redemptions`, `notifications`, `memberNotifications`, `membershipCycles`, `cycleSnapshots`, `cmsPublished`, `cmsDrafts`, `cmsVersions`, `auditLogs`).
 2. **Storage Objects**: Seluruh file bukti klaim member (`.uploads/claims/**`) dan aset gambar CMS Homepage (`.uploads/cms/**`).
 3. **Auth Metadata**: Daftar metadata akun user (UID, email, displayName, status disabled, emailVerified, provider, roleHint, timestamps) **tanpa pernah mengekspor password plaintext maupun hash password**.
 
@@ -40,7 +40,7 @@ Setiap eksekusi backup membentuk paket snapshot terisolasi pada `.backups/<backu
 ## 5. Manifest Specification (`manifest.json`)
 Setiap backup menghasilkan `.backups/<backupId>/manifest.json` berisi:
 - Identitas: `backupId`, `operationId`, `kind` (`MANUAL | SCHEDULED | PRE_RESTORE`), `scopeType`, `scopeDescription`, `authExportMode`, `authLimitationNotice`.
-- Versi & Lingkungan: `appVersion` (`2.4.0`), `schemaVersion` (`xpplay-schema-v2`), `projectId`, `firestoreDatabaseId`.
+- Versi & Lingkungan: `appVersion` (`3.0.0`), `schemaVersion` (`xpplay-schema-v3`), `projectId`, `firestoreDatabaseId`.
 - Operator & Waktu: `createdAt`, `createdBy`, `createdByEmail`, `createdByRole`.
 - Ringkasan & Checksum: `firestoreCollections[]` (jumlah dokumen, byte, SHA-256), `totalDocuments`, `authUserCount`, `authChecksumSha256`, `storageFiles[]`, `storageFileCount`, `storageTotalBytes`, `storageManifestChecksumSha256`, `totalBackupBytes`, dan **`manifestChecksumSha256`** (hash SHA-256 atas seluruh payload manifest).
 
@@ -110,7 +110,7 @@ Saat restore dimulai:
 Sebelum eksekusi, `SUPER_ADMIN` menjalankan `POST /api/admin/restores/preview` untuk melihat:
 - Validasi status & kompatibilitas `appVersion` / `schemaVersion`.
 - Alasan pemblokir (`blockingReasons`) dan peringatan (`warnings`, termasuk notice Auth metadata).
-- Perbandingan jumlah dokumen live vs jumlah dokumen dalam backup untuk ke-25 koleksi (menandai koleksi terproteksi seperti `auditLogs`).
+- Perbandingan jumlah dokumen live vs jumlah dokumen dalam backup untuk ke-26 koleksi (menandai koleksi terproteksi seperti `auditLogs`).
 - Perbandingan jumlah file storage live vs backup.
 
 ---
@@ -123,27 +123,30 @@ Eksekusi restore (`POST /api/admin/restores/execute`) mensyaratkan **tiga gerban
 
 ---
 
-## 14. Post-Restore Verification & 12-Point Data Integrity Audit (MODULES 17 & 18)
+## 14. Post-Restore Verification & 15-Point Data Integrity Audit (MODULES 17 & 18 + FASE 32)
 Setelah pemulihan Firestore, Storage, dan Auth metadata selesai, engine menjalankan:
 1. **Perbandingan Jumlah Dokumen & Storage**: Jumlah dokumen setiap koleksi bisnis dan jumlah file storage pasca-restore wajib cocok 100% dengan manifest backup.
-2. **12-Point Data Integrity Audit** (`src/shared/integrityLogic.ts`, juga dapat dijalankan kapan saja secara on-demand via `POST /api/admin/integrity-audit`):
+2. **15-Point Data Integrity Audit** (`src/shared/integrityLogic.ts`, juga dapat dijalankan kapan saja secara on-demand via `POST /api/admin/integrity-audit`):
    1. `XP_PROGRESS_CONSISTENCY`: Validitas saldo & ledger `xpProgressLedger`.
-   2. `XP_REWARD_CONSISTENCY`: Validitas saldo & ledger `xpRewardLedger`.
+   2. `XP_REWARD_CONSISTENCY`: Validitas saldo `xpReward`, `reservedXp` & ledger `xpRewardLedger`.
    3. `LEVEL_CONSISTENCY`: Kecocokan `currentLevel` terhadap threshold untuk member ber-`levelMode: 'AUTOMATIC'`.
-   4. `NO_NEGATIVE_BALANCE`: Nol saldo `xpProgress` atau `xpReward` negatif.
+   4. `NO_NEGATIVE_BALANCE`: Nol saldo `xpProgress`, `xpReward`, maupun `reservedXp` negatif.
    5. `NO_DUPLICATE_USERNAME`: Unikitas username seluruh member non-`DELETED`.
    6. `NO_DUPLICATE_WHATSAPP`: Unikitas nomor WhatsApp seluruh member non-`DELETED`.
    7. `REFERRAL_INTEGRITY`: Tidak ada *self-referral* maupun broken reference pada `members` & `referrals`.
    8. `NO_ORPHAN_CLAIMS`: Seluruh `claims` merujuk `memberUid` dan `campaignId` valid.
    9. `NO_ORPHAN_REDEMPTIONS`: Seluruh `redemptions` merujuk `memberUid` dan `benefitId` valid.
    10. `TRANSACTION_INTEGRITY`: Validitas `memberUid`, cabang (`DEMANG`/`SEKIP`), `amountIdr > 0`, `xpGenerated >= 0`.
-   11. `STORAGE_OBJECT_INTEGRITY`: Seluruh referensi file bukti klaim benar-benar ada di `.uploads/claims/`.
+   11. `STORAGE_OBJECT_INTEGRITY`: Seluruh referensi file bukti `claims` & `benefitRequests` benar-benar ada di `.uploads/claims/`.
    12. `CMS_ASSET_INTEGRITY`: Seluruh referensi aset lokal CMS Published & Draft ada di `.uploads/cms/`.
+   13. `NO_ORPHAN_BENEFIT_REQUESTS`: Seluruh `benefitRequests` terhubung ke member & katalog valid serta total `ON_PROCESS` hold sama persis dengan `member.reservedXp`.
+   14. `NO_DUPLICATE_DEDUCTION_OR_REFUND`: Tidak ada double `BENEFIT_REQUEST_HOLD` maupun double `DENIED_REFUND`/`EXPIRY_REFUND` pada `xpRewardLedger`.
+   15. `VALID_MEMBER_STATUS_AND_PROFILE`: Validitas status akun, format & tanggal kalender `birthDate` (tidak di masa depan), serta kategori `memberCategory`.
 
 ---
 
 ## 15. Restore Failure Handling
-- Apabila verifikasi jumlah dokumen, jumlah file storage, atau 12-Point Integrity Check menemukan **satu saja ketidaksesuaian atau isu kritikal**, status job restore **WAJIB** ditetapkan menjadi **`VERIFICATION_FAILED`** (HTTP `422`) dan **TIDAK PERNAH** ditandai `COMPLETED`.
+- Apabila verifikasi jumlah dokumen, jumlah file storage, atau 15-Point Integrity Check menemukan **satu saja ketidaksesuaian atau isu kritikal**, status job restore **WAJIB** ditetapkan menjadi **`VERIFICATION_FAILED`** (HTTP `422`) dan **TIDAK PERNAH** ditandai `COMPLETED`.
 - Apabila terjadi exception runtime di tengah proses, status ditetapkan `FAILED` dan audit log `RESTORE_FAILED` ditulis.
 - Backup target maupun Pre-Restore Backup tidak pernah dihapus oleh kegagalan restore.
 
@@ -163,7 +166,7 @@ Jika restore berstatus `VERIFICATION_FAILED` atau `FAILED`:
 | Operasi | `SUPER_ADMIN` | `ADMIN` | `STAFF` | `MEMBER` |
 | --- | :---: | :---: | :---: | :---: |
 | System Health (9 Komponen) | Ya | Ya (Read) | Tidak | Tidak |
-| Run 12-Point Integrity Audit | Ya | Ya | Tidak | Tidak |
+| Run 15-Point Integrity Audit | Ya | Ya | Tidak | Tidak |
 | Create / Verify / View / Delete Backup | Ya | Tidak | Tidak | Tidak |
 | Edit Backup Retention Policy | Ya | Tidak | Tidak | Tidak |
 | Preview / Execute Restore / Force Unlock | Ya | Tidak | Tidak | Tidak |

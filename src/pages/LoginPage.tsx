@@ -1,14 +1,17 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, LogIn } from 'lucide-react';
+import { ArrowLeft, ArrowRight, LogIn } from 'lucide-react';
 import { CaptchaWidget } from '../components/CaptchaWidget.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
 import { mapFriendlyError } from '../lib/firestoreError.ts';
 import { loginMemberClient } from '../services/xpService.ts';
+import { getDashboardRouteForRole } from '../shared/rbac.ts';
+import { PRE_REGISTERED_LOGIN_BLOCKED_MESSAGE } from '../shared/registrationLogic.ts';
+import { normalizeWhatsapp } from '../shared/xpLogic.ts';
 
 export function LoginPage() {
   const navigate = useNavigate();
-  const { memberProfile, adminProfile, signInWithServerToken, capabilities } = useAuth();
+  const { memberProfile, adminProfile, isCompletedMember, signInWithServerToken, capabilities } = useAuth();
 
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
@@ -16,18 +19,20 @@ export function LoginPage() {
   const [captchaReset, setCaptchaReset] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [preRegisteredWa, setPreRegisteredWa] = useState<string | null>(null);
 
   useEffect(() => {
-    if (memberProfile) {
+    if (isCompletedMember && memberProfile) {
       navigate('/member', { replace: true });
     } else if (adminProfile) {
-      navigate('/admin', { replace: true });
+      navigate(getDashboardRouteForRole(adminProfile.role), { replace: true });
     }
-  }, [memberProfile, adminProfile, navigate]);
+  }, [isCompletedMember, memberProfile, adminProfile, navigate]);
 
   const handlePasswordLogin = async (e: FormEvent) => {
     e.preventDefault();
     setError('');
+    setPreRegisteredWa(null);
 
     if (!identifier.trim() || !password) {
       setError('Username/WhatsApp dan password wajib diisi.');
@@ -47,9 +52,19 @@ export function LoginPage() {
             captchaAnswer: captcha.answer,
           }),
         });
-        const data = (await res.json()) as { customToken?: string; error?: string };
+        const data = (await res.json()) as {
+          customToken?: string;
+          error?: string;
+          code?: string;
+          whatsapp?: string;
+        };
         if (!res.ok || !data.customToken) {
           setCaptchaReset((v) => v + 1);
+          if (data.code === 'PRE_REGISTERED_INCOMPLETE') {
+            setPreRegisteredWa(data.whatsapp || normalizeWhatsapp(identifier.trim()));
+            setError(data.error || PRE_REGISTERED_LOGIN_BLOCKED_MESSAGE);
+            return;
+          }
           setError(data.error || 'Username/WhatsApp atau password tidak sesuai.');
           return;
         }
@@ -66,7 +81,16 @@ export function LoginPage() {
       navigate('/member', { replace: true });
     } catch (err) {
       setCaptchaReset((v) => v + 1);
-      setError(mapFriendlyError(err, 'Login gagal diproses. Silakan coba lagi.'));
+      const errObj = err as Error & { code?: string; whatsapp?: string };
+      if (
+        errObj?.code === 'PRE_REGISTERED_INCOMPLETE' ||
+        (errObj?.message && errObj.message.includes('belum menyelesaikan pendaftaran online'))
+      ) {
+        setPreRegisteredWa(errObj.whatsapp || normalizeWhatsapp(identifier.trim()));
+        setError(errObj.message || PRE_REGISTERED_LOGIN_BLOCKED_MESSAGE);
+      } else {
+        setError(mapFriendlyError(err, 'Login gagal diproses. Silakan coba lagi.'));
+      }
     } finally {
       setLoading(false);
     }
@@ -97,9 +121,22 @@ export function LoginPage() {
           {error && (
             <div
               role="alert"
-              className="rounded-xl border border-rose-500/35 bg-rose-500/10 p-3.5 text-sm text-rose-200"
+              className={`rounded-xl border p-3.5 text-sm space-y-3 ${
+                preRegisteredWa
+                  ? 'border-amber-400/45 bg-amber-500/10 text-amber-100'
+                  : 'border-rose-500/35 bg-rose-500/10 text-rose-200'
+              }`}
             >
-              {error}
+              <p className="leading-relaxed">{error}</p>
+              {preRegisteredWa && (
+                <Link
+                  to={`/register?wa=${encodeURIComponent(preRegisteredWa)}`}
+                  className="w-full h-[42px] inline-flex items-center justify-center gap-2 rounded-lg bg-amber-400 text-[#050814] font-bold text-xs hover:bg-amber-300 transition-colors"
+                >
+                  <span>Lengkapi Pendaftaran</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
+              )}
             </div>
           )}
 
@@ -148,15 +185,15 @@ export function LoginPage() {
 
           <div className="pt-2 text-center text-sm text-slate-300 space-y-2">
             <p>
-              Belum punya akun?{' '}
+              Sudah didaftarkan Kasir XP PLAY?{' '}
               <Link to="/register" className="font-semibold text-purple-300 hover:text-sky-300 hover:underline">
-                Daftar Member (+10 XP)
+                Lengkapi Pendaftaran (+10 XP)
               </Link>
             </p>
             <p className="text-xs text-slate-400">
-              Operator / Kasir?{' '}
+              Kasir atau Admin XP PLAY?{' '}
               <Link to="/admin/login" className="font-medium text-sky-300 hover:underline">
-                Login Admin
+                Portal Kasir &amp; Admin
               </Link>
             </p>
           </div>

@@ -20,9 +20,40 @@ import {
   validateWhatsapp,
 } from '../../shared/xpLogic.ts';
 import { validateAdminNewPassword } from '../../shared/inactiveLogic.ts';
+import {
+  computeBenefitApproval,
+  computeBenefitDenial,
+  computeBenefitExpiry,
+  computeBenefitHoldBalances,
+  computeBenefitMarkUsed,
+  validateBirthDate,
+  validateMemberCategory,
+} from '../../shared/benefitRequestLogic.ts';
+import {
+  assertCashierBranchAccess,
+  assertRolePermission,
+  isCashierRole,
+} from '../../shared/rbac.ts';
+import {
+  buildPreRegisteredMemberProfile,
+  buildRegistrationBonusLedgerIds,
+  computeRegistrationCompletion,
+  evaluatePhoneRegistrationState,
+  isPreRegisteredMember,
+  PRE_REGISTERED_LOGIN_BLOCKED_MESSAGE,
+} from '../../shared/registrationLogic.ts';
+import {
+  hashWhatsappServer,
+  issueOnboardingVerificationCode,
+  markOnboardingCodeUsed,
+  verifyOnboardingSessionToken,
+} from './onboardingSecurityService.ts';
 import type {
   AdminPasswordChangeResult,
   AdminRole,
+  BenefitItem,
+  BenefitRequestRecord,
+  BenefitRequestSourceType,
   BranchId,
   CampaignItem,
   ClaimRecord,
@@ -31,6 +62,7 @@ import type {
   LevelMode,
   LevelOverrideAction,
   LevelOverrideRecord,
+  MemberCategory,
   MemberProfile,
   RedemptionRecord,
   SystemSettings,
@@ -113,11 +145,13 @@ async function getSettingsAndLevels(db: Firestore): Promise<{
   return { settings, levels };
 }
 
-export async function registerMemberServer(input: {
+export async function registerMemberServer(_input: {
   fullName: string;
   username: string;
   whatsapp: string;
   socialMedia: string;
+  birthDate?: string | null;
+  memberCategory?: MemberCategory | null;
   referralUsername?: string;
   password: string;
   preferredBranch?: BranchId | null;
@@ -128,65 +162,270 @@ export async function registerMemberServer(input: {
   referralApplied: boolean;
   referralMessage?: string;
 }> {
-  const adminAuth = getAdminAuth();
-  const db = getAdminDb();
-  if (!adminAuth || !db) {
-    throw new Error('ADMIN_SDK_UNAVAILABLE');
-  }
+  throw new Error(
+    'Pendaftaran mandiri publik dinonaktifkan. Silakan daftarkan nomor WhatsApp melalui Kasir XP PLAY terlebih dahulu, lalu lengkapi pendaftaran online.'
+  );
+}
 
+export async function preRegisterCustomerServer(input: {
+  whatsapp: string;
+  branchId: BranchId;
+  notes?: string;
+  actorUid: string;
+  actorName: string;
+  actorRole: AdminRole;
+  actorBranchScope: BranchId | 'ALL';
+}): Promise<{
+  alreadyExists: boolean;
+  member: MemberProfile;
+  verificationCode?: string;
+  verificationExpiresAt?: number;
+  message: string;
+}> {
+  assertRolePermission(input.actorRole, 'PRE_REGISTER_CUSTOMER', 'pre-registrasi customer');
+  assertCashierBranchAccess(
+    { role: input.actorRole, branchScope: input.actorBranchScope },
+    input.branchId,
+    'pre-registrasi customer'
+  );
+
+  const db = getAdminDb();
+  if (!db) throw new Error('ADMIN_SDK_UNAVAILABLE');
   await ensureSeedDataServer(db);
 
-  const fullName = input.fullName.trim();
-  if (fullName.length < 2 || fullName.length > 100) {
-    throw new Error('Nama lengkap harus terdiri dari 2 hingga 100 karakter.');
+  const waCheck = validateWhatsapp(input.whatsapp);
+  if (!waCheck.valid) {
+    throw new Error(waCheck.error || 'Nomor WhatsApp tidak valid.');
+  }
+  const normalizedWa = waCheck.normalized;
+  const wHash = hashWhatsappServer(normalizedWa);
+
+  // Check existing non-deleted member with same WhatsApp
+  const existingSnap = await db
+    .collection('members')
+    .where('whatsapp', '==', normalizedWa)
+    .get();
+
+  const existingMember = existingSnap.docs
+    .map((d) => d.data() as MemberProfile)
+    .find((m) => m.status !== 'DELETED');
+
+  if (existingMember) {
+    return {
+      alreadyExists: true,
+      member: existingMember,
+      message:
+        existingMember.status === 'PRE_REGISTERED'
+          ? 'Nomor WhatsApp sudah terdaftar dengan status PRE_REGISTERED (belum menyelesaikan pendaftaran online).'
+          : `Nomor WhatsApp sudah terdaftar sebagai member (${existingMember.status}).`,
+    };
+  }
+
+  const now = Date.now();
+  const { settings } = await getSettingsAndLevels(db);
+  const preDocId = `pre_${now}_${crypto.randomBytes(8).toString('hex')}`;
+  const memberDoc = buildPreRegisteredMemberProfile({
+    preDocId,
+    whatsapp: normalizedWa,
+    branchId: input.branchId,
+    actorId: input.actorUid,
+    actorRole: input.actorRole,
+    notes: input.notes,
+    currentCycleId: settings.currentCycleId,
+    nowMs: now,
+    memberId: generateMemberCode(),
+  });
+
+  const issued = await issueOnboardingVerificationCode({
+    normalizedWhatsapp: normalizedWa,
+    preMemberUid: preDocId,
+    memberId: memberDoc.memberId,
+    branchId: input.branchId,
+    issuedBy: input.actorUid,
+    issuedByRole: input.actorRole,
+    nowMs: now,
+  });
+
+  const batch = db.batch();
+  batch.set(db.collection('members').doc(preDocId), memberDoc);
+  batch.set(db.collection('onboardingPublicStatus').doc(wHash), {
+    status: 'PRE_REGISTERED',
+    hasActiveCode: true,
+    branchId: input.branchId,
+    updatedAt: now,
+  });
+
+  const alertId = `pre_reg_${preDocId}`;
+  batch.set(db.collection('notifications').doc(alertId), {
+    id: alertId,
+    title: `Pre-Registrasi Baru (${input.branchId}): ${memberDoc.memberId}`,
+    message: `Kasir/Admin ${input.actorName} mendaftarkan nomor ${normalizedWa} di cabang ${input.branchId} (Status: PRE_REGISTERED).`,
+    targetType: 'ADMIN_ALERT',
+    targetFilter: preDocId,
+    inactivityDays: null,
+    category: 'NEW_PRE_REGISTERED',
+    memberUid: preDocId,
+    memberUsername: '',
+    memberName: memberDoc.fullName,
+    referralUsername: null,
+    startAt: now,
+    endAt: null,
+    active: true,
+    status: 'ACTIVE',
+    createdBy: input.actorUid,
+    createdAt: now,
+  });
+
+  const auditId = generateDocId('audit');
+  batch.set(db.collection('auditLogs').doc(auditId), {
+    id: auditId,
+    actorId: input.actorUid,
+    actorRole: input.actorRole,
+    action: 'PRE_REGISTERED_MEMBER_CREATED',
+    targetType: 'member',
+    targetId: preDocId,
+    before: null,
+    after: {
+      memberId: memberDoc.memberId,
+      whatsapp: normalizedWa,
+      status: 'PRE_REGISTERED',
+      registrationStage: 'PHONE_ONLY',
+      branchId: input.branchId,
+      xpProgress: 0,
+      xpReward: 0,
+    },
+    metadata: {
+      branchId: input.branchId,
+      actorName: input.actorName,
+      notes: memberDoc.preRegistrationNotes,
+    },
+    timestamp: now,
+  });
+
+  if (isCashierRole(input.actorRole)) {
+    const cashierAuditId = generateDocId('audit');
+    batch.set(db.collection('auditLogs').doc(cashierAuditId), {
+      id: cashierAuditId,
+      actorId: input.actorUid,
+      actorRole: input.actorRole,
+      action: 'CASHIER_ACTION',
+      targetType: 'member',
+      targetId: preDocId,
+      before: null,
+      after: { operation: 'PRE_REGISTER_CUSTOMER', branchId: input.branchId, memberId: memberDoc.memberId },
+      metadata: { branchId: input.branchId },
+      timestamp: now,
+    });
+  }
+
+  await batch.commit();
+
+  return {
+    alreadyExists: false,
+    member: memberDoc,
+    verificationCode: issued.verificationCode,
+    verificationExpiresAt: issued.record.expiresAt,
+    message: 'Customer berhasil di-pre-register (PRE_REGISTERED). Bagikan kode verifikasi 6 digit kepada customer.',
+  };
+}
+
+export async function checkOnboardingPhoneServer(whatsapp: string) {
+  const waCheck = validateWhatsapp(whatsapp);
+  if (!waCheck.valid) {
+    throw new Error(waCheck.error || 'Nomor WhatsApp tidak valid.');
+  }
+  const normalizedWa = waCheck.normalized;
+  const db = getAdminDb();
+  if (!db) throw new Error('ADMIN_SDK_UNAVAILABLE');
+
+  const wHash = hashWhatsappServer(normalizedWa);
+  const pubSnap = await db.collection('onboardingPublicStatus').doc(wHash).get();
+  if (pubSnap.exists) {
+    const pub = pubSnap.data() as {
+      status: MemberProfile['status'];
+      hasActiveCode?: boolean;
+      branchId?: BranchId;
+    };
+    return evaluatePhoneRegistrationState(normalizedWa, pub);
+  }
+
+  // Fallback check members collection in case legacy ACTIVE member lacks onboardingPublicStatus doc
+  const qSnap = await db.collection('members').where('whatsapp', '==', normalizedWa).get();
+  const activeOrPre = qSnap.docs
+    .map((d) => d.data() as MemberProfile)
+    .find((m) => m.status !== 'DELETED');
+
+  return evaluatePhoneRegistrationState(normalizedWa, activeOrPre ?? null);
+}
+
+export async function completeMemberRegistrationServer(input: {
+  onboardingSessionToken: string;
+  fullName: string;
+  username: string;
+  birthDate: string;
+  memberCategory: MemberCategory;
+  socialMedia?: string;
+  preferredBranch: BranchId;
+  referralUsername?: string;
+  password: string;
+}): Promise<{
+  uid: string;
+  member: MemberProfile;
+  customToken: string;
+  registrationBonusGranted: number;
+  referralApplied: boolean;
+  referralMessage?: string;
+}> {
+  const adminAuth = getAdminAuth();
+  const db = getAdminDb();
+  if (!adminAuth || !db) throw new Error('ADMIN_SDK_UNAVAILABLE');
+
+  const tokenCheck = verifyOnboardingSessionToken(input.onboardingSessionToken, { consume: false });
+  if (!tokenCheck.valid || !tokenCheck.payload) {
+    throw new Error(tokenCheck.error || 'Verifikasi nomor WhatsApp tidak valid atau sudah kedaluwarsa.');
+  }
+  const session = tokenCheck.payload;
+
+  if (!input.password || input.password.length < 8) {
+    throw new Error('Password minimal 8 karakter.');
   }
 
   const userCheck = validateUsername(input.username);
   if (!userCheck.valid) {
     throw new Error(userCheck.error || 'Username tidak valid.');
   }
-
-  const waCheck = validateWhatsapp(input.whatsapp);
-  if (!waCheck.valid) {
-    throw new Error(waCheck.error || 'Nomor WhatsApp tidak valid.');
-  }
-
-  if (!input.password || input.password.length < 8) {
-    throw new Error('Password minimal 8 karakter.');
-  }
-
   const normalizedUsername = userCheck.normalized;
-  const normalizedWhatsapp = waCheck.normalized;
-  const socialMedia = (input.socialMedia || '').trim().slice(0, 100);
   const referralInput = input.referralUsername ? normalizeUsername(input.referralUsername) : '';
-
   if (referralInput && referralInput === normalizedUsername) {
     throw new Error('Anda tidak dapat menggunakan username Anda sendiri sebagai referral.');
   }
 
-  // Pre-check uniqueness before creating Auth user
-  const [uIndexSnap, wIndexSnap] = await Promise.all([
+  // Pre-verify username uniqueness & pre-registered doc existence
+  const [uIdxPre, preSnapPre] = await Promise.all([
     db.collection('identityIndex').doc(`username:${normalizedUsername}`).get(),
-    db.collection('identityIndex').doc(`wa:${normalizedWhatsapp}`).get(),
+    db.collection('members').doc(session.preMemberUid).get(),
   ]);
-
-  if (uIndexSnap.exists) {
+  if (uIdxPre.exists) {
     throw new Error('Username sudah terdaftar. Silakan pilih username lain.');
   }
-  if (wIndexSnap.exists) {
-    throw new Error('Nomor WhatsApp sudah terdaftar. Silakan gunakan nomor lain atau login.');
+  if (!preSnapPre.exists) {
+    throw new Error('Data pre-registrasi tidak ditemukan.');
+  }
+  const preDocCheck = preSnapPre.data() as MemberProfile;
+  if (preDocCheck.status !== 'PRE_REGISTERED') {
+    throw new Error('Membership ini sudah selesai atau tidak berstatus PRE_REGISTERED.');
   }
 
-  const uid = crypto.randomUUID().replace(/-/g, '').slice(0, 28);
+  const uid = session.preMemberUid;
   const authEmail = `m_${uid}@member.xpplay.internal`;
 
-  // Create Firebase Auth user (password managed securely by Firebase Auth)
+  // Create Firebase Auth user using SAME uid as pre-registered doc so Stage 1 transactions/ledgers remain seamlessly attached
   await adminAuth.createUser({
     uid,
     email: authEmail,
     emailVerified: true,
     password: input.password,
-    displayName: fullName,
+    displayName: input.fullName.trim(),
   });
 
   try {
@@ -194,21 +433,32 @@ export async function registerMemberServer(input: {
       const now = Date.now();
       const { settings, levels } = await getSettingsAndLevels(db);
 
+      const memberRef = db.collection('members').doc(uid);
       const uIdxRef = db.collection('identityIndex').doc(`username:${normalizedUsername}`);
-      const wIdxRef = db.collection('identityIndex').doc(`wa:${normalizedWhatsapp}`);
-      const [uSnap, wSnap] = await Promise.all([tx.get(uIdxRef), tx.get(wIdxRef)]);
+      const wIdxRef = db.collection('identityIndex').doc(`wa:${session.normalizedWhatsapp}`);
 
-      if (uSnap.exists) {
-        throw new Error('Username sudah terdaftar.');
+      const { progressLedgerId, rewardLedgerId } = buildRegistrationBonusLedgerIds(preDocCheck.memberId);
+      const bonusProgRef = db.collection('xpProgressLedger').doc(progressLedgerId);
+      const bonusRewRef = db.collection('xpRewardLedger').doc(rewardLedgerId);
+
+      const [memberSnap, uSnap, bonusProgSnap, bonusRewSnap] = await Promise.all([
+        tx.get(memberRef),
+        tx.get(uIdxRef),
+        tx.get(bonusProgRef),
+        tx.get(bonusRewRef),
+      ]);
+
+      if (!memberSnap.exists) throw new Error('Data pre-registrasi tidak ditemukan.');
+      const preMember = memberSnap.data() as MemberProfile;
+      if (preMember.status !== 'PRE_REGISTERED') {
+        throw new Error('Membership ini sudah diaktifkan sebelumnya.');
       }
-      if (wSnap.exists) {
-        throw new Error('Nomor WhatsApp sudah terdaftar.');
+      if (uSnap.exists) {
+        throw new Error('Username sudah digunakan member lain.');
       }
 
       let referrerSnapData: MemberProfile | null = null;
-      let referralApplied = false;
       let referralMessage: string | undefined;
-
       if (referralInput) {
         const refIdxSnap = await tx.get(db.collection('identityIndex').doc(`username:${referralInput}`));
         if (refIdxSnap.exists) {
@@ -216,103 +466,117 @@ export async function registerMemberServer(input: {
           if (refUid !== uid) {
             const refMemberSnap = await tx.get(db.collection('members').doc(refUid));
             if (refMemberSnap.exists) {
-              const candidate = refMemberSnap.data() as MemberProfile;
-              if (candidate.status === 'ACTIVE') {
-                referrerSnapData = candidate;
-                referralApplied = true;
+              const cand = refMemberSnap.data() as MemberProfile;
+              if (cand.status === 'ACTIVE') {
+                referrerSnapData = cand;
               } else {
-                referralMessage = 'Akun referrer sedang tidak aktif, registrasi dilanjutkan tanpa bonus referral.';
+                referralMessage = 'Akun referrer sedang tidak aktif, pendaftaran selesai tanpa bonus referral.';
               }
             }
           }
         } else {
-          referralMessage = 'Username referral tidak ditemukan, registrasi dilanjutkan dengan bonus pendaftaran standar.';
+          referralMessage = 'Username referral tidak ditemukan, pendaftaran selesai dengan bonus registrasi standar.';
         }
       }
 
-      const regBonus = settings.registrationBonusXp;
-      const refBonus = referralApplied ? settings.referralBonusXp : 0;
-      const totalInitialXp = regBonus + refBonus;
-      const levelEval = resolveLevelFromXp(totalInitialXp, levels);
-      const memberId = generateMemberCode();
+      const existingBonusSet = new Set<string>();
+      if (bonusProgSnap.exists) existingBonusSet.add(progressLedgerId);
+      if (bonusRewSnap.exists) existingBonusSet.add(rewardLedgerId);
 
-      const memberDoc: MemberProfile = {
-        uid,
-        memberId,
-        fullName,
+      const computed = computeRegistrationCompletion({
+        preMember,
+        targetAuthUid: uid,
+        fullName: input.fullName,
         username: normalizedUsername,
-        whatsapp: normalizedWhatsapp,
-        socialMedia,
+        birthDate: input.birthDate,
+        memberCategory: input.memberCategory,
+        socialMedia: input.socialMedia,
+        preferredBranch: input.preferredBranch,
+        referrer: referrerSnapData,
+        verifiedPhoneAt: session.verifiedAt,
+        settings,
+        levels,
+        existingBonusLedgerIds: existingBonusSet,
+        nowMs: now,
+      });
+
+      const completed = computed.completedMember;
+      tx.set(memberRef, completed);
+
+      // Auth & Identity indexes
+      const uHash = `u_${crypto.createHash('sha256').update(`u:${normalizedUsername}`).digest('hex')}`;
+      const wHash = session.wHash;
+      tx.set(uIdxRef, { uid, authEmail, kind: 'USERNAME', value: normalizedUsername, createdAt: now });
+      tx.set(wIdxRef, { uid, authEmail, kind: 'WHATSAPP', value: session.normalizedWhatsapp, createdAt: now });
+      tx.set(db.collection('authIndex').doc(uHash), { uid, authEmail, kind: 'USERNAME', createdAt: now });
+      tx.set(db.collection('authIndex').doc(wHash), { uid, authEmail, kind: 'WHATSAPP', createdAt: now });
+      tx.set(db.collection('onboardingPublicStatus').doc(wHash), {
         status: 'ACTIVE',
-        xpProgress: totalInitialXp,
-        xpReward: totalInitialXp,
-        currentLevel: levelEval.current.id,
-        levelMode: 'AUTOMATIC',
-        currentCycleId: settings.currentCycleId,
-        referredByUid: referrerSnapData ? referrerSnapData.uid : null,
-        referredByUsername: referrerSnapData ? referrerSnapData.username : null,
-        referralCount: 0,
-        lastPlayAt: null,
-        lastPlayBranch: null,
-        preferredBranch: input.preferredBranch ?? null,
-        createdAt: now,
+        hasActiveCode: false,
+        branchId: completed.branchId ?? input.preferredBranch,
         updatedAt: now,
-      };
-
-      tx.set(uIdxRef, {
-        uid,
-        authEmail,
-        kind: 'USERNAME',
-        value: normalizedUsername,
-        createdAt: now,
       });
 
-      tx.set(wIdxRef, {
-        uid,
-        authEmail,
-        kind: 'WHATSAPP',
-        value: normalizedWhatsapp,
-        createdAt: now,
-      });
+      // Deterministic one-time Registration Bonus (+10 XP)
+      if (computed.registrationBonusGranted > 0) {
+        tx.set(bonusProgRef, {
+          id: progressLedgerId,
+          memberId: completed.memberId,
+          memberUid: uid,
+          memberUsername: completed.username,
+          amount: computed.registrationBonusGranted,
+          beforeBalance: preMember.xpProgress,
+          afterBalance: preMember.xpProgress + computed.registrationBonusGranted,
+          type: 'PROGRESS',
+          direction: 'CREDIT',
+          source: 'REGISTRATION_BONUS',
+          referenceId: completed.memberId,
+          branch: completed.branchId ?? null,
+          cycleId: settings.currentCycleId,
+          createdAt: now,
+          createdBy: 'system',
+          note: 'Bonus penyelesaian pendaftaran online XP PLAY (+10 XP)',
+        });
+        tx.set(bonusRewRef, {
+          id: rewardLedgerId,
+          memberId: completed.memberId,
+          memberUid: uid,
+          memberUsername: completed.username,
+          amount: computed.registrationBonusGranted,
+          beforeBalance: preMember.xpReward,
+          afterBalance: preMember.xpReward + computed.registrationBonusGranted,
+          type: 'REWARD',
+          direction: 'CREDIT',
+          source: 'REGISTRATION_BONUS',
+          referenceId: completed.memberId,
+          branch: completed.branchId ?? null,
+          cycleId: settings.currentCycleId,
+          createdAt: now,
+          createdBy: 'system',
+          note: 'Bonus penyelesaian pendaftaran online XP PLAY (+10 XP)',
+        });
 
-      tx.set(db.collection('members').doc(uid), memberDoc);
+        const bonusAuditId = generateDocId('audit');
+        tx.set(db.collection('auditLogs').doc(bonusAuditId), {
+          id: bonusAuditId,
+          actorId: uid,
+          actorRole: 'MEMBER',
+          action: 'REGISTRATION_BONUS_GRANTED',
+          targetType: 'member',
+          targetId: uid,
+          before: { xpProgress: preMember.xpProgress, xpReward: preMember.xpReward },
+          after: {
+            xpProgress: preMember.xpProgress + computed.registrationBonusGranted,
+            xpReward: preMember.xpReward + computed.registrationBonusGranted,
+            amount: computed.registrationBonusGranted,
+          },
+          metadata: { memberId: completed.memberId, ledgerIds: [progressLedgerId, rewardLedgerId] },
+          timestamp: now,
+        });
+      }
 
-      // Registration bonus ledgers
-      const regProgId = generateDocId('xpp');
-      const regRewId = generateDocId('xpr');
-      tx.set(db.collection('xpProgressLedger').doc(regProgId), {
-        id: regProgId,
-        memberId,
-        memberUid: uid,
-        amount: regBonus,
-        type: 'PROGRESS',
-        direction: 'CREDIT',
-        source: 'REGISTRATION',
-        referenceId: memberId,
-        branch: null,
-        cycleId: settings.currentCycleId,
-        createdAt: now,
-        createdBy: 'system',
-        note: 'Bonus pendaftaran member baru XP PLAY',
-      });
-      tx.set(db.collection('xpRewardLedger').doc(regRewId), {
-        id: regRewId,
-        memberId,
-        memberUid: uid,
-        amount: regBonus,
-        type: 'REWARD',
-        direction: 'CREDIT',
-        source: 'REGISTRATION',
-        referenceId: memberId,
-        branch: null,
-        cycleId: settings.currentCycleId,
-        createdAt: now,
-        createdBy: 'system',
-        note: 'Bonus pendaftaran member baru XP PLAY',
-      });
-
-      // Referral processing if valid
-      if (referralApplied && referrerSnapData) {
+      // Optional Referral Bonus (+5 / +5 XP)
+      if (computed.referralValid && referrerSnapData && computed.refereeReferralBonus > 0) {
         const refRecordId = generateDocId('ref');
         const refereeProgId = generateDocId('xpp');
         const refereeRewId = generateDocId('xpr');
@@ -325,60 +589,58 @@ export async function registerMemberServer(input: {
           referrerMemberId: referrerSnapData.memberId,
           referrerUsername: referrerSnapData.username,
           refereeUid: uid,
-          refereeMemberId: memberId,
-          refereeUsername: normalizedUsername,
-          referrerXp: refBonus,
-          refereeXp: refBonus,
+          refereeMemberId: completed.memberId,
+          refereeUsername: completed.username,
+          referrerXp: computed.referrerReferralBonus,
+          refereeXp: computed.refereeReferralBonus,
           cycleId: settings.currentCycleId,
           createdAt: now,
         });
 
         tx.set(db.collection('xpProgressLedger').doc(refereeProgId), {
           id: refereeProgId,
-          memberId,
+          memberId: completed.memberId,
           memberUid: uid,
-          amount: refBonus,
+          memberUsername: completed.username,
+          amount: computed.refereeReferralBonus,
           type: 'PROGRESS',
           direction: 'CREDIT',
           source: 'REFERRAL',
           referenceId: refRecordId,
-          branch: null,
+          branch: completed.branchId ?? null,
           cycleId: settings.currentCycleId,
           createdAt: now + 1,
           createdBy: 'system',
-          note: `Bonus referral menggunakan username ${referrerSnapData.username}`,
+          note: `Bonus referral menggunakan username @${referrerSnapData.username}`,
         });
         tx.set(db.collection('xpRewardLedger').doc(refereeRewId), {
           id: refereeRewId,
-          memberId,
+          memberId: completed.memberId,
           memberUid: uid,
-          amount: refBonus,
+          memberUsername: completed.username,
+          amount: computed.refereeReferralBonus,
           type: 'REWARD',
           direction: 'CREDIT',
           source: 'REFERRAL',
           referenceId: refRecordId,
-          branch: null,
+          branch: completed.branchId ?? null,
           cycleId: settings.currentCycleId,
           createdAt: now + 1,
           createdBy: 'system',
-          note: `Bonus referral menggunakan username ${referrerSnapData.username}`,
+          note: `Bonus referral menggunakan username @${referrerSnapData.username}`,
         });
 
-        // Update referrer XP Progress & Reward + Level check (respect MANUAL_OVERRIDE)
-        const nextReferrerProgress = referrerSnapData.xpProgress + refBonus;
-        const nextReferrerReward = referrerSnapData.xpReward + refBonus;
+        const nextRefProg = referrerSnapData.xpProgress + computed.referrerReferralBonus;
+        const nextRefRew = referrerSnapData.xpReward + computed.referrerReferralBonus;
         const isRefManual = referrerSnapData.levelMode === 'MANUAL_OVERRIDE';
-        const referrerLevelEval = resolveLevelFromXp(nextReferrerProgress, levels);
-        const nextReferrerLevel: LevelId = isRefManual
-          ? referrerSnapData.currentLevel
-          : referrerLevelEval.current.id;
-        const nextReferrerMode: LevelMode = isRefManual ? 'MANUAL_OVERRIDE' : 'AUTOMATIC';
+        const refLevelEval = resolveLevelFromXp(nextRefProg, levels);
+        const nextRefLevel: LevelId = isRefManual ? referrerSnapData.currentLevel : refLevelEval.current.id;
 
         tx.update(db.collection('members').doc(referrerSnapData.uid), {
-          xpProgress: nextReferrerProgress,
-          xpReward: nextReferrerReward,
-          currentLevel: nextReferrerLevel,
-          levelMode: nextReferrerMode,
+          xpProgress: nextRefProg,
+          xpReward: nextRefRew,
+          currentLevel: nextRefLevel,
+          levelMode: isRefManual ? 'MANUAL_OVERRIDE' : 'AUTOMATIC',
           referralCount: (referrerSnapData.referralCount || 0) + 1,
           updatedAt: now,
         });
@@ -387,7 +649,8 @@ export async function registerMemberServer(input: {
           id: referrerProgId,
           memberId: referrerSnapData.memberId,
           memberUid: referrerSnapData.uid,
-          amount: refBonus,
+          memberUsername: referrerSnapData.username,
+          amount: computed.referrerReferralBonus,
           type: 'PROGRESS',
           direction: 'CREDIT',
           source: 'REFERRAL',
@@ -396,13 +659,14 @@ export async function registerMemberServer(input: {
           cycleId: settings.currentCycleId,
           createdAt: now + 1,
           createdBy: 'system',
-          note: `Bonus mengajak member baru @${normalizedUsername}`,
+          note: `Bonus mengajak member baru @${completed.username}`,
         });
         tx.set(db.collection('xpRewardLedger').doc(referrerRewId), {
           id: referrerRewId,
           memberId: referrerSnapData.memberId,
           memberUid: referrerSnapData.uid,
-          amount: refBonus,
+          memberUsername: referrerSnapData.username,
+          amount: computed.referrerReferralBonus,
           type: 'REWARD',
           direction: 'CREDIT',
           source: 'REFERRAL',
@@ -411,68 +675,91 @@ export async function registerMemberServer(input: {
           cycleId: settings.currentCycleId,
           createdAt: now + 1,
           createdBy: 'system',
-          note: `Bonus mengajak member baru @${normalizedUsername}`,
+          note: `Bonus mengajak member baru @${completed.username}`,
         });
 
-        if (!isRefManual && nextReferrerLevel !== referrerSnapData.currentLevel) {
-          const lhId = generateDocId('lvl');
-          tx.set(db.collection('levelHistory').doc(lhId), {
-            id: lhId,
-            memberId: referrerSnapData.memberId,
-            memberUid: referrerSnapData.uid,
-            fromLevel: referrerSnapData.currentLevel,
-            toLevel: nextReferrerLevel,
-            xpProgressAtEvent: nextReferrerProgress,
-            source: 'REFERRAL',
-            cycleId: settings.currentCycleId,
-            createdAt: now,
-          });
-          const notifId = generateDocId('notif');
-          tx.set(db.collection('memberNotifications').doc(notifId), {
-            id: notifId,
-            memberId: referrerSnapData.memberId,
-            memberUid: referrerSnapData.uid,
-            notificationCampaignId: null,
-            category: 'LEVEL_UP',
-            title: `Selamat! Level Naik ke ${referrerLevelEval.current.name}`,
-            message: `XP Progress Anda mencapai ${nextReferrerProgress} XP dan level Anda naik menjadi ${referrerLevelEval.current.name}.`,
-            read: false,
-            readAt: null,
-            status: 'SENT',
-            sentAt: now,
-            createdAt: now,
-          });
-        }
+        const refAuditId = generateDocId('audit');
+        tx.set(db.collection('auditLogs').doc(refAuditId), {
+          id: refAuditId,
+          actorId: uid,
+          actorRole: 'MEMBER',
+          action: 'REFERRAL_BONUS_GRANTED',
+          targetType: 'referral',
+          targetId: refRecordId,
+          before: null,
+          after: {
+            referrerUid: referrerSnapData.uid,
+            refereeUid: uid,
+            referrerXp: computed.referrerReferralBonus,
+            refereeXp: computed.refereeReferralBonus,
+          },
+          metadata: { referrerUsername: referrerSnapData.username, refereeUsername: completed.username },
+          timestamp: now,
+        });
       }
 
-      // Audit log
+      // Admin alert for newly completed ACTIVE member
+      const adminAlertId = `new_member_${uid}`;
+      tx.set(db.collection('notifications').doc(adminAlertId), {
+        id: adminAlertId,
+        title: `Member Aktif Baru: @${completed.username}`,
+        message: `${completed.fullName} (@${completed.username}) menyelesaikan pendaftaran online (+${computed.registrationBonusGranted} XP${
+          computed.referralValid && referrerSnapData ? `, referral @${referrerSnapData.username}` : ''
+        }).`,
+        targetType: 'ADMIN_ALERT',
+        targetFilter: uid,
+        inactivityDays: null,
+        category: 'NEW_MEMBER_REGISTERED',
+        memberUid: uid,
+        memberUsername: completed.username,
+        memberName: completed.fullName,
+        referralUsername: referrerSnapData ? referrerSnapData.username : null,
+        startAt: now,
+        endAt: null,
+        active: true,
+        status: 'ACTIVE',
+        createdBy: uid,
+        createdAt: now,
+      });
+
       const auditId = generateDocId('audit');
       tx.set(db.collection('auditLogs').doc(auditId), {
         id: auditId,
         actorId: uid,
         actorRole: 'MEMBER',
-        action: 'MEMBER_REGISTER',
+        action: 'REGISTRATION_COMPLETED',
         targetType: 'member',
         targetId: uid,
-        before: null,
+        before: { status: 'PRE_REGISTERED', registrationStage: 'PHONE_ONLY', xpProgress: preMember.xpProgress, xpReward: preMember.xpReward },
         after: {
-          username: normalizedUsername,
-          xpProgress: totalInitialXp,
-          xpReward: totalInitialXp,
-          referralApplied,
+          status: 'ACTIVE',
+          registrationStage: 'COMPLETED',
+          username: completed.username,
+          xpProgress: completed.xpProgress,
+          xpReward: completed.xpReward,
+          branchId: completed.branchId,
         },
-        metadata: null,
+        metadata: { verifiedPhoneAt: session.verifiedAt, referralApplied: computed.referralValid },
         timestamp: now,
       });
 
-      return { memberDoc, referralApplied, referralMessage };
+      return {
+        member: completed,
+        registrationBonusGranted: computed.registrationBonusGranted,
+        referralApplied: computed.referralValid,
+        referralMessage,
+      };
     });
+
+    verifyOnboardingSessionToken(input.onboardingSessionToken, { consume: true });
+    await markOnboardingCodeUsed(session.normalizedWhatsapp);
 
     const customToken = await adminAuth.createCustomToken(uid);
     return {
       uid,
-      member: result.memberDoc,
+      member: result.member,
       customToken,
+      registrationBonusGranted: result.registrationBonusGranted,
       referralApplied: result.referralApplied,
       referralMessage: result.referralMessage,
     };
@@ -481,6 +768,16 @@ export async function registerMemberServer(input: {
     throw err;
   }
 }
+
+/* Legacy registerMemberServer body removed intentionally — Two-Step Registration is mandatory. */
+async function _legacyRegisterPlaceholder(): Promise<void> {
+  return;
+}
+void _legacyRegisterPlaceholder;
+
+
+// End of Two-Step Registration Server Engine
+
 
 export async function loginMemberServer(input: {
   identifier: string;
@@ -507,7 +804,21 @@ export async function loginMemberServer(input: {
 
   const idxSnap = await db.collection('identityIndex').doc(indexKey).get();
   if (!idxSnap.exists) {
-    // Generic error to prevent account enumeration
+    // Check if phone is PRE_REGISTERED so we show exact onboarding prompt
+    if (looksLikePhone) {
+      const normalizedWa = normalizeWhatsapp(raw);
+      const wHash = hashWhatsappServer(normalizedWa);
+      const pubSnap = await db.collection('onboardingPublicStatus').doc(wHash).get();
+      if (pubSnap.exists && (pubSnap.data() as { status?: string }).status === 'PRE_REGISTERED') {
+        const err = new Error(PRE_REGISTERED_LOGIN_BLOCKED_MESSAGE) as Error & {
+          code?: string;
+          statusCode?: number;
+        };
+        err.code = 'PRE_REGISTERED_INCOMPLETE';
+        err.statusCode = 403;
+        throw err;
+      }
+    }
     throw new Error('Username/WhatsApp atau password tidak sesuai.');
   }
 
@@ -537,6 +848,15 @@ export async function loginMemberServer(input: {
   }
 
   const member = memberSnap.data() as MemberProfile;
+  if (isPreRegisteredMember(member)) {
+    const err = new Error(PRE_REGISTERED_LOGIN_BLOCKED_MESSAGE) as Error & {
+      code?: string;
+      statusCode?: number;
+    };
+    err.code = 'PRE_REGISTERED_INCOMPLETE';
+    err.statusCode = 403;
+    throw err;
+  }
   if (member.status === 'SUSPENDED') {
     throw new Error('Akun Anda sedang ditangguhkan sementara. Hubungi admin XP PLAY.');
   }
@@ -602,7 +922,7 @@ export async function recordTransactionXpServer(input: {
     }
 
     const member = memberSnap.data() as MemberProfile;
-    if (member.status !== 'ACTIVE') {
+    if (member.status !== 'ACTIVE' && member.status !== 'PRE_REGISTERED') {
       throw new Error(`Member berstatus ${member.status} dan tidak dapat menerima transaksi.`);
     }
 
@@ -651,7 +971,10 @@ export async function recordTransactionXpServer(input: {
         id: progId,
         memberId: member.memberId,
         memberUid: member.uid,
+        memberUsername: member.username,
         amount: xpGenerated,
+        beforeBalance: member.xpProgress,
+        afterBalance: newProgress,
         type: 'PROGRESS',
         direction: 'CREDIT',
         source: 'TRANSACTION',
@@ -666,7 +989,10 @@ export async function recordTransactionXpServer(input: {
         id: rewId,
         memberId: member.memberId,
         memberUid: member.uid,
+        memberUsername: member.username,
         amount: xpGenerated,
+        beforeBalance: member.xpReward,
+        afterBalance: newReward,
         type: 'REWARD',
         direction: 'CREDIT',
         source: 'TRANSACTION',
@@ -1904,6 +2230,714 @@ export async function changeMemberPasswordServer(input: {
     sessionsRevoked: shouldRevoke,
     timestamp: now,
   };
+}
+
+// ---------- FASE 1–6: UNIFIED BENEFIT REQUEST ENGINE (SERVER-AUTHORITATIVE) ----------
+
+function generateBenefitRequestCode(): string {
+  const num = crypto.randomBytes(4).toString('hex').toUpperCase();
+  return `BRQ-${num}`;
+}
+
+export async function submitBenefitRequestServer(input: {
+  memberUid: string;
+  sourceType: BenefitRequestSourceType;
+  sourceId: string;
+  evidenceUrl?: string;
+  evidencePath?: string;
+  note?: string;
+  branch?: BranchId | null;
+  assistedByUid?: string | null;
+  assistedByRole?: AdminRole | null;
+}): Promise<{
+  request: BenefitRequestRecord;
+  afterXpReward: number;
+  afterReservedXp: number;
+}> {
+  const db = getAdminDb();
+  if (!db) throw new Error('ADMIN_SDK_UNAVAILABLE');
+
+  return db.runTransaction(async (tx) => {
+    const now = Date.now();
+    const { settings, levels } = await getSettingsAndLevels(db);
+    const memberRef = db.collection('members').doc(input.memberUid);
+    const memberSnap = await tx.get(memberRef);
+    if (!memberSnap.exists) throw new Error('Profil member tidak ditemukan.');
+    const member = memberSnap.data() as MemberProfile;
+
+    const allowPreReg = Boolean(input.assistedByUid && input.assistedByRole);
+    if (member.status !== 'ACTIVE' && !(allowPreReg && member.status === 'PRE_REGISTERED')) {
+      throw new Error(`Akun member berstatus ${member.status} dan tidak dapat mengajukan benefit.`);
+    }
+
+    const isCampaign =
+      input.sourceType === 'CHALLENGE' ||
+      input.sourceType === 'EVENT' ||
+      input.sourceType === 'PROMO';
+
+    let title = '';
+    let xpCost = 0;
+    let xpRewardGrant = 0;
+    let levelRequirement: LevelId = 'BRONZE';
+
+    if (isCampaign) {
+      const campSnap = await tx.get(db.collection('campaigns').doc(input.sourceId));
+      if (!campSnap.exists) throw new Error('Program Challenge/Event/Promo tidak ditemukan.');
+      const camp = campSnap.data() as CampaignItem;
+      const claimable = isCampaignClaimable(camp, now);
+      if (!claimable) throw new Error('Program tidak dapat diajukan saat ini (tidak aktif, kadaluarsa, atau kuota penuh).');
+      if (camp.requiresEvidence && !(input.evidenceUrl || '').trim()) {
+        throw new Error('Bukti foto wajib dilampirkan untuk program ini.');
+      }
+
+      // Enforce per-member claim limit across unified benefitRequests
+      const existingReqs = await tx.get(
+        db
+          .collection('benefitRequests')
+          .where('memberUid', '==', member.uid)
+          .where('sourceId', '==', camp.id)
+      );
+      const validCount = existingReqs.docs.filter((d) => {
+        const st = (d.data() as BenefitRequestRecord).status;
+        return st === 'ON_PROCESS' || st === 'APPROVED' || st === 'USED';
+      }).length;
+      if (validCount >= camp.maxClaimsPerMember) {
+        throw new Error(
+          `Batas pengajuan program ini adalah ${camp.maxClaimsPerMember}x per member.`
+        );
+      }
+
+      title = camp.title;
+      xpCost = 0;
+      xpRewardGrant = Math.max(0, Math.floor(camp.xpReward || 0));
+      levelRequirement = 'BRONZE';
+    } else {
+      const benSnap = await tx.get(db.collection('benefits').doc(input.sourceId));
+      if (!benSnap.exists) throw new Error('Benefit tidak ditemukan.');
+      const benefit = benSnap.data() as BenefitItem;
+      if (!benefit.active) throw new Error('Benefit sedang tidak aktif.');
+      if (benefit.expiryAt !== null && now > benefit.expiryAt) {
+        throw new Error('Masa berlaku katalog benefit ini sudah berakhir.');
+      }
+      if (typeof benefit.stock === 'number' && benefit.stock <= 0) {
+        throw new Error('Stok benefit sudah habis.');
+      }
+
+      const effectiveLevel = resolveEffectiveMemberLevel(member, levels).id;
+      if (!isLevelEligible(effectiveLevel, benefit.levelRequirement, levels)) {
+        throw new Error(
+          `Level Anda (${effectiveLevel}) belum memenuhi syarat minimal ${benefit.levelRequirement}.`
+        );
+      }
+
+      title = benefit.name;
+      xpCost = Math.max(0, Math.floor(benefit.xpCost || 0));
+      xpRewardGrant = 0;
+      levelRequirement = benefit.levelRequirement;
+    }
+
+    const hold = computeBenefitHoldBalances({
+      memberXpReward: member.xpReward,
+      memberReservedXp: member.reservedXp ?? 0,
+      memberXpProgress: member.xpProgress,
+      memberLevel: member.currentLevel,
+      xpCost,
+    });
+
+    const requestId = generateBenefitRequestCode();
+    const holdLedgerId = xpCost > 0 ? generateDocId('xpr') : null;
+
+    const reqDoc: BenefitRequestRecord = {
+      id: requestId,
+      memberId: member.memberId,
+      memberUid: member.uid,
+      memberUsername: member.username,
+      memberName: member.fullName,
+      memberWhatsapp: member.whatsapp,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      title,
+      xpCost,
+      xpRewardGrant,
+      levelRequirement,
+      evidenceUrl: (input.evidenceUrl || '').trim().slice(0, 500),
+      evidencePath: (input.evidencePath || '').trim().slice(0, 500),
+      note: (input.note || '').trim().slice(0, 300),
+      status: 'ON_PROCESS',
+      resolution: null,
+      holdLedgerId,
+      refundLedgerId: null,
+      branch: input.branch ?? member.preferredBranch ?? null,
+      approvedAt: null,
+      approvedBy: null,
+      approvedByRole: null,
+      deniedAt: null,
+      deniedBy: null,
+      deniedReason: null,
+      expiresAt: null,
+      expiredAt: null,
+      usedAt: null,
+      usedBy: null,
+      usedBranch: null,
+      receiptReference: null,
+      refundedAt: null,
+      refundReason: null,
+      refundedAmount: 0,
+      cycleId: settings.currentCycleId,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    tx.set(db.collection('benefitRequests').doc(requestId), reqDoc);
+
+    if (xpCost > 0 && holdLedgerId) {
+      tx.update(memberRef, {
+        xpReward: hold.afterXpReward,
+        reservedXp: hold.afterReservedXp,
+        updatedAt: now,
+      });
+
+      tx.set(db.collection('xpRewardLedger').doc(holdLedgerId), {
+        id: holdLedgerId,
+        memberId: member.memberId,
+        memberUid: member.uid,
+        memberUsername: member.username,
+        amount: -xpCost,
+        beforeBalance: hold.beforeXpReward,
+        afterBalance: hold.afterXpReward,
+        type: 'REWARD',
+        direction: 'DEBIT',
+        source: 'BENEFIT_REQUEST_HOLD',
+        referenceId: requestId,
+        branch: reqDoc.branch,
+        cycleId: settings.currentCycleId,
+        createdAt: now,
+        createdBy: member.uid,
+        note: `XP Ditahan (Hold) untuk Benefit Request: ${title}`,
+      });
+    }
+
+    const auditId = generateDocId('audit');
+    tx.set(db.collection('auditLogs').doc(auditId), {
+      id: auditId,
+      actorId: member.uid,
+      actorRole: 'MEMBER',
+      action: 'BENEFIT_REQUEST_CREATED',
+      targetType: 'benefitRequest',
+      targetId: requestId,
+      before: { xpReward: hold.beforeXpReward, reservedXp: hold.beforeReservedXp },
+      after: {
+        status: 'ON_PROCESS',
+        xpCost,
+        xpRewardGrant,
+        xpReward: hold.afterXpReward,
+        reservedXp: hold.afterReservedXp,
+      },
+      metadata: { sourceType: input.sourceType, sourceId: input.sourceId, title },
+      timestamp: now,
+    });
+
+    return {
+      request: reqDoc,
+      afterXpReward: hold.afterXpReward,
+      afterReservedXp: hold.afterReservedXp,
+    };
+  });
+}
+
+export async function reviewBenefitRequestServer(input: {
+  requestId: string;
+  decision: 'APPROVED' | 'DENIED';
+  reason?: string;
+  adminUid: string;
+  adminRole: AdminRole;
+  adminBranchScope?: BranchId | 'ALL';
+}) {
+  const db = getAdminDb();
+  if (!db) throw new Error('ADMIN_SDK_UNAVAILABLE');
+
+  return db.runTransaction(async (tx) => {
+    const now = Date.now();
+    const reqRef = db.collection('benefitRequests').doc(input.requestId);
+    const reqSnap = await tx.get(reqRef);
+    if (!reqSnap.exists) throw new Error('Data Benefit Request tidak ditemukan.');
+    const reqDoc = reqSnap.data() as BenefitRequestRecord;
+
+    if (reqDoc.branch && isCashierRole(input.adminRole)) {
+      assertCashierBranchAccess(
+        { role: input.adminRole, branchScope: input.adminBranchScope ?? 'ALL' },
+        reqDoc.branch,
+        'memproses Benefit Request'
+      );
+    }
+
+    if (reqDoc.status !== 'ON_PROCESS') {
+      throw new Error(`Benefit Request sudah berstatus ${reqDoc.status} dan tidak dapat diproses ulang.`);
+    }
+
+    const memberRef = db.collection('members').doc(reqDoc.memberUid);
+    const memberSnap = await tx.get(memberRef);
+    if (!memberSnap.exists) throw new Error('Profil member tidak ditemukan.');
+    const member = memberSnap.data() as MemberProfile;
+
+    const { settings, levels } = await getSettingsAndLevels(db);
+
+    if (input.decision === 'DENIED') {
+      const denialReason = (input.reason || 'Pengajuan benefit belum memenuhi syarat.').trim().slice(0, 300);
+      const denyEval = computeBenefitDenial({ request: reqDoc, member, nowMs: now });
+      const refundLedgerId = denyEval.shouldCreateRefundLedger ? generateDocId('xpr') : null;
+
+      tx.update(reqRef, {
+        status: denyEval.nextStatus,
+        resolution: denyEval.resolution,
+        deniedAt: denyEval.deniedAt,
+        deniedBy: input.adminUid,
+        deniedReason: denialReason,
+        refundedAt: denyEval.refundedAt,
+        refundReason: denyEval.shouldCreateRefundLedger ? `Pengajuan ditolak: ${denialReason}` : null,
+        refundedAmount: denyEval.refundedAmount,
+        refundLedgerId,
+        updatedAt: now,
+      });
+
+      if (denyEval.shouldCreateRefundLedger && refundLedgerId) {
+        tx.update(memberRef, {
+          xpReward: denyEval.afterXpReward,
+          reservedXp: denyEval.afterReservedXp,
+          updatedAt: now,
+        });
+
+        tx.set(db.collection('xpRewardLedger').doc(refundLedgerId), {
+          id: refundLedgerId,
+          memberId: member.memberId,
+          memberUid: member.uid,
+          memberUsername: member.username,
+          amount: denyEval.refundedAmount,
+          beforeBalance: denyEval.beforeXpReward,
+          afterBalance: denyEval.afterXpReward,
+          type: 'REWARD',
+          direction: 'CREDIT',
+          source: 'DENIED_REFUND',
+          referenceId: reqDoc.id,
+          branch: reqDoc.branch,
+          cycleId: settings.currentCycleId,
+          createdAt: now,
+          createdBy: input.adminUid,
+          note: `Refund XP otomatis — Benefit Request ditolak (${reqDoc.title}): ${denialReason}`,
+        });
+      }
+
+      const notifId = generateDocId('notif');
+      tx.set(db.collection('memberNotifications').doc(notifId), {
+        id: notifId,
+        memberId: member.memberId,
+        memberUid: member.uid,
+        notificationCampaignId: null,
+        category: 'BENEFIT_REQUEST',
+        title:
+          denyEval.refundedAmount > 0
+            ? `Benefit Ditolak — ${denyEval.refundedAmount} XP Dikembalikan`
+            : `Benefit Request Ditolak: ${reqDoc.title}`,
+        message:
+          denyEval.refundedAmount > 0
+            ? `Pengajuan "${reqDoc.title}" (${reqDoc.id}) ditolak (${denialReason}). Saldo ${denyEval.refundedAmount} XP telah dikembalikan ke XP Reward Anda.`
+            : `Pengajuan "${reqDoc.title}" (${reqDoc.id}) ditolak. Alasan: ${denialReason}`,
+        read: false,
+        readAt: null,
+        status: 'SENT',
+        sentAt: now,
+        createdAt: now,
+      });
+
+      const auditId = generateDocId('audit');
+      tx.set(db.collection('auditLogs').doc(auditId), {
+        id: auditId,
+        actorId: input.adminUid,
+        actorRole: input.adminRole,
+        action: denyEval.refundedAmount > 0 ? 'BENEFIT_REQUEST_DENIED_REFUNDED' : 'BENEFIT_REQUEST_DENIED',
+        targetType: 'benefitRequest',
+        targetId: reqDoc.id,
+        before: { status: 'ON_PROCESS', xpReward: member.xpReward, reservedXp: member.reservedXp ?? 0 },
+        after: {
+          status: denyEval.nextStatus,
+          xpReward: denyEval.afterXpReward,
+          reservedXp: denyEval.afterReservedXp,
+          refundedAmount: denyEval.refundedAmount,
+          denialReason,
+        },
+        metadata: { refundLedgerId },
+        timestamp: now,
+      });
+
+      return {
+        status: denyEval.nextStatus,
+        refundedAmount: denyEval.refundedAmount,
+        afterXpReward: denyEval.afterXpReward,
+      };
+    }
+
+    // APPROVED
+    const isCampaign =
+      reqDoc.sourceType === 'CHALLENGE' ||
+      reqDoc.sourceType === 'EVENT' ||
+      reqDoc.sourceType === 'PROMO';
+
+    if (isCampaign) {
+      const campRef = db.collection('campaigns').doc(reqDoc.sourceId);
+      const campSnap = await tx.get(campRef);
+      if (campSnap.exists) {
+        const camp = campSnap.data() as CampaignItem;
+        if (camp.totalClaimLimit !== null && camp.claimsCount >= camp.totalClaimLimit) {
+          throw new Error('Kuota total program ini sudah habis.');
+        }
+        tx.update(campRef, { claimsCount: (camp.claimsCount || 0) + 1, updatedAt: now });
+      }
+    } else {
+      const benRef = db.collection('benefits').doc(reqDoc.sourceId);
+      const benSnap = await tx.get(benRef);
+      if (benSnap.exists) {
+        const ben = benSnap.data() as BenefitItem;
+        if (typeof ben.stock === 'number') {
+          if (ben.stock <= 0) throw new Error('Stok benefit sudah habis.');
+          tx.update(benRef, { stock: ben.stock - 1, updatedAt: now });
+        }
+      }
+    }
+
+    const appEval = computeBenefitApproval({ request: reqDoc, member, levels, nowMs: now });
+
+    tx.update(reqRef, {
+      status: appEval.nextStatus,
+      approvedAt: appEval.approvedAt,
+      approvedBy: input.adminUid,
+      approvedByRole: input.adminRole,
+      expiresAt: appEval.expiresAt,
+      updatedAt: now,
+    });
+
+    tx.update(memberRef, {
+      xpProgress: appEval.nextXpProgress,
+      xpReward: appEval.nextXpReward,
+      reservedXp: appEval.nextReservedXp,
+      currentLevel: appEval.nextLevel,
+      updatedAt: now,
+    });
+
+    if (reqDoc.xpRewardGrant > 0) {
+      const progId = generateDocId('xpp');
+      const rewId = generateDocId('xpr');
+      const ledgerSource =
+        reqDoc.sourceType === 'CHALLENGE' ||
+        reqDoc.sourceType === 'EVENT' ||
+        reqDoc.sourceType === 'PROMO'
+          ? reqDoc.sourceType
+          : 'LEVEL_BONUS';
+
+      tx.set(db.collection('xpProgressLedger').doc(progId), {
+        id: progId,
+        memberId: member.memberId,
+        memberUid: member.uid,
+        memberUsername: member.username,
+        amount: reqDoc.xpRewardGrant,
+        beforeBalance: member.xpProgress,
+        afterBalance: appEval.nextXpProgress,
+        type: 'PROGRESS',
+        direction: 'CREDIT',
+        source: ledgerSource,
+        referenceId: reqDoc.id,
+        branch: reqDoc.branch,
+        cycleId: settings.currentCycleId,
+        createdAt: now,
+        createdBy: input.adminUid,
+        note: `Benefit Request disetujui: ${reqDoc.title}`,
+      });
+      tx.set(db.collection('xpRewardLedger').doc(rewId), {
+        id: rewId,
+        memberId: member.memberId,
+        memberUid: member.uid,
+        memberUsername: member.username,
+        amount: reqDoc.xpRewardGrant,
+        beforeBalance: member.xpReward,
+        afterBalance: appEval.nextXpReward,
+        type: 'REWARD',
+        direction: 'CREDIT',
+        source: ledgerSource,
+        referenceId: reqDoc.id,
+        branch: reqDoc.branch,
+        cycleId: settings.currentCycleId,
+        createdAt: now,
+        createdBy: input.adminUid,
+        note: `Benefit Request disetujui: ${reqDoc.title}`,
+      });
+    }
+
+    if (appEval.levelChanged) {
+      const lhId = generateDocId('lvl');
+      tx.set(db.collection('levelHistory').doc(lhId), {
+        id: lhId,
+        memberId: member.memberId,
+        memberUid: member.uid,
+        fromLevel: member.currentLevel,
+        toLevel: appEval.nextLevel,
+        xpProgressAtEvent: appEval.nextXpProgress,
+        source: reqDoc.sourceType,
+        cycleId: settings.currentCycleId,
+        createdAt: now,
+      });
+    }
+
+    const notifId = generateDocId('notif');
+    tx.set(db.collection('memberNotifications').doc(notifId), {
+      id: notifId,
+      memberId: member.memberId,
+      memberUid: member.uid,
+      notificationCampaignId: null,
+      category: 'BENEFIT_REQUEST',
+      title: `Benefit Disetujui: ${reqDoc.title}`,
+      message: `Pengajuan "${reqDoc.title}" (${reqDoc.id}) telah disetujui dan berlaku selama 7 hari. Tunjukkan Request ID ke kasir XP PLAY untuk digunakan.`,
+      read: false,
+      readAt: null,
+      status: 'SENT',
+      sentAt: now,
+      createdAt: now,
+    });
+
+    const auditId = generateDocId('audit');
+    tx.set(db.collection('auditLogs').doc(auditId), {
+      id: auditId,
+      actorId: input.adminUid,
+      actorRole: input.adminRole,
+      action: 'BENEFIT_REQUEST_APPROVED',
+      targetType: 'benefitRequest',
+      targetId: reqDoc.id,
+      before: { status: 'ON_PROCESS', xpProgress: member.xpProgress, xpReward: member.xpReward, reservedXp: member.reservedXp ?? 0 },
+      after: {
+        status: 'APPROVED',
+        expiresAt: appEval.expiresAt,
+        xpProgress: appEval.nextXpProgress,
+        xpReward: appEval.nextXpReward,
+        reservedXp: appEval.nextReservedXp,
+      },
+      metadata: null,
+      timestamp: now,
+    });
+
+    return {
+      status: 'APPROVED',
+      approvedAt: appEval.approvedAt,
+      expiresAt: appEval.expiresAt,
+      xpProgress: appEval.nextXpProgress,
+      xpReward: appEval.nextXpReward,
+    };
+  });
+}
+
+export async function markBenefitRequestUsedServer(input: {
+  requestId: string;
+  usedBranch: BranchId;
+  receiptReference?: string;
+  adminUid: string;
+  adminRole: AdminRole;
+  adminBranchScope?: BranchId | 'ALL';
+}) {
+  if (isCashierRole(input.adminRole)) {
+    assertCashierBranchAccess(
+      { role: input.adminRole, branchScope: input.adminBranchScope ?? 'ALL' },
+      input.usedBranch,
+      'menandai Benefit USED'
+    );
+  }
+  const db = getAdminDb();
+  if (!db) throw new Error('ADMIN_SDK_UNAVAILABLE');
+
+  return db.runTransaction(async (tx) => {
+    const now = Date.now();
+    const reqRef = db.collection('benefitRequests').doc(input.requestId);
+    const reqSnap = await tx.get(reqRef);
+    if (!reqSnap.exists) throw new Error('Data Benefit Request tidak ditemukan.');
+    const reqDoc = reqSnap.data() as BenefitRequestRecord;
+
+    if (reqDoc.branch && isCashierRole(input.adminRole)) {
+      assertCashierBranchAccess(
+        { role: input.adminRole, branchScope: input.adminBranchScope ?? 'ALL' },
+        reqDoc.branch,
+        'menandai Benefit USED'
+      );
+    }
+
+    const usedEval = computeBenefitMarkUsed({ request: reqDoc, nowMs: now });
+    const receiptRef = (input.receiptReference || '').trim().slice(0, 80) || null;
+
+    tx.update(reqRef, {
+      status: usedEval.nextStatus,
+      usedAt: usedEval.usedAt,
+      usedBy: input.adminUid,
+      usedBranch: input.usedBranch,
+      receiptReference: receiptRef,
+      updatedAt: now,
+    });
+
+    const notifId = generateDocId('notif');
+    tx.set(db.collection('memberNotifications').doc(notifId), {
+      id: notifId,
+      memberId: reqDoc.memberId,
+      memberUid: reqDoc.memberUid,
+      notificationCampaignId: null,
+      category: 'BENEFIT_REQUEST',
+      title: `Benefit Digunakan: ${reqDoc.title}`,
+      message: `Benefit "${reqDoc.title}" (${reqDoc.id}) telah digunakan di XP PLAY ${input.usedBranch}. Terima kasih!`,
+      read: false,
+      readAt: null,
+      status: 'SENT',
+      sentAt: now,
+      createdAt: now,
+    });
+
+    const auditId = generateDocId('audit');
+    tx.set(db.collection('auditLogs').doc(auditId), {
+      id: auditId,
+      actorId: input.adminUid,
+      actorRole: input.adminRole,
+      action: 'BENEFIT_REQUEST_USED',
+      targetType: 'benefitRequest',
+      targetId: reqDoc.id,
+      before: { status: 'APPROVED' },
+      after: { status: 'USED', usedAt: usedEval.usedAt, usedBranch: input.usedBranch, receiptReference: receiptRef },
+      metadata: null,
+      timestamp: now,
+    });
+
+    return {
+      status: 'USED',
+      usedAt: usedEval.usedAt,
+      usedBranch: input.usedBranch,
+      receiptReference: receiptRef,
+    };
+  });
+}
+
+export async function processExpiredBenefitRequestsServer(input: {
+  adminUid: string;
+  adminRole: AdminRole;
+}): Promise<{ processedCount: number; refundedCount: number; expiredOnlyCount: number }> {
+  const db = getAdminDb();
+  if (!db) throw new Error('ADMIN_SDK_UNAVAILABLE');
+
+  const now = Date.now();
+  const { settings } = await getSettingsAndLevels(db);
+  const refundOnExpiry = Boolean(settings.refundOnExpiry);
+
+  const snap = await db.collection('benefitRequests').where('status', '==', 'APPROVED').get();
+  let processedCount = 0;
+  let refundedCount = 0;
+  let expiredOnlyCount = 0;
+
+  for (const docSnap of snap.docs) {
+    const candidate = docSnap.data() as BenefitRequestRecord;
+    if (candidate.expiresAt === null || now <= candidate.expiresAt) continue;
+
+    await db.runTransaction(async (tx) => {
+      const freshSnap = await tx.get(docSnap.ref);
+      if (!freshSnap.exists) return;
+      const reqDoc = freshSnap.data() as BenefitRequestRecord;
+      if (reqDoc.status !== 'APPROVED' || reqDoc.expiresAt === null || now <= reqDoc.expiresAt) return;
+
+      const memberRef = db.collection('members').doc(reqDoc.memberUid);
+      const memberSnap = await tx.get(memberRef);
+      if (!memberSnap.exists) return;
+      const member = memberSnap.data() as MemberProfile;
+
+      const expEval = computeBenefitExpiry({
+        request: reqDoc,
+        member,
+        refundOnExpiry,
+        nowMs: now,
+      });
+
+      const refundLedgerId = expEval.shouldCreateRefundLedger ? generateDocId('xpr') : null;
+
+      tx.update(docSnap.ref, {
+        status: expEval.nextStatus,
+        resolution: expEval.resolution,
+        expiredAt: expEval.expiredAt,
+        refundedAt: expEval.refundedAt,
+        refundReason: expEval.shouldCreateRefundLedger
+          ? 'Benefit kadaluarsa melewati 7 hari (refundOnExpiry aktif)'
+          : null,
+        refundedAmount: expEval.refundedAmount,
+        refundLedgerId,
+        updatedAt: now,
+      });
+
+      if (expEval.shouldCreateRefundLedger && refundLedgerId) {
+        tx.update(memberRef, {
+          xpReward: expEval.afterXpReward,
+          updatedAt: now,
+        });
+
+        tx.set(db.collection('xpRewardLedger').doc(refundLedgerId), {
+          id: refundLedgerId,
+          memberId: member.memberId,
+          memberUid: member.uid,
+          memberUsername: member.username,
+          amount: expEval.refundedAmount,
+          beforeBalance: expEval.beforeXpReward,
+          afterBalance: expEval.afterXpReward,
+          type: 'REWARD',
+          direction: 'CREDIT',
+          source: 'EXPIRY_REFUND',
+          referenceId: reqDoc.id,
+          branch: reqDoc.branch,
+          cycleId: settings.currentCycleId,
+          createdAt: now,
+          createdBy: input.adminUid,
+          note: `Refund XP otomatis — Benefit kadaluarsa (${reqDoc.title})`,
+        });
+      }
+
+      const notifId = generateDocId('notif');
+      tx.set(db.collection('memberNotifications').doc(notifId), {
+        id: notifId,
+        memberId: member.memberId,
+        memberUid: member.uid,
+        notificationCampaignId: null,
+        category: 'BENEFIT_REQUEST',
+        title:
+          expEval.refundedAmount > 0
+            ? `Benefit Kadaluarsa — ${expEval.refundedAmount} XP Dikembalikan`
+            : `Benefit Kadaluarsa: ${reqDoc.title}`,
+        message:
+          expEval.refundedAmount > 0
+            ? `Masa berlaku 7 hari benefit "${reqDoc.title}" (${reqDoc.id}) telah berakhir. ${expEval.refundedAmount} XP dikembalikan ke saldo XP Reward Anda.`
+            : `Masa berlaku 7 hari benefit "${reqDoc.title}" (${reqDoc.id}) telah berakhir (EXPIRED).`,
+        read: false,
+        readAt: null,
+        status: 'SENT',
+        sentAt: now,
+        createdAt: now,
+      });
+
+      const auditId = generateDocId('audit');
+      tx.set(db.collection('auditLogs').doc(auditId), {
+        id: auditId,
+        actorId: input.adminUid,
+        actorRole: input.adminRole,
+        action: expEval.refundedAmount > 0 ? 'BENEFIT_REQUEST_EXPIRED_REFUNDED' : 'BENEFIT_REQUEST_EXPIRED',
+        targetType: 'benefitRequest',
+        targetId: reqDoc.id,
+        before: { status: 'APPROVED', xpReward: member.xpReward },
+        after: { status: expEval.nextStatus, xpReward: expEval.afterXpReward, refundedAmount: expEval.refundedAmount },
+        metadata: { refundOnExpiry, refundLedgerId },
+        timestamp: now,
+      });
+
+      processedCount++;
+      if (expEval.refundedAmount > 0) refundedCount++;
+      else expiredOnlyCount++;
+    });
+  }
+
+  return { processedCount, refundedCount, expiredOnlyCount };
 }
 
 export { validateLevelThresholds, isCampaignClaimable };

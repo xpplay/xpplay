@@ -1,6 +1,7 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
+    // Global default deny
     match /{allPaths=**} {
       allow read, write: if false;
     }
@@ -16,7 +17,7 @@ service firebase.storage {
         && request.resource.contentType.matches('image/(jpeg|png|webp)');
     }
 
-    // Claim evidence files: isolated per memberUid/claimId
+    // Claim evidence files: strictly isolated per memberUid/claimId
     match /claims/{memberUid}/{claimId}/{fileName} {
       allow read: if isSignedIn() && request.auth.uid == memberUid;
       allow write: if isSignedIn()
@@ -24,6 +25,15 @@ service firebase.storage {
         && fileName.size() <= 128
         && fileName.matches('^[a-zA-Z0-9_.\\-]+\\.(jpg|jpeg|png|webp)$')
         && isValidImageUpload();
+    }
+
+    // CMS media and system backups are managed strictly via server-side API (Admin/Super Admin only; Cashier & Member denied)
+    match /cms/{allPaths=**} {
+      allow read, write: if false;
+    }
+
+    match /backups/{allPaths=**} {
+      allow read, write: if false;
     }
   }
 }

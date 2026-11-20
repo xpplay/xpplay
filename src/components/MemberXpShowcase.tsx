@@ -10,6 +10,7 @@ interface MemberXpShowcaseProps {
   cycleId: string;
   xpProgress: number;
   xpReward: number;
+  reservedXp?: number;
   levels: LevelConfig[];
   currentLevel?: LevelId;
   levelMode?: LevelMode;
@@ -67,6 +68,7 @@ export function MemberXpShowcase({
   cycleId,
   xpProgress,
   xpReward,
+  reservedXp = 0,
   levels,
   currentLevel,
   levelMode,
@@ -260,11 +262,16 @@ export function MemberXpShowcase({
         <div className="rounded-2xl border border-purple-500/35 bg-gradient-to-br from-[#0E112B] to-[#170F33] p-4 sm:p-5 flex flex-col justify-between gap-3">
           <div className="flex items-start justify-between gap-2">
             <div>
-              <p className="text-xs font-medium text-purple-300">XP Reward</p>
+              <p className="text-xs font-medium text-purple-300">XP Reward Tersedia</p>
               <p className="mt-1.5 font-mono text-2xl sm:text-3xl font-extrabold text-white tabular-nums">
                 {xpReward}
                 <span className="text-sm font-semibold text-purple-300 ml-1">XP</span>
               </p>
+              {reservedXp > 0 && (
+                <p className="mt-1 font-mono text-[11px] font-semibold text-amber-300 tabular-nums">
+                  Ditahan (Hold): {reservedXp} XP
+                </p>
+              )}
             </div>
             <div className="w-10 h-10 rounded-xl bg-purple-500/20 border border-purple-400/35 text-purple-300 flex items-center justify-center shrink-0">
               <Gift className="w-5 h-5" />

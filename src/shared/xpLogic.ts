@@ -70,6 +70,7 @@ export const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
   transactionXpRate: 2000,
   registrationBonusXp: 10,
   referralBonusXp: 5,
+  refundOnExpiry: false,
   currentCycleId: '2026-S1',
   resetEnabled: false,
   resetInterval: 90,

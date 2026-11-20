@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import {
   Activity,
   Award,
@@ -25,18 +25,23 @@ import {
   SlidersHorizontal,
   Sparkles,
   Tag,
+  TicketCheck,
   Trophy,
   UserCog,
+  UserPlus,
   Users,
   X,
 } from 'lucide-react';
 import { where, type DocumentData, type QueryConstraint, type QueryDocumentSnapshot } from 'firebase/firestore';
 import { AdminBackupRestore } from '../components/AdminBackupRestore.tsx';
+import { AdminBenefitRequests } from '../components/AdminBenefitRequests.tsx';
 import { AdminCmsEditor } from '../components/AdminCmsEditor.tsx';
 import { AdminInactiveMembers } from '../components/AdminInactiveMembers.tsx';
 import { AdminLevelOverride } from '../components/AdminLevelOverride.tsx';
+import { AdminMemberDetail } from '../components/AdminMemberDetail.tsx';
 import { AdminPasswordManagement } from '../components/AdminPasswordManagement.tsx';
 import { AdminXpAdjustment } from '../components/AdminXpAdjustment.tsx';
+import { AdminXpHistory } from '../components/AdminXpHistory.tsx';
 import { ProtectedImage } from '../components/ProtectedImage.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
 import { mapFriendlyError } from '../lib/firestoreError.ts';
@@ -45,7 +50,11 @@ import {
   createMemberByAdmin,
   executeCycleResetByAdmin,
   fetchAdminSummaryMetrics,
+  fetchMembersBatchForFilter,
+  fetchNewMembersOverview,
   fetchPaginatedCollection,
+  fetchTransactionsBatchForFilter,
+  preRegisterCustomerClient,
   recordTransactionByAdmin,
   reviewClaimByAdmin,
   reviewRedemptionByAdmin,
@@ -59,11 +68,27 @@ import {
   upsertCampaignByAdmin,
 } from '../services/xpService.ts';
 import {
+  CASHIER_SLOT_TEMPLATES,
+  getDefaultPermissionsForRole,
+  isCashierRole,
+  ROLE_PERMISSION_MATRIX_ROWS,
+} from '../shared/rbac.ts';
+import {
+  filterAndSortMembers,
+  filterAndSortTransactions,
+  formatBirthDateJakarta,
+  getJakartaTodayDateString,
+  getMemberCategoryLabel,
+  MEMBER_CATEGORIES,
+  type MemberSortOption,
+  type TransactionDatePreset,
+  type TransactionSortOption,
+} from '../shared/benefitRequestLogic.ts';
+import {
   calculateTransactionXp,
   formatDateTimeLocalInput,
   formatIdr,
   formatJakartaDateTime,
-  getBranchLabel,
   resolveCampaignStatus,
 } from '../shared/xpLogic.ts';
 import type {
@@ -81,18 +106,18 @@ import type {
   LevelConfig,
   LevelHistoryRecord,
   LevelId,
+  MemberCategory,
   MemberProfile,
-  MembershipCycle,
   MemberStatus,
   NotificationCampaign,
   RedemptionRecord,
   SystemSettings,
   TransactionRecord,
-  XpLedgerEntry,
 } from '../types/xpplay.ts';
 
 type AdminMenu =
   | 'dashboard'
+  | 'benefitRequests'
   | 'members'
   | 'inactiveMembers'
   | 'passwordManagement'
@@ -120,6 +145,7 @@ type AdminMenu =
 
 const MENU_ITEMS: { id: AdminMenu; label: string; icon: typeof LayoutDashboard; superOnly?: boolean }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+  { id: 'benefitRequests', label: 'Benefit Requests & Kasir', icon: TicketCheck },
   { id: 'members', label: 'Members', icon: Users },
   { id: 'inactiveMembers', label: 'Inactive Members', icon: Clock },
   { id: 'passwordManagement', label: 'Password Member', icon: KeyRound },
@@ -128,8 +154,8 @@ const MENU_ITEMS: { id: AdminMenu; label: string; icon: typeof LayoutDashboard; 
   { id: 'levelOverride', label: 'Level Override', icon: Crown },
   { id: 'xpHistory', label: 'XP History', icon: History },
   { id: 'levelHistory', label: 'Level Up History', icon: Trophy },
-  { id: 'claims', label: 'Claims', icon: FileCheck2 },
-  { id: 'redemptions', label: 'Redemptions', icon: Gift },
+  { id: 'claims', label: 'Legacy Claims', icon: FileCheck2 },
+  { id: 'redemptions', label: 'Legacy Redemptions', icon: Gift },
   { id: 'benefits', label: 'Benefits', icon: Award },
   { id: 'challenges', label: 'Challenges', icon: Sparkles },
   { id: 'events', label: 'Events', icon: Calendar },
@@ -146,18 +172,38 @@ const MENU_ITEMS: { id: AdminMenu; label: string; icon: typeof LayoutDashboard; 
   { id: 'settings', label: 'Settings & Reporting', icon: BarChart3 },
 ];
 
-export function AdminDashboardPage() {
+export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER_ADMIN' } = {}) {
   const { adminProfile, levels, branches, systemSettings, restoreLock, capabilities, logout, refreshProfiles } = useAuth();
+  const _consoleMode = mode;
+  void _consoleMode;
   const [menu, setMenu] = useState<AdminMenu>('dashboard');
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [newMemberViewMode, setNewMemberViewMode] = useState<'ACTIVE' | 'PRE_REGISTERED'>('ACTIVE');
 
-  // Dashboard metrics
+  // Admin Quick Pre-Register Customer (Stage 1)
+  const [showPreRegister, setShowPreRegister] = useState(false);
+  const [adminPreRegWa, setAdminPreRegWa] = useState('');
+  const [adminPreRegBranch, setAdminPreRegBranch] = useState<BranchId>('DEMANG');
+  const [adminPreRegNotes, setAdminPreRegNotes] = useState('');
+  const [adminPreRegCode, setAdminPreRegCode] = useState<{
+    memberId: string;
+    whatsapp: string;
+    code: string;
+    url: string;
+    waMsg: string;
+  } | null>(null);
+
+  // Dashboard metrics & New Members Overview (FASE 18)
   const [metrics, setMetrics] = useState<Awaited<ReturnType<typeof fetchAdminSummaryMetrics>> | null>(null);
+  const [newMembersOverview, setNewMembersOverview] = useState<Awaited<ReturnType<typeof fetchNewMembersOverview>> | null>(null);
   const [loadingMetrics, setLoadingMetrics] = useState(false);
 
-  // Generic paginated list state for active view
+  // 8-Tab Member Detail Drawer (FASE 10)
+  const [detailMemberUid, setDetailMemberUid] = useState<string | null>(null);
+
+  // Generic paginated list state for legacy / other views
   const [rows, setRows] = useState<unknown[]>([]);
   const [rowsOwnerKey, setRowsOwnerKey] = useState<string>('');
   const [cursor, setCursor] = useState<QueryDocumentSnapshot<DocumentData> | null>(null);
@@ -165,29 +211,54 @@ export function AdminDashboardPage() {
   const [loadingRows, setLoadingRows] = useState(false);
   const fetchSeqRef = useRef(0);
 
-  // Filters
-  const [branchFilter, setBranchFilter] = useState<'ALL' | BranchId>('ALL');
+  // Filters (Legacy)
   const [statusFilter, setStatusFilter] = useState<string>('ON_PROCESS');
-  const [ledgerType, setLedgerType] = useState<'xpProgressLedger' | 'xpRewardLedger'>('xpProgressLedger');
-  const [memberSearch, setMemberSearch] = useState('');
 
-  // Forms: Add Member
+  // FASE 9: Advanced Members Filter / Search / Sort / Pagination
+  const [allMembers, setAllMembers] = useState<MemberProfile[]>([]);
+  const [loadingMembersBatch, setLoadingMembersBatch] = useState(false);
+  const [memberSearch, setMemberSearch] = useState('');
+  const [memberFilterLevel, setMemberFilterLevel] = useState<'ALL' | LevelId>('ALL');
+  const [memberFilterStatus, setMemberFilterStatus] = useState<'ALL' | MemberStatus>('ALL');
+  const [memberFilterBranch, setMemberFilterBranch] = useState<'ALL' | BranchId>('ALL');
+  const [memberFilterCategory, setMemberFilterCategory] = useState<'ALL' | MemberCategory>('ALL');
+  const [memberFilterFrom, setMemberFilterFrom] = useState('');
+  const [memberFilterTo, setMemberFilterTo] = useState('');
+  const [memberSort, setMemberSort] = useState<MemberSortOption>('NEWEST');
+  const [memberPage, setMemberPage] = useState(1);
+
+  // FASE 11: Advanced Transactions Filter / Search / Sort / Pagination
+  const [allTransactions, setAllTransactions] = useState<TransactionRecord[]>([]);
+  const [loadingTxBatch, setLoadingTxBatch] = useState(false);
+  const [txSearch, setTxSearch] = useState('');
+  const [txBranchFilter, setTxBranchFilter] = useState<'ALL' | BranchId>('ALL');
+  const [txDatePreset, setTxDatePreset] = useState<TransactionDatePreset>('ALL');
+  const [txDateFrom, setTxDateFrom] = useState('');
+  const [txDateTo, setTxDateTo] = useState('');
+  const [txSort, setTxSort] = useState<TransactionSortOption>('NEWEST');
+  const [txPage, setTxPage] = useState(1);
+
+  // Forms: Add Member (with Birth Date & Member Status)
   const [showAddMember, setShowAddMember] = useState(false);
   const [newMember, setNewMember] = useState({
     fullName: '',
     username: '',
     whatsapp: '',
     socialMedia: '',
+    birthDate: '',
+    memberCategory: '' as '' | MemberCategory,
     referralUsername: '',
     preferredBranch: 'DEMANG' as BranchId,
   });
 
-  // Forms: Edit Member modal
+  // Forms: Edit Member modal (with Birth Date & Member Status)
   const [editMemberTarget, setEditMemberTarget] = useState<MemberProfile | null>(null);
   const [editMemberPatch, setEditMemberPatch] = useState({
     fullName: '',
     socialMedia: '',
     preferredBranch: 'DEMANG' as BranchId,
+    birthDate: '',
+    memberCategory: '' as '' | MemberCategory,
   });
   const [xpAdjustmentInitialMember, setXpAdjustmentInitialMember] = useState<MemberProfile | null>(null);
   const [levelOverrideInitialMember, setLevelOverrideInitialMember] = useState<MemberProfile | null>(null);
@@ -265,8 +336,9 @@ export function AdminDashboardPage() {
     uid: '',
     email: '',
     fullName: '',
-    role: 'STAFF' as AdminRole,
-    branchScope: 'ALL' as BranchId | 'ALL',
+    role: 'CASHIER' as AdminRole,
+    branchScope: 'DEMANG' as BranchId | 'ALL',
+    cashierCode: '',
     active: true,
   });
 
@@ -281,8 +353,12 @@ export function AdminDashboardPage() {
   const loadDashboardMetrics = async () => {
     setLoadingMetrics(true);
     try {
-      const data = await fetchAdminSummaryMetrics();
+      const [data, newMem] = await Promise.all([
+        fetchAdminSummaryMetrics(),
+        fetchNewMembersOverview(),
+      ]);
       setMetrics(data);
+      setNewMembersOverview(newMem);
     } catch (err) {
       setFeedback({ type: 'error', text: mapFriendlyError(err) });
     } finally {
@@ -290,12 +366,44 @@ export function AdminDashboardPage() {
     }
   };
 
-  const currentQueryKey = `${menu}:${branchFilter}:${statusFilter}:${ledgerType}`;
+  const loadMembersBatch = async () => {
+    setLoadingMembersBatch(true);
+    try {
+      const list = await fetchMembersBatchForFilter(500);
+      setAllMembers(list);
+    } catch (err) {
+      setFeedback({ type: 'error', text: mapFriendlyError(err) });
+    } finally {
+      setLoadingMembersBatch(false);
+    }
+  };
+
+  const loadTransactionsBatch = async () => {
+    setLoadingTxBatch(true);
+    try {
+      const [txList, memList] = await Promise.all([
+        fetchTransactionsBatchForFilter(500),
+        allMembers.length > 0 ? Promise.resolve(allMembers) : fetchMembersBatchForFilter(500),
+      ]);
+      setAllTransactions(txList);
+      if (allMembers.length === 0) setAllMembers(memList);
+    } catch (err) {
+      setFeedback({ type: 'error', text: mapFriendlyError(err) });
+    } finally {
+      setLoadingTxBatch(false);
+    }
+  };
+
+  const currentQueryKey = `${menu}:${statusFilter}`;
   const activeRows = rowsOwnerKey === currentQueryKey ? rows : [];
 
   const loadMenuRows = async (reset: boolean) => {
     if (
       menu === 'dashboard' ||
+      menu === 'benefitRequests' ||
+      menu === 'members' ||
+      menu === 'transactions' ||
+      menu === 'xpHistory' ||
       menu === 'inactiveMembers' ||
       menu === 'passwordManagement' ||
       menu === 'xpAdjustment' ||
@@ -310,7 +418,7 @@ export function AdminDashboardPage() {
       return;
     }
     const seq = ++fetchSeqRef.current;
-    const requestKey = `${menu}:${branchFilter}:${statusFilter}:${ledgerType}`;
+    const requestKey = `${menu}:${statusFilter}`;
     if (reset) {
       setRows([]);
       setCursor(null);
@@ -318,22 +426,12 @@ export function AdminDashboardPage() {
     }
     setLoadingRows(true);
     try {
-      let colName = 'members';
+      let colName = 'levelHistory';
       let orderByField = 'createdAt';
       let orderDirection: 'asc' | 'desc' = 'desc';
       const constraints: QueryConstraint[] = [];
 
-      if (menu === 'members') {
-        colName = 'members';
-      } else if (menu === 'transactions') {
-        colName = 'transactions';
-        if (branchFilter !== 'ALL') constraints.push(where('branch', '==', branchFilter));
-      } else if (menu === 'xpHistory') {
-        colName = ledgerType;
-        if (branchFilter !== 'ALL' && ledgerType === 'xpProgressLedger') {
-          constraints.push(where('branch', '==', branchFilter));
-        }
-      } else if (menu === 'levelHistory') {
+      if (menu === 'levelHistory') {
         colName = 'levelHistory';
       } else if (menu === 'claims') {
         colName = 'claims';
@@ -397,10 +495,91 @@ export function AdminDashboardPage() {
   useEffect(() => {
     if (menu === 'dashboard' || menu === 'settings') {
       void loadDashboardMetrics();
+    } else if (menu === 'members') {
+      void loadMembersBatch();
+    } else if (menu === 'transactions') {
+      void loadTransactionsBatch();
     } else {
       void loadMenuRows(true);
     }
-  }, [menu, branchFilter, statusFilter, ledgerType]);
+  }, [menu, statusFilter]);
+
+  useEffect(() => {
+    setMemberPage(1);
+  }, [
+    memberSearch,
+    memberFilterLevel,
+    memberFilterStatus,
+    memberFilterBranch,
+    memberFilterCategory,
+    memberFilterFrom,
+    memberFilterTo,
+    memberSort,
+  ]);
+
+  useEffect(() => {
+    setTxPage(1);
+  }, [txSearch, txBranchFilter, txDatePreset, txDateFrom, txDateTo, txSort]);
+
+  const memberMapByUid = useMemo(() => {
+    const map = new Map<string, MemberProfile>();
+    for (const m of allMembers) map.set(m.uid, m);
+    return map;
+  }, [allMembers]);
+
+  const filteredMembers = useMemo(() => {
+    const fromMs = memberFilterFrom ? new Date(`${memberFilterFrom}T00:00:00+07:00`).getTime() : null;
+    const toMs = memberFilterTo ? new Date(`${memberFilterTo}T23:59:59+07:00`).getTime() : null;
+    return filterAndSortMembers(
+      allMembers,
+      {
+        search: memberSearch,
+        level: memberFilterLevel,
+        status: memberFilterStatus,
+        branch: memberFilterBranch,
+        memberCategory: memberFilterCategory,
+        registeredFromMs: Number.isFinite(fromMs ?? NaN) ? fromMs : null,
+        registeredToMs: Number.isFinite(toMs ?? NaN) ? toMs : null,
+        sort: memberSort,
+      },
+      levels
+    );
+  }, [
+    allMembers,
+    memberSearch,
+    memberFilterLevel,
+    memberFilterStatus,
+    memberFilterBranch,
+    memberFilterCategory,
+    memberFilterFrom,
+    memberFilterTo,
+    memberSort,
+    levels,
+  ]);
+
+  const memberTotalPages = Math.max(1, Math.ceil(filteredMembers.length / 20));
+  const pagedMembers = filteredMembers.slice((memberPage - 1) * 20, memberPage * 20);
+
+  const filteredTransactions = useMemo(() => {
+    const fromMs = txDateFrom ? new Date(`${txDateFrom}T00:00:00+07:00`).getTime() : null;
+    const toMs = txDateTo ? new Date(`${txDateTo}T23:59:59+07:00`).getTime() : null;
+    return filterAndSortTransactions(
+      allTransactions,
+      {
+        search: txSearch,
+        branch: txBranchFilter,
+        datePreset: txDatePreset,
+        dateFromMs: Number.isFinite(fromMs ?? NaN) ? fromMs : null,
+        dateToMs: Number.isFinite(toMs ?? NaN) ? toMs : null,
+        sort: txSort,
+      },
+      memberMapByUid
+    );
+  }, [allTransactions, txSearch, txBranchFilter, txDatePreset, txDateFrom, txDateTo, txSort, memberMapByUid]);
+
+  const txTotalPages = Math.max(1, Math.ceil(filteredTransactions.length / 20));
+  const pagedTransactions = filteredTransactions.slice((txPage - 1) * 20, txPage * 20);
+  const todayJakarta = getJakartaTodayDateString();
 
   if (!adminProfile) return null;
   const isSuper = adminProfile.role === 'SUPER_ADMIN';
@@ -413,7 +592,14 @@ export function AdminDashboardPage() {
     setFeedback(null);
     try {
       const res = await createMemberByAdmin({
-        ...newMember,
+        fullName: newMember.fullName,
+        username: newMember.username,
+        whatsapp: newMember.whatsapp,
+        socialMedia: newMember.socialMedia,
+        birthDate: newMember.birthDate || null,
+        memberCategory: newMember.memberCategory || null,
+        referralUsername: newMember.referralUsername,
+        preferredBranch: newMember.preferredBranch,
         admin: adminProfile,
       });
       setFeedback({
@@ -426,10 +612,12 @@ export function AdminDashboardPage() {
         username: '',
         whatsapp: '',
         socialMedia: '',
+        birthDate: '',
+        memberCategory: '',
         referralUsername: '',
         preferredBranch: 'DEMANG',
       });
-      await loadMenuRows(true);
+      await loadMembersBatch();
     } catch (err) {
       setFeedback({ type: 'error', text: mapFriendlyError(err) });
     } finally {
@@ -443,7 +631,7 @@ export function AdminDashboardPage() {
     try {
       await updateMemberStatusByAdmin(uid, status, adminProfile);
       setFeedback({ type: 'success', text: `Status member berhasil diubah ke ${status}.` });
-      await loadMenuRows(true);
+      await loadMembersBatch();
     } catch (err) {
       setFeedback({ type: 'error', text: mapFriendlyError(err) });
     } finally {
@@ -456,10 +644,20 @@ export function AdminDashboardPage() {
     if (!editMemberTarget) return;
     setBusy(true);
     try {
-      await updateMemberDetailsByAdmin(editMemberTarget.uid, editMemberPatch, adminProfile);
+      await updateMemberDetailsByAdmin(
+        editMemberTarget.uid,
+        {
+          fullName: editMemberPatch.fullName,
+          socialMedia: editMemberPatch.socialMedia,
+          preferredBranch: editMemberPatch.preferredBranch,
+          birthDate: editMemberPatch.birthDate || null,
+          memberCategory: editMemberPatch.memberCategory || null,
+        },
+        adminProfile
+      );
       setEditMemberTarget(null);
       setFeedback({ type: 'success', text: 'Data member diperbarui.' });
-      await loadMenuRows(true);
+      await loadMembersBatch();
     } catch (err) {
       setFeedback({ type: 'error', text: mapFriendlyError(err) });
     } finally {
@@ -491,7 +689,7 @@ export function AdminDashboardPage() {
         text: `Transaksi dicatat! Member memperoleh +${res.xpGenerated} XP (XP Progress: ${res.newProgress}, XP Reward: ${res.newReward}, Level: ${res.newLevel}).`,
       });
       setTxForm({ identifier: '', amountIdr: '', branch: txForm.branch, receiptNumber: '', note: '' });
-      await loadMenuRows(true);
+      await loadTransactionsBatch();
     } catch (err) {
       setFeedback({ type: 'error', text: mapFriendlyError(err) });
     } finally {
@@ -802,9 +1000,12 @@ export function AdminDashboardPage() {
           <div className="flex items-center gap-2 sm:gap-3 shrink-0">
             <button
               type="button"
-              onClick={() =>
-                menu === 'dashboard' || menu === 'settings' ? void loadDashboardMetrics() : void loadMenuRows(true)
-              }
+              onClick={() => {
+                if (menu === 'dashboard' || menu === 'settings') void loadDashboardMetrics();
+                else if (menu === 'members') void loadMembersBatch();
+                else if (menu === 'transactions') void loadTransactionsBatch();
+                else void loadMenuRows(true);
+              }}
               className="min-h-[40px] rounded-xl border border-indigo-500/25 bg-[#0B1124] px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-sky-400/50 transition-colors"
             >
               Refresh
@@ -859,26 +1060,57 @@ export function AdminDashboardPage() {
             </div>
           )}
 
-          {/* 1. DASHBOARD */}
+          {/* 1. DASHBOARD (FASE 18 + BENEFIT REQUEST KPI) */}
           {menu === 'dashboard' && (
             <div className="space-y-6">
               {loadingMetrics && !metrics ? (
                 <div className="h-40 rounded-2xl bg-[#0B1124] border border-indigo-500/20 animate-pulse" />
               ) : metrics ? (
                 <>
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
                     <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-4">
-                      <p className="text-xs text-slate-400">Total / Active Members</p>
+                      <p className="text-xs text-slate-400">Active / Pre-Reg</p>
                       <p className="mt-1 font-mono text-2xl font-bold text-white tabular-nums">
-                        {metrics.totalMembers} / {metrics.activeMembers}
+                        {metrics.activeMembers} / <span className="text-amber-300">{metrics.preRegisteredMembers}</span>
                       </p>
+                      <p className="text-[11px] text-slate-400 font-mono">Total: {metrics.totalMembers}</p>
                     </div>
-                    <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-4">
-                      <p className="text-xs text-slate-400">Pending Claims / Redemptions</p>
-                      <p className="mt-1 font-mono text-2xl font-bold text-purple-300 tabular-nums">
-                        {metrics.pendingClaims} / {metrics.pendingRedemptions}
+                    <button
+                      type="button"
+                      onClick={() => setMenu('benefitRequests')}
+                      className="text-left bg-[#0B1124] rounded-2xl border border-sky-500/35 p-4 hover:border-sky-400 transition-colors"
+                    >
+                      <p className="text-xs text-sky-300">Benefit Req (Pending / Aktif)</p>
+                      <p className="mt-1 font-mono text-2xl font-bold text-white tabular-nums">
+                        {metrics.pendingBenefitRequests} / {metrics.approvedBenefitRequests}
                       </p>
-                    </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMemberFilterStatus('PRE_REGISTERED');
+                        setMenu('members');
+                      }}
+                      className="text-left bg-[#0B1124] rounded-2xl border border-amber-500/35 p-4 hover:border-amber-400 transition-colors"
+                    >
+                      <p className="text-xs text-amber-300">NEW PRE-REGISTERED (1/7/30 Hr)</p>
+                      <p className="mt-1 font-mono text-xl font-bold text-amber-200 tabular-nums">
+                        {metrics.newPreRegisteredToday} / {metrics.newPreRegistered7d} / {metrics.newPreRegistered30d}
+                      </p>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMemberFilterStatus('ACTIVE');
+                        setMenu('members');
+                      }}
+                      className="text-left bg-[#0B1124] rounded-2xl border border-emerald-500/35 p-4 hover:border-emerald-400 transition-colors"
+                    >
+                      <p className="text-xs text-emerald-300">NEW ACTIVE MEMBERS (1/7/30 Hr)</p>
+                      <p className="mt-1 font-mono text-xl font-bold text-emerald-200 tabular-nums">
+                        {metrics.newActiveToday} / {metrics.newActive7d} / {metrics.newActive30d}
+                      </p>
+                    </button>
                     <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-4">
                       <p className="text-xs text-slate-400">Total Transaksi</p>
                       <p className="mt-1 font-mono text-2xl font-bold text-white tabular-nums">
@@ -886,7 +1118,7 @@ export function AdminDashboardPage() {
                       </p>
                     </div>
                     <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-4">
-                      <p className="text-xs text-slate-400">Inaktif (7 / 14 / 30 Hari)</p>
+                      <p className="text-xs text-slate-400">Inaktif (7 / 14 / 30 Hr)</p>
                       <p className="mt-1 font-mono text-xl font-bold text-white tabular-nums">
                         {metrics.inactive7Days} / {metrics.inactive14Days} / {metrics.inactive30Days}
                       </p>
@@ -902,6 +1134,123 @@ export function AdminDashboardPage() {
                         </span>
                       </div>
                     ))}
+                  </div>
+
+                  {/* FASE 28: Split New Members (PRE_REGISTERED vs ACTIVE) + Alerts */}
+                  <div className="grid lg:grid-cols-2 gap-6">
+                    <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <h2 className="font-display text-base font-bold text-white flex items-center gap-2">
+                          <UserPlus className="w-4 h-4 text-emerald-400" />
+                          <span>Member Baru (Split Status)</span>
+                        </h2>
+                        <div className="flex items-center gap-1 rounded-lg bg-[#070B19] p-1 border border-indigo-500/25">
+                          <button
+                            type="button"
+                            onClick={() => setNewMemberViewMode('ACTIVE')}
+                            className={`px-2.5 py-1 rounded text-[11px] font-semibold ${
+                              newMemberViewMode === 'ACTIVE'
+                                ? 'bg-emerald-500 text-slate-950'
+                                : 'text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            NEW ACTIVE ({newMembersOverview?.newestActiveMembers?.length ?? 0})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setNewMemberViewMode('PRE_REGISTERED')}
+                            className={`px-2.5 py-1 rounded text-[11px] font-semibold ${
+                              newMemberViewMode === 'PRE_REGISTERED'
+                                ? 'bg-amber-400 text-slate-950'
+                                : 'text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            PRE-REGISTERED ({newMembersOverview?.newestPreRegistered?.length ?? 0})
+                          </button>
+                        </div>
+                      </div>
+                      {(() => {
+                        const list =
+                          newMemberViewMode === 'PRE_REGISTERED'
+                            ? newMembersOverview?.newestPreRegistered ?? []
+                            : newMembersOverview?.newestActiveMembers ?? [];
+                        if (list.length === 0) {
+                          return (
+                            <p className="text-xs text-slate-400">
+                              Belum ada member pada kategori {newMemberViewMode === 'PRE_REGISTERED' ? 'PRE_REGISTERED' : 'ACTIVE'}.
+                            </p>
+                          );
+                        }
+                        return (
+                          <div className="divide-y divide-indigo-500/15">
+                            {list.slice(0, 6).map((nm) => (
+                              <div key={nm.uid} className="py-2.5 flex items-center justify-between gap-3 text-xs">
+                                <div className="min-w-0">
+                                  <p className="font-semibold text-white truncate">
+                                    {nm.fullName}{' '}
+                                    <span className="font-mono text-sky-300">
+                                      {nm.username ? `@${nm.username}` : nm.whatsapp}
+                                    </span>
+                                  </p>
+                                  <p className="text-[11px] text-slate-400 font-mono">
+                                    <span className={nm.status === 'PRE_REGISTERED' ? 'text-amber-300' : 'text-emerald-300'}>
+                                      {nm.status === 'PRE_REGISTERED' ? 'Belum menyelesaikan profil' : 'Membership Aktif'}
+                                    </span>{' '}
+                                    · {nm.branchId || nm.preferredBranch || '-'} · {nm.xpProgress} XP ·{' '}
+                                    {formatJakartaDateTime(nm.registrationCompletedAt ?? nm.preRegisteredAt ?? nm.createdAt)}
+                                  </p>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setDetailMemberUid(nm.uid)}
+                                  className="px-2.5 py-1.5 rounded-lg border border-indigo-500/30 bg-[#070B19] text-sky-300 hover:border-sky-400 font-semibold whitespace-nowrap shrink-0"
+                                >
+                                  View Member
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </div>
+
+                    <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h2 className="font-display text-base font-bold text-white flex items-center gap-2">
+                          <Bell className="w-4 h-4 text-purple-400" />
+                          <span>Notifikasi Member Baru</span>
+                        </h2>
+                        <span className="font-mono text-[11px] text-slate-400">NEW_MEMBER_REGISTERED</span>
+                      </div>
+                      {!newMembersOverview || newMembersOverview.alerts.length === 0 ? (
+                        <p className="text-xs text-slate-400">
+                          Belum ada alert pendaftaran member baru di koleksi notifikasi.
+                        </p>
+                      ) : (
+                        <div className="divide-y divide-indigo-500/15">
+                          {newMembersOverview.alerts.slice(0, 6).map((al) => (
+                            <div key={al.id} className="py-2.5 flex items-center justify-between gap-3 text-xs">
+                              <div className="min-w-0">
+                                <p className="font-semibold text-white truncate">{al.title}</p>
+                                <p className="text-slate-300 truncate">{al.message}</p>
+                                <p className="font-mono text-[11px] text-slate-400">
+                                  {formatJakartaDateTime(al.createdAt)}
+                                </p>
+                              </div>
+                              {(al.memberUid || al.targetFilter) && (
+                                <button
+                                  type="button"
+                                  onClick={() => setDetailMemberUid(al.memberUid || al.targetFilter)}
+                                  className="px-2.5 py-1.5 rounded-lg border border-purple-500/35 bg-[#070B19] text-purple-300 hover:border-purple-400 font-semibold whitespace-nowrap shrink-0"
+                                >
+                                  View Member
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
 
                   <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-3">
@@ -932,7 +1281,15 @@ export function AdminDashboardPage() {
                           <tbody className="divide-y divide-indigo-500/15">
                             {metrics.recentTransactions.map((t, idx) => (
                               <tr key={t.id || `recent-tx-${idx}`}>
-                                <td className="py-2.5 pr-4 font-mono text-xs">@{t.memberUsername}</td>
+                                <td className="py-2.5 pr-4 font-mono text-xs">
+                                  <button
+                                    type="button"
+                                    onClick={() => setDetailMemberUid(t.memberUid)}
+                                    className="text-sky-300 hover:underline"
+                                  >
+                                    @{t.memberUsername}
+                                  </button>
+                                </td>
                                 <td className="py-2.5 pr-4 text-xs">{t.branch}</td>
                                 <td className="py-2.5 pr-4 text-right font-mono tabular-nums">{formatIdr(t.amountIdr)}</td>
                                 <td className="py-2.5 pr-4 text-right font-mono font-bold text-emerald-400 tabular-nums">+{t.xpGenerated}</td>
@@ -949,30 +1306,235 @@ export function AdminDashboardPage() {
             </div>
           )}
 
-          {/* 2. MEMBERS */}
+          {/* 1B. UNIFIED BENEFIT REQUESTS & CASHIER VERIFICATION (FASE 1-6) */}
+          {menu === 'benefitRequests' && (
+            <AdminBenefitRequests
+              adminProfile={adminProfile}
+              systemSettings={systemSettings}
+              adminSdkConfigured={capabilities.adminSdkConfigured}
+              restoreLocked={Boolean(restoreLock?.locked)}
+              onViewMember={(uid) => setDetailMemberUid(uid)}
+              onFeedback={setFeedback}
+            />
+          )}
+
+          {/* 2. MEMBERS (FASE 9 & 10: Advanced Search, Filter, Sort, 11 Columns, 8-Tab Detail) */}
           {menu === 'members' && (
             <div className="space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <input
-                  type="text"
-                  value={memberSearch}
-                  onChange={(e) => setMemberSearch(e.target.value.toLowerCase())}
-                  placeholder="Filter cepat halaman ini (username / WA / nama)"
-                  className="h-10 w-full sm:w-80 rounded-xl border border-indigo-500/30 bg-[#070B19] text-white px-3 text-sm"
-                />
-                {canManageMembers && (
-                  <button
-                    type="button"
-                    onClick={() => setShowAddMember((v) => !v)}
-                    className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-4 text-xs font-semibold text-white hover:from-blue-500 hover:to-purple-500 whitespace-nowrap"
-                  >
-                    {showAddMember ? 'Tutup Form' : '+ Tambah Member'}
-                  </button>
+              <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h2 className="font-display text-sm font-bold text-white">
+                      Direktori Member ({filteredMembers.length} / {allMembers.length})
+                    </h2>
+                    <p className="text-xs text-slate-400">
+                      Cari berdasarkan username, nama, WhatsApp, atau Member ID; filter menurut level, status, cabang, kategori, dan tanggal daftar.
+                    </p>
+                  </div>
+                  {canManageMembers && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowPreRegister((v) => !v);
+                          setAdminPreRegCode(null);
+                        }}
+                        className="min-h-[40px] rounded-xl border border-amber-400/45 bg-amber-500/15 px-4 text-xs font-semibold text-amber-200 hover:bg-amber-500/25 whitespace-nowrap"
+                      >
+                        {showPreRegister ? 'Tutup Pre-Register' : '+ Pre-Register Customer (WA)'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowAddMember((v) => !v)}
+                        className="min-h-[40px] rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-4 text-xs font-semibold text-white hover:from-blue-500 hover:to-purple-500 whitespace-nowrap"
+                      >
+                        {showAddMember ? 'Tutup Form' : '+ Tambah Member Lengkap'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {showPreRegister && canManageMembers && (
+                  <div className="rounded-xl bg-[#070B19] border border-amber-400/35 p-4 space-y-3">
+                    <p className="text-xs font-semibold text-amber-300">
+                      Tahap 1 · Pre-Register Customer (Nomor WhatsApp Saja · Status PRE_REGISTERED · 0 XP)
+                    </p>
+                    <form
+                      onSubmit={async (e) => {
+                        e.preventDefault();
+                        if (!adminPreRegWa.trim() || busy) return;
+                        setBusy(true);
+                        setFeedback(null);
+                        setAdminPreRegCode(null);
+                        try {
+                          const res = await preRegisterCustomerClient({
+                            whatsapp: adminPreRegWa.trim(),
+                            branchId: adminPreRegBranch,
+                            notes: adminPreRegNotes.trim(),
+                            actor: adminProfile,
+                            adminSdkConfigured: capabilities.adminSdkConfigured,
+                          });
+                          if (res.alreadyExists) {
+                            setFeedback({ type: 'error', text: res.message });
+                          } else {
+                            setAdminPreRegWa('');
+                            setAdminPreRegNotes('');
+                            if (res.verificationCode) {
+                              setAdminPreRegCode({
+                                memberId: res.member.memberId,
+                                whatsapp: res.member.whatsapp,
+                                code: res.verificationCode,
+                                url: res.onboardingUrl || '',
+                                waMsg: res.whatsappShareMessage || '',
+                              });
+                            }
+                            setFeedback({ type: 'success', text: res.message });
+                            await loadMembersBatch();
+                          }
+                        } catch (err) {
+                          setFeedback({ type: 'error', text: mapFriendlyError(err) });
+                        } finally {
+                          setBusy(false);
+                        }
+                      }}
+                      className="grid sm:grid-cols-4 gap-2.5"
+                    >
+                      <input
+                        type="tel"
+                        required
+                        placeholder="Nomor WhatsApp (0812...) *"
+                        value={adminPreRegWa}
+                        onChange={(e) => setAdminPreRegWa(e.target.value)}
+                        className="h-10 rounded-lg border border-indigo-500/30 bg-[#0B1124] px-3 text-xs font-mono text-white"
+                      />
+                      <select
+                        value={adminPreRegBranch}
+                        onChange={(e) => setAdminPreRegBranch(e.target.value as BranchId)}
+                        className="h-10 rounded-lg border border-indigo-500/30 bg-[#0B1124] px-3 text-xs text-white"
+                      >
+                        <option value="DEMANG">Cabang DEMANG</option>
+                        <option value="SEKIP">Cabang SEKIP</option>
+                      </select>
+                      <input
+                        type="text"
+                        placeholder="Catatan opsional"
+                        value={adminPreRegNotes}
+                        onChange={(e) => setAdminPreRegNotes(e.target.value)}
+                        className="h-10 rounded-lg border border-indigo-500/30 bg-[#0B1124] px-3 text-xs text-white"
+                      />
+                      <button
+                        type="submit"
+                        disabled={busy}
+                        className="h-10 rounded-lg bg-amber-400 text-slate-950 font-bold text-xs hover:bg-amber-300 disabled:opacity-50"
+                      >
+                        {busy ? 'Memproses...' : 'Buat Pre-Registered'}
+                      </button>
+                    </form>
+                    {adminPreRegCode && (
+                      <div className="rounded-lg border border-sky-400/40 bg-[#0B1124] p-3 flex flex-wrap items-center justify-between gap-3 text-xs">
+                        <div>
+                          <span className="text-slate-400">Kode Verifikasi 6 Digit ({adminPreRegCode.memberId} · {adminPreRegCode.whatsapp}): </span>
+                          <strong className="font-mono text-lg text-sky-300 tracking-widest">{adminPreRegCode.code}</strong>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void navigator.clipboard.writeText(adminPreRegCode.waMsg || adminPreRegCode.code)}
+                          className="px-3 py-1.5 rounded-lg bg-sky-500 text-slate-950 font-bold text-xs"
+                        >
+                          Salin Pesan &amp; Kode WA
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 )}
+
+                <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                  <input
+                    type="text"
+                    value={memberSearch}
+                    onChange={(e) => setMemberSearch(e.target.value)}
+                    placeholder="Cari username / WA / nama / XPP-..."
+                    className="h-10 rounded-xl border border-indigo-500/30 bg-[#070B19] text-white px-3 text-xs placeholder:text-slate-400 focus:border-sky-400 focus:outline-none"
+                  />
+                  <select
+                    value={memberFilterLevel}
+                    onChange={(e) => setMemberFilterLevel(e.target.value as 'ALL' | LevelId)}
+                    className="h-10 rounded-xl border border-indigo-500/30 bg-[#070B19] text-white px-3 text-xs"
+                  >
+                    <option value="ALL">Semua Level</option>
+                    <option value="BRONZE">BRONZE</option>
+                    <option value="SILVER">SILVER</option>
+                    <option value="JURAGAN">JURAGAN</option>
+                    <option value="SULTAN">SULTAN</option>
+                  </select>
+                  <select
+                    value={memberFilterStatus}
+                    onChange={(e) => setMemberFilterStatus(e.target.value as 'ALL' | MemberStatus)}
+                    className="h-10 rounded-xl border border-indigo-500/30 bg-[#070B19] text-white px-3 text-xs"
+                  >
+                    <option value="ALL">Semua Status Akun</option>
+                    <option value="PRE_REGISTERED">PRE_REGISTERED (Belum menyelesaikan profil)</option>
+                    <option value="ACTIVE">ACTIVE (Membership Aktif)</option>
+                    <option value="INACTIVE">INACTIVE</option>
+                    <option value="SUSPENDED">SUSPENDED</option>
+                    <option value="DELETED">DELETED</option>
+                  </select>
+                  <select
+                    value={memberFilterCategory}
+                    onChange={(e) => setMemberFilterCategory(e.target.value as 'ALL' | MemberCategory)}
+                    className="h-10 rounded-xl border border-indigo-500/30 bg-[#070B19] text-white px-3 text-xs"
+                  >
+                    <option value="ALL">Semua Status Member</option>
+                    {MEMBER_CATEGORIES.map((c) => (
+                      <option key={c.value} value={c.value}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={memberFilterBranch}
+                    onChange={(e) => setMemberFilterBranch(e.target.value as 'ALL' | BranchId)}
+                    className="h-10 rounded-xl border border-indigo-500/30 bg-[#070B19] text-white px-3 text-xs"
+                  >
+                    <option value="ALL">Semua Cabang</option>
+                    <option value="DEMANG">DEMANG</option>
+                    <option value="SEKIP">SEKIP</option>
+                  </select>
+                  <input
+                    type="date"
+                    value={memberFilterFrom}
+                    onChange={(e) => setMemberFilterFrom(e.target.value)}
+                    title="Tanggal Daftar Dari"
+                    className="h-10 rounded-xl border border-indigo-500/30 bg-[#070B19] text-white px-3 text-xs font-mono"
+                  />
+                  <input
+                    type="date"
+                    value={memberFilterTo}
+                    onChange={(e) => setMemberFilterTo(e.target.value)}
+                    title="Tanggal Daftar Sampai"
+                    className="h-10 rounded-xl border border-indigo-500/30 bg-[#070B19] text-white px-3 text-xs font-mono"
+                  />
+                  <select
+                    value={memberSort}
+                    onChange={(e) => setMemberSort(e.target.value as MemberSortOption)}
+                    className="h-10 rounded-xl border border-indigo-500/30 bg-[#070B19] text-white px-3 text-xs"
+                  >
+                    <option value="NEWEST">Urutkan: Terbaru Daftar</option>
+                    <option value="OLDEST">Urutkan: Terlama Daftar</option>
+                    <option value="XP_PROGRESS_DESC">XP Progress Tertinggi</option>
+                    <option value="XP_PROGRESS_ASC">XP Progress Terendah</option>
+                    <option value="XP_REWARD_DESC">XP Reward Tertinggi</option>
+                    <option value="XP_REWARD_ASC">XP Reward Terendah</option>
+                    <option value="LAST_PLAY_RECENT">Terakhir Main Terbaru</option>
+                    <option value="LONGEST_INACTIVE">Paling Lama Tidak Main</option>
+                    <option value="LEVEL_DESC">Level Sultan → Bronze</option>
+                    <option value="LEVEL_ASC">Level Bronze → Sultan</option>
+                  </select>
+                </div>
               </div>
 
               {showAddMember && canManageMembers && (
-                <form onSubmit={handleAddMember} className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 grid sm:grid-cols-3 gap-4">
+                <form onSubmit={handleAddMember} className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 grid sm:grid-cols-4 gap-3">
                   <input
                     type="text"
                     required
@@ -1005,6 +1567,26 @@ export function AdminDashboardPage() {
                     className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
                   />
                   <input
+                    type="date"
+                    max={todayJakarta}
+                    value={newMember.birthDate}
+                    onChange={(e) => setNewMember({ ...newMember, birthDate: e.target.value })}
+                    title="Tanggal Lahir"
+                    className="bg-[#070B19] text-white focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm font-mono"
+                  />
+                  <select
+                    value={newMember.memberCategory}
+                    onChange={(e) => setNewMember({ ...newMember, memberCategory: e.target.value as '' | MemberCategory })}
+                    className="bg-[#070B19] text-white focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                  >
+                    <option value="">Status Member (Opsional)</option>
+                    {MEMBER_CATEGORIES.map((c) => (
+                      <option key={c.value} value={c.value}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+                  <input
                     type="text"
                     placeholder="Referral Username (opsional)"
                     value={newMember.referralUsername}
@@ -1014,12 +1596,12 @@ export function AdminDashboardPage() {
                   <select
                     value={newMember.preferredBranch}
                     onChange={(e) => setNewMember({ ...newMember, preferredBranch: e.target.value as BranchId })}
-                    className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                    className="bg-[#070B19] text-white focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
                   >
                     <option value="DEMANG">Cabang DEMANG</option>
                     <option value="SEKIP">Cabang SEKIP</option>
                   </select>
-                  <div className="sm:col-span-3 flex justify-end">
+                  <div className="sm:col-span-4 flex justify-end">
                     <button
                       type="submit"
                       disabled={busy}
@@ -1034,96 +1616,98 @@ export function AdminDashboardPage() {
               )}
 
               <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 overflow-x-auto">
-                <table className="w-full text-sm">
+                <table className="w-full text-xs">
                   <thead>
-                    <tr className="border-b border-indigo-500/20 text-left text-xs text-slate-400">
-                      <th className="p-3">Member</th>
+                    <tr className="border-b border-indigo-500/20 text-left text-slate-400">
+                      <th className="p-3">Member ID</th>
+                      <th className="p-3">Nama & Username</th>
                       <th className="p-3">WhatsApp</th>
+                      <th className="p-3">Tanggal Lahir</th>
+                      <th className="p-3">Status Member</th>
                       <th className="p-3">Level</th>
                       <th className="p-3 text-right">XP Progress</th>
-                      <th className="p-3 text-right">XP Reward</th>
-                      <th className="p-3">Last Play</th>
-                      <th className="p-3">Status</th>
+                      <th className="p-3 text-right">XP Reward / Hold</th>
+                      <th className="p-3">Terakhir Main</th>
+                      <th className="p-3">Cabang</th>
+                      <th className="p-3">Status Akun</th>
                       <th className="p-3 text-right">Aksi</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-indigo-500/15">
-                    {(() => {
-                      const filtered = (activeRows as MemberProfile[]).filter(
-                        (m) =>
-                          !memberSearch ||
-                          (m.username || '').includes(memberSearch) ||
-                          (m.fullName || '').toLowerCase().includes(memberSearch) ||
-                          (m.whatsapp || '').includes(memberSearch)
-                      );
-                      if (filtered.length === 0) {
-                        return (
-                          <tr>
-                            <td colSpan={8} className="p-8 text-center text-sm text-slate-400">
-                              {loadingRows ? 'Memuat data member...' : 'Belum ada data member yang sesuai.'}
-                            </td>
-                          </tr>
-                        );
-                      }
-                      return filtered.map((m, idx) => (
-                        <tr key={m.uid || m.memberId || `mem-${idx}`}>
+                    {pagedMembers.length === 0 ? (
+                      <tr>
+                        <td colSpan={12} className="p-8 text-center text-sm text-slate-400">
+                          {loadingMembersBatch ? 'Memuat data member...' : 'Belum ada data member yang sesuai.'}
+                        </td>
+                      </tr>
+                    ) : (
+                      pagedMembers.map((m, idx) => (
+                        <tr key={m.uid || m.memberId || `mem-${idx}`} className="hover:bg-[#0F1733]/60">
+                          <td className="p-3 font-mono text-slate-300 whitespace-nowrap">{m.memberId}</td>
                           <td className="p-3">
-                            <p className="font-semibold text-white">{m.fullName}</p>
-                            <p className="text-xs font-mono text-slate-400">@{m.username} · {m.memberId}</p>
+                            <button
+                              type="button"
+                              onClick={() => setDetailMemberUid(m.uid)}
+                              className="text-left group"
+                            >
+                              <p className="font-semibold text-white group-hover:text-sky-300">{m.fullName}</p>
+                              <p className="font-mono text-sky-300">
+                                {m.username ? `@${m.username}` : '(Pre-Registered · Belum ada username)'}
+                              </p>
+                            </button>
                           </td>
-                          <td className="p-3 font-mono text-xs">{m.whatsapp}</td>
-                          <td className="p-3 text-xs font-semibold">
-                            <span>{m.currentLevel}</span>
+                          <td className="p-3 font-mono text-slate-300 whitespace-nowrap">{m.whatsapp}</td>
+                          <td className="p-3 text-slate-300 whitespace-nowrap">{formatBirthDateJakarta(m.birthDate)}</td>
+                          <td className="p-3 text-slate-200 whitespace-nowrap">{getMemberCategoryLabel(m.memberCategory)}</td>
+                          <td className="p-3 font-semibold whitespace-nowrap">
+                            <span className="text-white">{m.currentLevel}</span>
                             {m.levelMode === 'MANUAL_OVERRIDE' && (
                               <span className="ml-1 font-mono text-[10px] text-amber-300">(Manual)</span>
                             )}
                           </td>
-                          <td className="p-3 text-right font-mono tabular-nums">{m.xpProgress}</td>
-                          <td className="p-3 text-right font-mono tabular-nums text-purple-300">{m.xpReward}</td>
-                          <td className="p-3 text-xs text-slate-400">
-                            {m.lastPlayAt ? `${formatJakartaDateTime(m.lastPlayAt)} (${m.lastPlayBranch})` : '-'}
+                          <td className="p-3 text-right font-mono tabular-nums text-white">{m.xpProgress}</td>
+                          <td className="p-3 text-right font-mono tabular-nums whitespace-nowrap">
+                            <span className="text-purple-300 font-semibold">{m.xpReward}</span>
+                            {(m.reservedXp ?? 0) > 0 && (
+                              <span className="ml-1 text-amber-300 text-[11px]">({m.reservedXp} hold)</span>
+                            )}
                           </td>
-                          <td className="p-3 text-xs font-mono font-semibold">{m.status}</td>
+                          <td className="p-3 text-slate-400 whitespace-nowrap">
+                            {m.lastPlayAt ? formatJakartaDateTime(m.lastPlayAt) : '-'}
+                          </td>
+                          <td className="p-3 font-mono text-slate-300 whitespace-nowrap">
+                            {m.branchId || m.lastPlayBranch || m.preferredBranch || '-'}
+                          </td>
+                          <td className="p-3 whitespace-nowrap">
+                            <span
+                              className={`font-mono font-semibold ${
+                                m.status === 'PRE_REGISTERED'
+                                  ? 'text-amber-300'
+                                  : m.status === 'ACTIVE'
+                                    ? 'text-emerald-400'
+                                    : 'text-rose-400'
+                              }`}
+                            >
+                              {m.status}
+                            </span>
+                            <span className="block text-[10px] text-slate-400">
+                              {m.status === 'PRE_REGISTERED'
+                                ? 'Belum menyelesaikan profil'
+                                : m.status === 'ACTIVE'
+                                  ? 'Membership Aktif'
+                                  : m.status}
+                            </span>
+                          </td>
                           <td className="p-3 text-right space-x-2 whitespace-nowrap">
-                            {canManageMembers ? (
+                            <button
+                              type="button"
+                              onClick={() => setDetailMemberUid(m.uid)}
+                              className="font-semibold text-sky-300 hover:underline"
+                            >
+                              Detail
+                            </button>
+                            {canManageMembers && (
                               <>
-                                {canManageCatalog && (
-                                  <>
-                                    <button
-                                      type="button"
-                                      disabled={busy}
-                                      onClick={() => {
-                                        setXpAdjustmentInitialMember(m);
-                                        setMenu('xpAdjustment');
-                                      }}
-                                      className="text-xs font-semibold text-indigo-300 hover:underline disabled:opacity-50"
-                                    >
-                                      Adjust XP
-                                    </button>
-                                    <button
-                                      type="button"
-                                      disabled={busy}
-                                      onClick={() => {
-                                        setLevelOverrideInitialMember(m);
-                                        setMenu('levelOverride');
-                                      }}
-                                      className="text-xs font-semibold text-amber-300 hover:underline disabled:opacity-50"
-                                    >
-                                      Level
-                                    </button>
-                                    <button
-                                      type="button"
-                                      disabled={busy}
-                                      onClick={() => {
-                                        setPasswordInitialMember(m);
-                                        setMenu('passwordManagement');
-                                      }}
-                                      className="text-xs font-semibold text-purple-300 hover:underline disabled:opacity-50"
-                                    >
-                                      Password
-                                    </button>
-                                  </>
-                                )}
                                 <button
                                   type="button"
                                   disabled={busy}
@@ -1133,9 +1717,11 @@ export function AdminDashboardPage() {
                                       fullName: m.fullName,
                                       socialMedia: m.socialMedia,
                                       preferredBranch: m.preferredBranch || 'DEMANG',
+                                      birthDate: m.birthDate || '',
+                                      memberCategory: m.memberCategory || '',
                                     });
                                   }}
-                                  className="text-xs font-semibold text-sky-300 hover:underline disabled:opacity-50"
+                                  className="font-semibold text-indigo-300 hover:underline disabled:opacity-50"
                                 >
                                   Edit
                                 </button>
@@ -1144,7 +1730,7 @@ export function AdminDashboardPage() {
                                     type="button"
                                     disabled={busy}
                                     onClick={() => void handleMemberStatusChange(m.uid, 'ACTIVE')}
-                                    className="text-xs font-semibold text-emerald-400 hover:underline disabled:opacity-50"
+                                    className="font-semibold text-emerald-400 hover:underline disabled:opacity-50"
                                   >
                                     Activate
                                   </button>
@@ -1153,7 +1739,7 @@ export function AdminDashboardPage() {
                                     type="button"
                                     disabled={busy}
                                     onClick={() => void handleMemberStatusChange(m.uid, 'SUSPENDED')}
-                                    className="text-xs font-semibold text-purple-300 hover:underline disabled:opacity-50"
+                                    className="font-semibold text-amber-300 hover:underline disabled:opacity-50"
                                   >
                                     Suspend
                                   </button>
@@ -1163,42 +1749,53 @@ export function AdminDashboardPage() {
                                     type="button"
                                     disabled={busy}
                                     onClick={() => void handleMemberStatusChange(m.uid, 'DELETED')}
-                                    className="text-xs font-semibold text-rose-400 hover:underline disabled:opacity-50"
+                                    className="font-semibold text-rose-400 hover:underline disabled:opacity-50"
                                   >
-                                    Soft Delete
+                                    Delete
                                   </button>
                                 )}
                               </>
-                            ) : (
-                              <span className="text-xs text-slate-500">Read-only</span>
                             )}
                           </td>
                         </tr>
-                      ));
-                    })()}
+                      ))
+                    )}
                   </tbody>
                 </table>
-                {hasMore && (
-                  <div className="p-3 border-t border-indigo-500/15 text-center">
-                    <button
-                      type="button"
-                      disabled={loadingRows}
-                      onClick={() => void loadMenuRows(false)}
-                      className="text-xs font-semibold text-slate-200 underline"
-                    >
-                      Muat Halaman Berikutnya
-                    </button>
+                {memberTotalPages > 1 && (
+                  <div className="p-3 border-t border-indigo-500/15 flex items-center justify-between text-xs text-slate-300">
+                    <span className="font-mono">
+                      Halaman {memberPage} / {memberTotalPages} ({filteredMembers.length} member)
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={memberPage <= 1}
+                        onClick={() => setMemberPage((p) => Math.max(1, p - 1))}
+                        className="px-3 py-1.5 rounded-lg border border-indigo-500/30 bg-[#070B19] disabled:opacity-40"
+                      >
+                        Sebelumnya
+                      </button>
+                      <button
+                        type="button"
+                        disabled={memberPage >= memberTotalPages}
+                        onClick={() => setMemberPage((p) => Math.min(memberTotalPages, p + 1))}
+                        className="px-3 py-1.5 rounded-lg border border-indigo-500/30 bg-[#070B19] disabled:opacity-40"
+                      >
+                        Berikutnya
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
             </div>
           )}
 
-          {/* 3. TRANSACTIONS */}
+          {/* 3. TRANSACTIONS (FASE 11: Advanced Search, Branch, Date Presets, Sort, 10 Columns) */}
           {menu === 'transactions' && (
             <div className="space-y-6">
               <form onSubmit={handleRecordTransaction} className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-4">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <h2 className="font-display text-base font-bold text-white">Input Transaksi XP Manual</h2>
                   <span className="text-xs font-mono text-slate-300">
                     Rate: Rp{systemSettings.transactionXpRate.toLocaleString('id-ID')} = 1 XP · Estimasi: <strong>+{previewTxXp} XP</strong>
@@ -1226,7 +1823,7 @@ export function AdminDashboardPage() {
                   <select
                     value={txForm.branch}
                     onChange={(e) => setTxForm({ ...txForm, branch: e.target.value as BranchId })}
-                    className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                    className="bg-[#070B19] text-white focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
                   >
                     <option value="DEMANG">XP PLAY DEMANG</option>
                     <option value="SEKIP">XP PLAY SEKIP</option>
@@ -1258,57 +1855,157 @@ export function AdminDashboardPage() {
               </form>
 
               <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 overflow-hidden">
-                <div className="p-4 border-b border-indigo-500/15 flex items-center justify-between">
-                  <h3 className="font-display text-sm font-bold text-white">Riwayat Transaksi</h3>
-                  <select
-                    value={branchFilter}
-                    onChange={(e) => setBranchFilter(e.target.value as 'ALL' | BranchId)}
-                    className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-8 rounded-lg border border-indigo-500/30 px-2.5 text-xs"
-                  >
-                    <option value="ALL">Semua Cabang</option>
-                    <option value="DEMANG">Demang</option>
-                    <option value="SEKIP">Sekip</option>
-                  </select>
+                <div className="p-4 border-b border-indigo-500/15 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h3 className="font-display text-sm font-bold text-white">
+                      Riwayat Transaksi ({filteredTransactions.length} / {allTransactions.length})
+                    </h3>
+                    <span className="font-mono text-xs text-slate-400">
+                      Total Nominal Filter:{' '}
+                      <strong className="text-white">
+                        {formatIdr(filteredTransactions.reduce((acc, t) => acc + t.amountIdr, 0))}
+                      </strong>
+                    </span>
+                  </div>
+                  <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                    <input
+                      type="text"
+                      value={txSearch}
+                      onChange={(e) => setTxSearch(e.target.value)}
+                      placeholder="Cari username / WA / struk / Tx ID..."
+                      className="h-9 rounded-lg border border-indigo-500/30 bg-[#070B19] px-3 text-xs text-white placeholder:text-slate-400"
+                    />
+                    <select
+                      value={txBranchFilter}
+                      onChange={(e) => setTxBranchFilter(e.target.value as 'ALL' | BranchId)}
+                      className="h-9 rounded-lg border border-indigo-500/30 bg-[#070B19] px-3 text-xs text-white"
+                    >
+                      <option value="ALL">Semua Cabang</option>
+                      <option value="DEMANG">DEMANG</option>
+                      <option value="SEKIP">SEKIP</option>
+                    </select>
+                    <select
+                      value={txDatePreset}
+                      onChange={(e) => setTxDatePreset(e.target.value as TransactionDatePreset)}
+                      className="h-9 rounded-lg border border-indigo-500/30 bg-[#070B19] px-3 text-xs text-white"
+                    >
+                      <option value="ALL">Semua Tanggal</option>
+                      <option value="TODAY">Hari Ini (WIB)</option>
+                      <option value="YESTERDAY">Kemarin (WIB)</option>
+                      <option value="THIS_WEEK">7 Hari Terakhir</option>
+                      <option value="THIS_MONTH">Bulan Ini</option>
+                      <option value="CUSTOM">Custom Rentang Tanggal</option>
+                    </select>
+                    <select
+                      value={txSort}
+                      onChange={(e) => setTxSort(e.target.value as TransactionSortOption)}
+                      className="h-9 rounded-lg border border-indigo-500/30 bg-[#070B19] px-3 text-xs text-white"
+                    >
+                      <option value="NEWEST">Urutkan: Terbaru</option>
+                      <option value="OLDEST">Urutkan: Terlama</option>
+                      <option value="AMOUNT_DESC">Nominal Tertinggi</option>
+                      <option value="AMOUNT_ASC">Nominal Terendah</option>
+                      <option value="XP_DESC">XP Tertinggi</option>
+                      <option value="XP_ASC">XP Terendah</option>
+                    </select>
+                    {txDatePreset === 'CUSTOM' && (
+                      <>
+                        <input
+                          type="date"
+                          value={txDateFrom}
+                          onChange={(e) => setTxDateFrom(e.target.value)}
+                          className="h-9 rounded-lg border border-indigo-500/30 bg-[#070B19] px-3 text-xs font-mono text-white"
+                        />
+                        <input
+                          type="date"
+                          value={txDateTo}
+                          onChange={(e) => setTxDateTo(e.target.value)}
+                          className="h-9 rounded-lg border border-indigo-500/30 bg-[#070B19] px-3 text-xs font-mono text-white"
+                        />
+                      </>
+                    )}
+                  </div>
                 </div>
                 <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
+                  <table className="w-full text-xs">
                     <thead>
-                      <tr className="border-b border-indigo-500/20 text-left text-xs text-slate-400">
-                        <th className="p-3">Waktu</th>
+                      <tr className="border-b border-indigo-500/20 text-left text-slate-400">
+                        <th className="p-3">Tx ID</th>
+                        <th className="p-3">Tanggal</th>
                         <th className="p-3">Member</th>
                         <th className="p-3">Cabang</th>
                         <th className="p-3 text-right">Nominal</th>
+                        <th className="p-3 text-right">XP Rate</th>
                         <th className="p-3 text-right">XP</th>
-                        <th className="p-3">Receipt</th>
+                        <th className="p-3">No. Struk</th>
+                        <th className="p-3">Admin</th>
+                        <th className="p-3">Catatan</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-indigo-500/15">
-                      {activeRows.length === 0 ? (
+                      {pagedTransactions.length === 0 ? (
                         <tr>
-                          <td colSpan={6} className="p-8 text-center text-sm text-slate-400">
-                            {loadingRows ? 'Memuat transaksi...' : 'Belum ada riwayat transaksi pada filter ini.'}
+                          <td colSpan={10} className="p-8 text-center text-sm text-slate-400">
+                            {loadingTxBatch ? 'Memuat transaksi...' : 'Belum ada riwayat transaksi pada filter ini.'}
                           </td>
                         </tr>
                       ) : (
-                        (activeRows as TransactionRecord[]).map((t, idx) => (
-                          <tr key={t.id || `tx-${idx}`}>
-                            <td className="p-3 text-xs text-slate-400">{formatJakartaDateTime(t.createdAt)}</td>
-                            <td className="p-3 font-mono text-xs">@{t.memberUsername}</td>
-                            <td className="p-3 text-xs">{t.branch}</td>
-                            <td className="p-3 text-right font-mono tabular-nums">{formatIdr(t.amountIdr)}</td>
-                            <td className="p-3 text-right font-mono font-bold text-emerald-400 tabular-nums">+{t.xpGenerated}</td>
-                            <td className="p-3 font-mono text-xs text-slate-400">{t.receiptNumber || '-'}</td>
+                        pagedTransactions.map((t, idx) => (
+                          <tr key={t.id || `tx-${idx}`} className="hover:bg-[#0F1733]/60">
+                            <td className="p-3 font-mono text-[11px] text-slate-400 whitespace-nowrap">{t.id}</td>
+                            <td className="p-3 font-mono text-slate-300 whitespace-nowrap">
+                              {formatJakartaDateTime(t.createdAt)}
+                            </td>
+                            <td className="p-3 whitespace-nowrap">
+                              <button
+                                type="button"
+                                onClick={() => setDetailMemberUid(t.memberUid)}
+                                className="font-mono text-sky-300 hover:underline font-semibold"
+                              >
+                                @{t.memberUsername}
+                              </button>
+                              <p className="font-mono text-[10px] text-slate-500">{t.memberId}</p>
+                            </td>
+                            <td className="p-3 font-mono">{t.branch}</td>
+                            <td className="p-3 text-right font-mono tabular-nums whitespace-nowrap">{formatIdr(t.amountIdr)}</td>
+                            <td className="p-3 text-right font-mono tabular-nums text-slate-400 whitespace-nowrap">
+                              Rp{t.xpRateUsed.toLocaleString('id-ID')}
+                            </td>
+                            <td className="p-3 text-right font-mono font-bold text-emerald-400 tabular-nums whitespace-nowrap">
+                              +{t.xpGenerated}
+                            </td>
+                            <td className="p-3 font-mono text-slate-300">{t.receiptNumber || '-'}</td>
+                            <td className="p-3 text-slate-300 whitespace-nowrap">{t.adminName}</td>
+                            <td className="p-3 text-slate-400">{t.note || '-'}</td>
                           </tr>
                         ))
                       )}
                     </tbody>
                   </table>
                 </div>
-                {hasMore && (
-                  <div className="p-3 border-t border-indigo-500/15 text-center">
-                    <button type="button" onClick={() => void loadMenuRows(false)} className="text-xs font-semibold underline">
-                      Muat Lebih Banyak
-                    </button>
+                {txTotalPages > 1 && (
+                  <div className="p-3 border-t border-indigo-500/15 flex items-center justify-between text-xs text-slate-300">
+                    <span className="font-mono">
+                      Halaman {txPage} / {txTotalPages} ({filteredTransactions.length} transaksi)
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={txPage <= 1}
+                        onClick={() => setTxPage((p) => Math.max(1, p - 1))}
+                        className="px-3 py-1.5 rounded-lg border border-indigo-500/30 bg-[#070B19] disabled:opacity-40"
+                      >
+                        Sebelumnya
+                      </button>
+                      <button
+                        type="button"
+                        disabled={txPage >= txTotalPages}
+                        onClick={() => setTxPage((p) => Math.min(txTotalPages, p + 1))}
+                        className="px-3 py-1.5 rounded-lg border border-indigo-500/30 bg-[#070B19] disabled:opacity-40"
+                      >
+                        Berikutnya
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1367,69 +2064,49 @@ export function AdminDashboardPage() {
           {/* 3F. BACKUP, VERIFICATION, RESTORE & SYSTEM INTEGRITY (PHASES F-I & K) */}
           {menu === 'backupRestore' && <AdminBackupRestore adminProfile={adminProfile} />}
 
-          {/* 4. XP HISTORY & 5. LEVEL UP HISTORY */}
-          {(menu === 'xpHistory' || menu === 'levelHistory') && (
+          {/* 4. UNIFIED XP HISTORY (FASE 12) */}
+          {menu === 'xpHistory' && (
+            <AdminXpHistory
+              onSelectMember={(uid) => setDetailMemberUid(uid)}
+              onFeedback={setFeedback}
+            />
+          )}
+
+          {/* 5. LEVEL UP HISTORY */}
+          {menu === 'levelHistory' && (
             <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 overflow-hidden">
               <div className="p-4 border-b border-indigo-500/15 flex flex-wrap items-center justify-between gap-3">
                 <h2 className="font-display text-sm font-bold text-white">
-                  {menu === 'xpHistory' ? 'Ledger XP Progress & XP Reward' : 'Riwayat Kenaikan Level'}
+                  Riwayat Kenaikan Level
                 </h2>
-                {menu === 'xpHistory' && (
-                  <div className="flex items-center gap-2">
-                    <select
-                      value={ledgerType}
-                      onChange={(e) => setLedgerType(e.target.value as 'xpProgressLedger' | 'xpRewardLedger')}
-                      className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-8 rounded-lg border border-indigo-500/30 px-2.5 text-xs"
-                    >
-                      <option value="xpProgressLedger">XP Progress Ledger</option>
-                      <option value="xpRewardLedger">XP Reward Ledger</option>
-                    </select>
-                    {ledgerType === 'xpProgressLedger' && (
-                      <select
-                        value={branchFilter}
-                        onChange={(e) => setBranchFilter(e.target.value as 'ALL' | BranchId)}
-                        className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-8 rounded-lg border border-indigo-500/30 px-2.5 text-xs"
-                      >
-                        <option value="ALL">Semua Cabang</option>
-                        <option value="DEMANG">Demang</option>
-                        <option value="SEKIP">Sekip</option>
-                      </select>
-                    )}
-                  </div>
-                )}
               </div>
               <div className="divide-y divide-indigo-500/15">
                 {activeRows.length === 0 ? (
                   <div className="p-8 text-center text-sm text-slate-400">
-                    {loadingRows ? 'Memuat riwayat...' : 'Belum ada catatan riwayat pada kategori ini.'}
+                    {loadingRows ? 'Memuat riwayat...' : 'Belum ada catatan riwayat kenaikan level.'}
                   </div>
-                ) : menu === 'xpHistory'
-                  ? (activeRows as XpLedgerEntry[]).map((e, idx) => (
-                      <div key={e.id || `xp-${idx}`} className="p-3.5 flex items-center justify-between gap-4 text-sm">
-                        <div>
-                          <p className="font-semibold text-white">{e.note}</p>
-                          <p className="text-xs text-slate-400">
-                            {e.memberId} · {e.source} · Cycle {e.cycleId} · {formatJakartaDateTime(e.createdAt)}
-                          </p>
-                        </div>
-                        <span className={`font-mono font-bold tabular-nums ${e.amount >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                          {e.amount >= 0 ? `+${e.amount}` : e.amount} XP
-                        </span>
+                ) : (
+                  (activeRows as LevelHistoryRecord[]).map((lh, idx) => (
+                    <div key={lh.id || `lh-${idx}`} className="p-3.5 flex items-center justify-between gap-4 text-sm">
+                      <div>
+                        <p className="font-semibold text-white">
+                          <button
+                            type="button"
+                            onClick={() => setDetailMemberUid(lh.memberUid)}
+                            className="text-sky-300 hover:underline font-mono mr-1.5"
+                          >
+                            {lh.memberId}
+                          </button>
+                          {lh.fromLevel} → {lh.toLevel}
+                        </p>
+                        <p className="text-xs text-slate-400">
+                          XP Progress: {lh.xpProgressAtEvent} XP · {lh.source} · {formatJakartaDateTime(lh.createdAt)}
+                        </p>
                       </div>
-                    ))
-                  : (activeRows as LevelHistoryRecord[]).map((lh, idx) => (
-                      <div key={lh.id || `lh-${idx}`} className="p-3.5 flex items-center justify-between gap-4 text-sm">
-                        <div>
-                          <p className="font-semibold text-white">
-                            {lh.memberId}: {lh.fromLevel} → {lh.toLevel}
-                          </p>
-                          <p className="text-xs text-slate-400">
-                            XP Progress: {lh.xpProgressAtEvent} XP · {lh.source} · {formatJakartaDateTime(lh.createdAt)}
-                          </p>
-                        </div>
-                        <span className="font-mono text-xs font-semibold text-purple-300">{lh.cycleId}</span>
-                      </div>
-                    ))}
+                      <span className="font-mono text-xs font-semibold text-purple-300">{lh.cycleId}</span>
+                    </div>
+                  ))
+                )}
               </div>
               {hasMore && (
                 <div className="p-3 border-t border-indigo-500/15 text-center">
@@ -1968,9 +2645,68 @@ export function AdminDashboardPage() {
             </div>
           )}
 
-          {/* 13. ADMIN MANAGEMENT (SUPER_ADMIN) */}
+          {/* 13. ADMIN & CASHIER MANAGEMENT (SUPER_ADMIN) */}
           {menu === 'adminManagement' && isSuper && (
             <div className="space-y-6">
+              {/* 4 Branch Cashier Slot Architecture (NO hardcoded accounts/credentials) */}
+              <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-4">
+                <div>
+                  <h2 className="font-display text-base font-bold text-white">
+                    Slot Akun Kasir Cabang (2 Demang · 2 Sekip)
+                  </h2>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Tidak ada kredensial hardcoded. Superadmin menugaskan Firebase Auth UID &amp; email terverifikasi ke slot cabang tetap (isolasi data cabang ketat).
+                  </p>
+                </div>
+                <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                  {CASHIER_SLOT_TEMPLATES.map((slot) => {
+                    const assigned = (activeRows as AdminUser[]).find(
+                      (a) =>
+                        isCashierRole(a.role) &&
+                        (a.cashierCode === slot.code ||
+                          (!a.cashierCode && a.branchScope === slot.branchId))
+                    );
+                    return (
+                      <div
+                        key={slot.code}
+                        className="rounded-xl bg-[#070B19] border border-indigo-500/25 p-3.5 space-y-2"
+                      >
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-mono font-bold text-sky-300">{slot.code}</span>
+                          <span className="font-mono text-[10px] text-slate-400">{slot.branchId}</span>
+                        </div>
+                        <p className="text-xs font-semibold text-white">{slot.label}</p>
+                        {assigned ? (
+                          <div className="text-[11px] space-y-0.5">
+                            <p className="text-emerald-300 font-semibold truncate">{assigned.fullName}</p>
+                            <p className="font-mono text-slate-400 truncate">{assigned.email}</p>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAdminOriginalCreatedAt(null);
+                              setAdminForm({
+                                uid: '',
+                                email: '',
+                                fullName: slot.label,
+                                role: 'CASHIER',
+                                branchScope: slot.branchId,
+                                cashierCode: slot.code,
+                                active: true,
+                              });
+                            }}
+                            className="w-full py-1.5 rounded-lg border border-sky-400/35 text-[11px] font-semibold text-sky-300 hover:bg-sky-500/15"
+                          >
+                            Assign ke Slot Ini
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
               <form
                 onSubmit={async (e) => {
                   e.preventDefault();
@@ -1978,37 +2714,40 @@ export function AdminDashboardPage() {
                   setFeedback(null);
                   try {
                     const now = Date.now();
+                    if (isCashierRole(adminForm.role) && adminForm.branchScope === 'ALL') {
+                      throw new Error('Akun CASHIER wajib terikat ke 1 cabang tetap (DEMANG atau SEKIP).');
+                    }
                     const target: AdminUser = {
                       uid: adminForm.uid.trim(),
                       email: adminForm.email.trim().toLowerCase(),
                       fullName: adminForm.fullName.trim(),
                       role: adminForm.role,
                       branchScope: adminForm.branchScope,
-                      permissions: {
-                        manageMembers: adminForm.role !== 'STAFF',
-                        inputTransactions: true,
-                        reviewClaims: true,
-                        reviewRedemptions: true,
-                        manageCampaigns: adminForm.role !== 'STAFF',
-                        manageBenefits: adminForm.role !== 'STAFF',
-                        manageNotifications: adminForm.role !== 'STAFF',
-                        manageSettings: adminForm.role === 'SUPER_ADMIN',
-                        manageAdmins: adminForm.role === 'SUPER_ADMIN',
-                        executeReset: adminForm.role === 'SUPER_ADMIN',
-                      },
+                      branchId:
+                        adminForm.branchScope === 'DEMANG' || adminForm.branchScope === 'SEKIP'
+                          ? adminForm.branchScope
+                          : null,
+                      cashierCode: isCashierRole(adminForm.role)
+                        ? adminForm.cashierCode.trim() || null
+                        : null,
+                      permissions: getDefaultPermissionsForRole(adminForm.role),
                       active: adminForm.active,
                       createdAt: adminOriginalCreatedAt || now,
                       updatedAt: now,
                     };
                     await upsertAdminUserBySuperAdmin(target, adminProfile);
-                    setFeedback({ type: 'success', text: `Admin ${target.email} (${target.role}) berhasil disimpan.` });
+                    setFeedback({
+                      type: 'success',
+                      text: `Operator ${target.email} (${target.role} · ${target.branchScope}) berhasil disimpan.`,
+                    });
                     setAdminOriginalCreatedAt(null);
                     setAdminForm({
                       uid: '',
                       email: '',
                       fullName: '',
-                      role: 'STAFF',
-                      branchScope: 'ALL',
+                      role: 'CASHIER',
+                      branchScope: 'DEMANG',
+                      cashierCode: '',
                       active: true,
                     });
                     await loadMenuRows(true);
@@ -2021,7 +2760,9 @@ export function AdminDashboardPage() {
                 className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-4"
               >
                 <div className="flex items-center justify-between gap-2">
-                  <h2 className="font-display text-base font-bold text-white">Kelola Operator & Role RBAC</h2>
+                  <h2 className="font-display text-base font-bold text-white">
+                    Kelola Admin, Superadmin &amp; Kasir Cabang (RBAC)
+                  </h2>
                   {adminForm.uid && (
                     <button
                       type="button"
@@ -2031,8 +2772,9 @@ export function AdminDashboardPage() {
                           uid: '',
                           email: '',
                           fullName: '',
-                          role: 'STAFF',
-                          branchScope: 'ALL',
+                          role: 'CASHIER',
+                          branchScope: 'DEMANG',
+                          cashierCode: '',
                           active: true,
                         });
                       }}
@@ -2054,7 +2796,7 @@ export function AdminDashboardPage() {
                   <input
                     type="email"
                     required
-                    placeholder="Email Admin / Operator *"
+                    placeholder="Email Operator (Terverifikasi) *"
                     value={adminForm.email}
                     onChange={(e) => setAdminForm({ ...adminForm, email: e.target.value })}
                     className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
@@ -2069,33 +2811,73 @@ export function AdminDashboardPage() {
                   />
                   <select
                     value={adminForm.role}
-                    onChange={(e) => setAdminForm({ ...adminForm, role: e.target.value as AdminRole })}
-                    className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                    onChange={(e) => {
+                      const nextRole = e.target.value as AdminRole;
+                      setAdminForm({
+                        ...adminForm,
+                        role: nextRole,
+                        branchScope:
+                          isCashierRole(nextRole) && adminForm.branchScope === 'ALL'
+                            ? 'DEMANG'
+                            : adminForm.branchScope,
+                      });
+                    }}
+                    className="bg-[#070B19] text-white focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
                   >
-                    <option value="STAFF">STAFF (Kasir & Review)</option>
+                    <option value="CASHIER">CASHIER (Kasir Cabang · Terisolasi)</option>
                     <option value="ADMIN">ADMIN (Operasional Penuh)</option>
-                    <option value="SUPER_ADMIN">SUPER_ADMIN (Semua Izin)</option>
+                    <option value="SUPER_ADMIN">SUPER_ADMIN (Semua Izin Sistem)</option>
+                    <option value="STAFF">STAFF (Legacy Alias Kasir)</option>
                   </select>
                   <select
                     value={adminForm.branchScope}
                     onChange={(e) => setAdminForm({ ...adminForm, branchScope: e.target.value as BranchId | 'ALL' })}
-                    className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                    className="bg-[#070B19] text-white focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
                   >
-                    <option value="ALL">Semua Cabang</option>
+                    {!isCashierRole(adminForm.role) && <option value="ALL">Semua Cabang (ALL)</option>}
                     <option value="DEMANG">Cabang DEMANG</option>
                     <option value="SEKIP">Cabang SEKIP</option>
                   </select>
+                  {isCashierRole(adminForm.role) ? (
+                    <select
+                      value={adminForm.cashierCode}
+                      onChange={(e) => setAdminForm({ ...adminForm, cashierCode: e.target.value })}
+                      className="bg-[#070B19] text-white focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-xs font-mono"
+                    >
+                      <option value="">-- Kode Slot Kasir (Opsional) --</option>
+                      {CASHIER_SLOT_TEMPLATES.filter((s) => s.branchId === adminForm.branchScope).map((s) => (
+                        <option key={s.code} value={s.code}>
+                          {s.code} ({s.label})
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <label className="flex items-center gap-2 text-xs px-2">
+                      <input
+                        type="checkbox"
+                        checked={adminForm.active}
+                        onChange={(e) => setAdminForm({ ...adminForm, active: e.target.checked })}
+                      />
+                      <span>Status Aktif</span>
+                    </label>
+                  )}
+                </div>
+                {isCashierRole(adminForm.role) && (
                   <label className="flex items-center gap-2 text-xs">
                     <input
                       type="checkbox"
                       checked={adminForm.active}
                       onChange={(e) => setAdminForm({ ...adminForm, active: e.target.checked })}
                     />
-                    <span>Status Aktif</span>
+                    <span>Akun Kasir Aktif (akses /cashier cabang {adminForm.branchScope})</span>
                   </label>
-                </div>
-                <button type="submit" disabled={busy} className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-5 text-xs font-semibold text-white disabled:opacity-50">
-                  {busy ? 'Menyimpan...' : 'Simpan Admin'}
+                )}
+                <button
+                  type="submit"
+                  disabled={busy}
+                  className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-5 text-xs font-semibold text-white disabled:opacity-50"
+                >
+                  {busy ? 'Menyimpan...' : 'Simpan Operator'}
                 </button>
               </form>
 
@@ -2108,7 +2890,12 @@ export function AdminDashboardPage() {
                   (activeRows as AdminUser[]).map((a, idx) => (
                     <div key={a.uid || a.email || `adm-${idx}`} className="p-4 flex items-center justify-between gap-4">
                       <div>
-                        <p className="text-sm font-bold text-white">{a.fullName} ({a.role})</p>
+                        <p className="text-sm font-bold text-white">
+                          {a.fullName}{' '}
+                          <span className="font-mono text-xs text-sky-300">
+                            ({a.role}{a.cashierCode ? ` · ${a.cashierCode}` : ''})
+                          </span>
+                        </p>
                         <p className="text-xs font-mono text-slate-400">
                           {a.email} · UID: {a.uid} · Cabang: {a.branchScope} · {a.active ? 'ACTIVE' : 'DISABLED'}
                         </p>
@@ -2123,6 +2910,7 @@ export function AdminDashboardPage() {
                             fullName: a.fullName,
                             role: a.role,
                             branchScope: a.branchScope,
+                            cashierCode: a.cashierCode || '',
                             active: a.active,
                           });
                           window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -2134,6 +2922,43 @@ export function AdminDashboardPage() {
                     </div>
                   ))
                 )}
+              </div>
+
+              {/* Formal 4-Role RBAC Matrix */}
+              <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-3 overflow-x-auto">
+                <h3 className="font-display text-sm font-bold text-white">
+                  Matriks Hak Akses Role (MEMBER · CASHIER · ADMIN · SUPER_ADMIN)
+                </h3>
+                <table className="w-full text-left text-xs">
+                  <thead className="border-b border-indigo-500/20 text-slate-400">
+                    <tr>
+                      <th className="py-2 pr-3">Fitur / Kapabilitas</th>
+                      <th className="py-2 px-2 text-center">MEMBER</th>
+                      <th className="py-2 px-2 text-center">CASHIER</th>
+                      <th className="py-2 px-2 text-center">ADMIN</th>
+                      <th className="py-2 pl-2 text-center">SUPER_ADMIN</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-indigo-500/15 font-mono">
+                    {ROLE_PERMISSION_MATRIX_ROWS.map((row) => (
+                      <tr key={row.feature}>
+                        <td className="py-2 pr-3 font-sans text-slate-200">{row.feature}</td>
+                        <td className={`py-2 px-2 text-center ${row.member ? 'text-emerald-400' : 'text-slate-600'}`}>
+                          {row.member ? 'ALLOW' : 'DENY'}
+                        </td>
+                        <td className={`py-2 px-2 text-center ${row.cashier ? 'text-sky-300' : 'text-rose-400/80'}`}>
+                          {row.cashier ? 'BRANCH' : 'DENY'}
+                        </td>
+                        <td className={`py-2 px-2 text-center ${row.admin ? 'text-emerald-400' : 'text-slate-600'}`}>
+                          {row.admin ? 'ALLOW' : 'DENY'}
+                        </td>
+                        <td className="py-2 pl-2 text-center text-emerald-400">
+                          {row.superAdmin ? 'ALLOW' : 'DENY'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
           )}
@@ -2242,6 +3067,21 @@ export function AdminDashboardPage() {
                     className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none w-full h-10 rounded-lg border border-indigo-500/30 px-3 text-sm font-mono"
                   />
                 </div>
+                <div className="rounded-xl border border-indigo-500/25 bg-[#070B19] p-4 space-y-1.5">
+                  <label className="flex items-center gap-2.5 text-xs font-semibold text-white cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(settingsDraft.refundOnExpiry)}
+                      onChange={(e) =>
+                        setSettingsDraft({ ...settingsDraft, refundOnExpiry: e.target.checked })
+                      }
+                    />
+                    <span>Refund XP Otomatis Saat Benefit Expired (refundOnExpiry)</span>
+                  </label>
+                  <p className="text-[11px] text-slate-400 pl-6">
+                    Default: NONAKTIF (benefit APPROVED yang tidak digunakan dalam 7 hari menjadi EXPIRED tanpa refund). Jika diaktifkan, proses expiry akan mengembalikan XP Reward melalui ledger <span className="font-mono text-purple-300">EXPIRY_REFUND</span>.
+                  </p>
+                </div>
               </div>
               <button type="submit" disabled={busy} className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-5 text-xs font-semibold text-white">
                 Simpan Pengaturan XP
@@ -2270,6 +3110,24 @@ export function AdminDashboardPage() {
                   className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-4"
                 >
                   <h2 className="font-display text-base font-bold text-white">Kebijakan Reset Membership Cycle</h2>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {([30, 60, 90, 180, 365] as const).map((days) => (
+                      <button
+                        key={days}
+                        type="button"
+                        onClick={() =>
+                          setSettingsDraft({ ...settingsDraft, resetInterval: days, resetUnit: 'DAYS' })
+                        }
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-mono border transition-colors ${
+                          settingsDraft.resetUnit === 'DAYS' && settingsDraft.resetInterval === days
+                            ? 'bg-sky-500/20 border-sky-400 text-sky-200 font-bold'
+                            : 'bg-[#070B19] border-indigo-500/25 text-slate-300 hover:border-sky-400/50'
+                        }`}
+                      >
+                        {days} Hari
+                      </button>
+                    ))}
+                  </div>
                   <div className="grid grid-cols-2 gap-3 text-xs">
                     <label className="flex items-center gap-2 col-span-2">
                       <input
@@ -2293,7 +3151,7 @@ export function AdminDashboardPage() {
                       onChange={(e) => setSettingsDraft({ ...settingsDraft, resetUnit: e.target.value as 'DAYS' | 'MONTHS' })}
                       className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
                     >
-                      <option value="DAYS">Hari (30/60/90/180/365)</option>
+                      <option value="DAYS">Hari (30/60/90/180/365/Custom)</option>
                       <option value="MONTHS">Bulan</option>
                     </select>
                     <label className="flex items-center gap-2">
@@ -2495,8 +3353,8 @@ export function AdminDashboardPage() {
 
       {/* Edit Member Modal */}
       {editMemberTarget && (
-        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-          <form onSubmit={handleSaveEditMember} className="w-full max-w-md bg-[#0B1124] rounded-2xl border border-indigo-500/30 p-6 space-y-4">
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <form onSubmit={handleSaveEditMember} className="w-full max-w-md bg-[#0B1124] rounded-2xl border border-indigo-500/30 p-6 space-y-3.5">
             <h3 className="font-display text-lg font-bold text-white">
               Edit Member @{editMemberTarget.username}
             </h3>
@@ -2505,6 +3363,7 @@ export function AdminDashboardPage() {
               required
               value={editMemberPatch.fullName}
               onChange={(e) => setEditMemberPatch({ ...editMemberPatch, fullName: e.target.value })}
+              placeholder="Nama Lengkap"
               className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none w-full h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
             />
             <input
@@ -2514,19 +3373,49 @@ export function AdminDashboardPage() {
               placeholder="Sosial Media"
               className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none w-full h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
             />
-            <select
-              value={editMemberPatch.preferredBranch}
-              onChange={(e) => setEditMemberPatch({ ...editMemberPatch, preferredBranch: e.target.value as BranchId })}
-              className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none w-full h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
-            >
-              <option value="DEMANG">DEMANG</option>
-              <option value="SEKIP">SEKIP</option>
-            </select>
-            <div className="flex gap-3">
+            <div>
+              <label className="block text-[11px] text-slate-400 mb-1">Tanggal Lahir</label>
+              <input
+                type="date"
+                max={todayJakarta}
+                value={editMemberPatch.birthDate}
+                onChange={(e) => setEditMemberPatch({ ...editMemberPatch, birthDate: e.target.value })}
+                className="bg-[#070B19] text-white focus:border-sky-400 focus:outline-none w-full h-10 rounded-lg border border-indigo-500/30 px-3 text-sm font-mono"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] text-slate-400 mb-1">Status Member</label>
+              <select
+                value={editMemberPatch.memberCategory}
+                onChange={(e) =>
+                  setEditMemberPatch({ ...editMemberPatch, memberCategory: e.target.value as '' | MemberCategory })
+                }
+                className="bg-[#070B19] text-white focus:border-sky-400 focus:outline-none w-full h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+              >
+                <option value="">Belum diisi</option>
+                {MEMBER_CATEGORIES.map((c) => (
+                  <option key={c.value} value={c.value}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[11px] text-slate-400 mb-1">Cabang Favorit</label>
+              <select
+                value={editMemberPatch.preferredBranch}
+                onChange={(e) => setEditMemberPatch({ ...editMemberPatch, preferredBranch: e.target.value as BranchId })}
+                className="bg-[#070B19] text-white focus:border-sky-400 focus:outline-none w-full h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+              >
+                <option value="DEMANG">DEMANG</option>
+                <option value="SEKIP">SEKIP</option>
+              </select>
+            </div>
+            <div className="flex gap-3 pt-1">
               <button
                 type="button"
                 onClick={() => setEditMemberTarget(null)}
-                className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none flex-1 h-10 rounded-xl border border-indigo-500/30 text-xs font-semibold"
+                className="bg-[#070B19] text-white flex-1 h-10 rounded-xl border border-indigo-500/30 text-xs font-semibold"
               >
                 Batal
               </button>
@@ -2536,6 +3425,34 @@ export function AdminDashboardPage() {
             </div>
           </form>
         </div>
+      )}
+
+      {/* 8-Tab Member Detail Drawer (FASE 10) */}
+      {detailMemberUid && (
+        <AdminMemberDetail
+          memberUid={detailMemberUid}
+          adminProfile={adminProfile}
+          canManageMembers={canManageMembers}
+          canManageCatalog={canManageCatalog}
+          restoreLocked={Boolean(restoreLock?.locked)}
+          onClose={() => setDetailMemberUid(null)}
+          onMemberMutated={() => {
+            if (menu === 'members') void loadMembersBatch();
+            if (menu === 'dashboard') void loadDashboardMetrics();
+          }}
+          onJumpToXpAdjustment={(member) => {
+            setXpAdjustmentInitialMember(member);
+            setMenu('xpAdjustment');
+          }}
+          onJumpToLevelOverride={(member) => {
+            setLevelOverrideInitialMember(member);
+            setMenu('levelOverride');
+          }}
+          onJumpToPassword={(member) => {
+            setPasswordInitialMember(member);
+            setMenu('passwordManagement');
+          }}
+        />
       )}
 
       {/* Deny Reason Modal */}

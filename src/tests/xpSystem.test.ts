@@ -145,8 +145,9 @@ describe('XP PLAY Mandatory Business Logic & Security Tests', () => {
     expect(rules).toContain('match /identityIndex/{indexKey}');
     // Admin email verification enforced
     expect(rules).toContain('request.auth.token.email_verified == true');
-    // Members cannot update XP/level/status
-    expect(rules).toContain("affectedKeys().hasOnly(['fullName', 'socialMedia', 'preferredBranch', 'updatedAt'])");
+    // Members cannot update XP/level/status (only allowed profile fields)
+    expect(rules).toContain("'fullName', 'socialMedia', 'preferredBranch',");
+    expect(rules).toContain("'birthDate', 'birthMonth', 'birthDay', 'memberCategory', 'updatedAt'");
     // Dynamic initial level validation on member registration
     expect(rules).toContain("incoming().currentLevel in ['SILVER', 'JURAGAN', 'SULTAN']");
     // Claims & Redemptions locked to ON_PROCESS on create and admin-only (when not restore-locked) on update

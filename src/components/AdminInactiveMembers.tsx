@@ -5,6 +5,8 @@ import { mapFriendlyError } from '../lib/firestoreError.ts';
 import {
   createAndDispatchNotificationByAdmin,
   fetchInactiveMembersPage,
+  fetchIncompleteRegistrationReport,
+  regenerateOnboardingCodeClient,
 } from '../services/xpService.ts';
 import {
   formatInactiveDurationLabel,
@@ -15,6 +17,7 @@ import type {
   AdminUser,
   BranchId,
   InactiveMemberRow,
+  IncompleteRegistrationRow,
   LevelId,
   MemberProfile,
 } from '../types/xpplay.ts';
@@ -37,6 +40,12 @@ export function AdminInactiveMembers({
     adminProfile.role === 'ADMIN' ||
     adminProfile.permissions.manageNotifications;
 
+  const [reportTab, setReportTab] = useState<'INACTIVE_ACTIVE' | 'INCOMPLETE_PRE_REGISTERED'>('INACTIVE_ACTIVE');
+  const [incompleteMinDays, setIncompleteMinDays] = useState<7 | 14 | 30>(7);
+  const [incompleteBranch, setIncompleteBranch] = useState<'ALL' | BranchId>('ALL');
+  const [incompleteRows, setIncompleteRows] = useState<IncompleteRegistrationRow[]>([]);
+  const [loadingIncomplete, setLoadingIncomplete] = useState(false);
+
   const [presetDays, setPresetDays] = useState<number | 'CUSTOM'>(30);
   const [customDays, setCustomDays] = useState('45');
   const [mode, setMode] = useState<'PLAYED' | 'NEVER_PLAYED'>('PLAYED');
@@ -56,6 +65,27 @@ export function AdminInactiveMembers({
   const [dedupeDaily, setDedupeDaily] = useState(true);
   const [sendingNotif, setSendingNotif] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const loadIncompleteReport = async () => {
+    setLoadingIncomplete(true);
+    try {
+      const list = await fetchIncompleteRegistrationReport({
+        minDays: incompleteMinDays,
+        branchFilter: incompleteBranch,
+      });
+      setIncompleteRows(list);
+    } catch (err) {
+      setFeedback({ type: 'error', text: mapFriendlyError(err) });
+    } finally {
+      setLoadingIncomplete(false);
+    }
+  };
+
+  useEffect(() => {
+    if (reportTab === 'INCOMPLETE_PRE_REGISTERED') {
+      void loadIncompleteReport();
+    }
+  }, [reportTab, incompleteMinDays, incompleteBranch]);
 
   const effectiveDays =
     presetDays === 'CUSTOM' ? Math.max(1, Math.min(3650, Number(customDays) || 30)) : presetDays;
@@ -191,6 +221,142 @@ export function AdminInactiveMembers({
           {feedback.text}
         </div>
       )}
+
+      {/* Report Mode Toggle: Inactive ACTIVE vs Incomplete PRE_REGISTERED */}
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setReportTab('INACTIVE_ACTIVE')}
+          className={`px-4 py-2 rounded-xl text-xs font-semibold transition-colors ${
+            reportTab === 'INACTIVE_ACTIVE'
+              ? 'bg-sky-500 text-slate-950'
+              : 'bg-[#0B1124] border border-indigo-500/25 text-slate-300 hover:text-white'
+          }`}
+        >
+          Member Aktif Inaktif
+        </button>
+        <button
+          type="button"
+          onClick={() => setReportTab('INCOMPLETE_PRE_REGISTERED')}
+          className={`px-4 py-2 rounded-xl text-xs font-semibold transition-colors ${
+            reportTab === 'INCOMPLETE_PRE_REGISTERED'
+              ? 'bg-amber-400 text-slate-950'
+              : 'bg-[#0B1124] border border-indigo-500/25 text-slate-300 hover:text-white'
+          }`}
+        >
+          Incomplete Registration (Pre-Registered 7 / 14 / 30 Hr)
+        </button>
+      </div>
+
+      {reportTab === 'INCOMPLETE_PRE_REGISTERED' && (
+        <div className="rounded-2xl bg-[#0B1124] border border-amber-400/35 p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="font-display text-base font-bold text-white">
+                Laporan Incomplete Registration (PRE_REGISTERED)
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Monitoring read-only customer yang sudah didaftarkan Kasir namun belum menyelesaikan pendaftaran online. Member PRE_REGISTERED tidak pernah dihapus otomatis dan tetap dapat bertransaksi di Kasir.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {([7, 14, 30] as const).map((d) => (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => setIncompleteMinDays(d)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
+                    incompleteMinDays === d
+                      ? 'bg-amber-400 text-slate-950'
+                      : 'bg-[#070B19] border border-indigo-500/25 text-slate-300'
+                  }`}
+                >
+                  &ge; {d} Hari
+                </button>
+              ))}
+              <select
+                value={incompleteBranch}
+                onChange={(e) => setIncompleteBranch(e.target.value as 'ALL' | BranchId)}
+                className="h-8 rounded-lg bg-[#070B19] border border-indigo-500/25 px-2.5 text-xs text-white"
+              >
+                <option value="ALL">Semua Cabang</option>
+                <option value="DEMANG">Cabang DEMANG</option>
+                <option value="SEKIP">Cabang SEKIP</option>
+              </select>
+            </div>
+          </div>
+
+          {loadingIncomplete ? (
+            <p className="text-xs text-slate-400">Memuat laporan incomplete registration...</p>
+          ) : incompleteRows.length === 0 ? (
+            <p className="text-sm text-slate-400">
+              Tidak ada member PRE_REGISTERED yang menunggu &ge; {incompleteMinDays} hari pada filter ini.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="border-b border-indigo-500/20 text-slate-400">
+                  <tr>
+                    <th className="py-2 pr-3">Member ID</th>
+                    <th className="py-2 pr-3">WhatsApp</th>
+                    <th className="py-2 pr-3">Cabang</th>
+                    <th className="py-2 pr-3">Pre-Registered</th>
+                    <th className="py-2 pr-3">Durasi Tunggu</th>
+                    <th className="py-2 pr-3">XP Transaksi</th>
+                    <th className="py-2 text-right">Aksi</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-indigo-500/15">
+                  {incompleteRows.map((row) => (
+                    <tr key={row.member.uid}>
+                      <td className="py-2.5 pr-3 font-mono text-white">{row.member.memberId}</td>
+                      <td className="py-2.5 pr-3 font-mono text-sky-300">{row.member.whatsapp}</td>
+                      <td className="py-2.5 pr-3 font-mono text-slate-300">
+                        {row.branchId ? getBranchLabel(row.branchId) : '-'}
+                      </td>
+                      <td className="py-2.5 pr-3 text-slate-400">
+                        {formatJakartaDateTime(row.member.preRegisteredAt ?? row.member.createdAt)}
+                      </td>
+                      <td className="py-2.5 pr-3 font-mono font-bold text-amber-300">
+                        {row.daysSincePreRegistered} hari
+                      </td>
+                      <td className="py-2.5 pr-3 font-mono text-emerald-300">
+                        {row.member.xpProgress} XP {row.hasTransactions ? '(Sudah main)' : '(Belum transaksi)'}
+                      </td>
+                      <td className="py-2.5 text-right">
+                        <button
+                          type="button"
+                          disabled={restoreLocked}
+                          onClick={async () => {
+                            try {
+                              const res = await regenerateOnboardingCodeClient({
+                                member: row.member,
+                                actor: adminProfile,
+                              });
+                              await navigator.clipboard.writeText(res.whatsappShareMessage).catch(() => {});
+                              setFeedback({
+                                type: 'success',
+                                text: `Kode verifikasi baru ${res.verificationCode} untuk ${row.member.whatsapp} diterbitkan & pesan WA disalin.`,
+                              });
+                            } catch (err) {
+                              setFeedback({ type: 'error', text: mapFriendlyError(err) });
+                            }
+                          }}
+                          className="px-2.5 py-1.5 rounded-lg border border-amber-400/40 text-amber-200 font-semibold hover:bg-amber-500/15"
+                        >
+                          Buat Ulang Kode
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {reportTab === 'INACTIVE_ACTIVE' && (<>
 
       {/* Period Preset Selector + Cohort Mode + Filters */}
       <div className="rounded-xl bg-[#0B1124] border border-indigo-500/20 p-5 space-y-4">
@@ -505,6 +671,7 @@ export function AdminInactiveMembers({
           </form>
         </div>
       )}
+      </>)}
     </div>
   );
 }

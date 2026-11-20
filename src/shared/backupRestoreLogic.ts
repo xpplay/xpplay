@@ -6,11 +6,12 @@ import type {
   SystemBackupRecord,
 } from '../types/xpplay.ts';
 
-export const CURRENT_APP_VERSION = '2.4.0';
-export const CURRENT_SCHEMA_VERSION = 'xpplay-schema-v2';
+export const CURRENT_APP_VERSION = '3.0.0';
+export const CURRENT_SCHEMA_VERSION = 'xpplay-schema-v3';
 export const COMPATIBLE_SCHEMA_VERSIONS: readonly string[] = [
   'xpplay-schema-v1',
   'xpplay-schema-v2',
+  'xpplay-schema-v3',
 ];
 
 export const RESTORE_CONFIRMATION_PHRASE = 'RESTORE XP PLAY';
@@ -37,6 +38,7 @@ export const BACKUP_COLLECTIONS: readonly string[] = [
   'referrals',
   'benefits',
   'campaigns',
+  'benefitRequests',
   'claims',
   'redemptions',
   'notifications',

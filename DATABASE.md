@@ -1,35 +1,38 @@
-# Database Architecture — Firestore Collections
+# Database Architecture — Firestore Collections (v3.1.0)
 
 Blueprint schema terdefinisi di `firebase-blueprint.json` dan index komposit di `firestore.indexes.json`.
 
 ## Koleksi Utama
 - `branches/{branchId}`: Data cabang `DEMANG` dan `SEKIP`.
-- `levels/{levelId}`: Konfigurasi tier `BRONZE`, `SILVER`, `JURAGAN`, `SULTAN` beserta `minXp` yang dapat diatur Admin.
-- `systemSettings/default`: Rate transaksi (`2000`), bonus daftar (`10`), bonus referral (`5`), `currentCycleId`, dan kebijakan reset periodik.
-- `admins/{uid}`: Profil operator dan role (`SUPER_ADMIN`, `ADMIN`, `STAFF`) serta `branchScope`.
-- `members/{uid}`: Data member dengan pemisahan field `xpProgress` dan `xpReward`, `currentLevel`, `levelMode` (`AUTOMATIC | MANUAL_OVERRIDE | RESET`), `status` (`ACTIVE | SUSPENDED | INACTIVE | DELETED`), `lastPlayAt`, `lastPlayBranch`, dan `currentCycleId`.
-- `identityIndex/{indexKey}`: Pemetaan unik `username:<val>` dan `wa:<val>` (server-only, tertutup dari client).
-- `xpProgressLedger/{entryId}` & `xpRewardLedger/{entryId}`: Buku besar immutable setiap mutasi XP.
-- `transactions/{transactionId}`: Riwayat transaksi IDR cabang (`amountIdr` integer, `xpRateUsed`, `xpGenerated`, `receiptNumber`).
-- `referrals/{referralId}`: Riwayat referral valid antar member.
+- `levels/{levelId}`: Konfigurasi tier `BRONZE`, `SILVER`, `JURAGAN`, `SULTAN` beserta `minXp` yang dapat diatur Super Admin.
+- `systemSettings/default`: Rate transaksi (`2000`), bonus daftar (`10`), bonus referral (`5`), `refundOnExpiry` (default `false`), `currentCycleId`, dan kebijakan reset periodik.
+- `admins/{uid}`: Profil operator dan role (`SUPER_ADMIN`, `ADMIN`, `CASHIER`, legacy `STAFF`), `branchScope` (`DEMANG | SEKIP` wajib untuk `CASHIER`/`STAFF`; `ALL` untuk `ADMIN`/`SUPER_ADMIN`), `branchId`, `cashierCode` (`CASHIER_DEMANG_01/02`, `CASHIER_SEKIP_01/02`), dan `permissions`.
+- `members/{uid}`: Data member dengan pemisahan field `xpProgress`, `xpReward` (tersedia), dan `reservedXp` (hold), serta field Two-Step Registration:
+  - `status` (`PRE_REGISTERED | ACTIVE | SUSPENDED | INACTIVE | DELETED`)
+  - `registrationStatus` (`PRE_REGISTERED | ACTIVE`) dan `registrationStage` (`PHONE_ONLY | COMPLETED`)
+  - `authUid` (`null` saat `PRE_REGISTERED`, terisi Firebase UID saat `COMPLETED`), `migratedFromUid` (ID dokumen `pre_*` asal)
+  - `branchId`, `preRegisteredAt`, `preRegisteredBy`, `preRegisteredByRole`, `completedAt`, `verifiedPhoneAt`, `registrationBonusGranted`, `preRegistrationNotes`
+  - `birthDate`/`birthMonth`/`birthDay`, `memberCategory` (`MAHASISWA | PELAJAR | PEKERJA | LAINNYA`), `currentLevel`, `levelMode`, `lastPlayAt`, `lastPlayBranch`, `currentCycleId`.
+- `onboardingPublicStatus/{wHash}` *(BARU v3.1.0)*: Indeks status publik **Zero-PII** berkey `w_<sha256(normalizedWhatsapp)>` yang hanya menyimpan `status`, `hasActiveCode`, `branchId`, `memberUid`, `updatedAt`. Tidak pernah menyimpan nama, saldo XP, atau kode plaintext.
+- `onboardingVerifications/{wHash}` *(BARU v3.1.0)*: Penyimpanan **kode 6-digit sekali pakai** ter-hash HMAC-SHA256 (`codeHmac`), `attempts`, `maxAttempts` (`5`), `expiresAt` (`7 hari`), `usedAt`, `branchId`, `memberUid`, `issuedBy`, `issuedByRole`. Diblokir total dari publik; hanya dapat ditulis/dibaca staff terotorisasi atau server Admin SDK.
+- `authIndex/{hashId}` & `identityIndex/{indexKey}`: Pemetaan unik `u_<sha256>` / `w_<sha256>` (zero-PII login lookup) dan `username:<val>` / `wa:<val>` (server-only / `SUPER_ADMIN` backup).
+- `xpProgressLedger/{entryId}` & `xpRewardLedger/{entryId}`: Buku besar immutable setiap mutasi XP termasuk ID deterministik bonus pendaftaran (`regbonus_prog_<memberId>` & `regbonus_rew_<memberId>`, `source: 'REGISTRATION_BONUS'`), serta `BENEFIT_REQUEST_HOLD`, `DENIED_REFUND`, `EXPIRY_REFUND`, dll.
+- `transactions/{transactionId}`: Riwayat transaksi IDR cabang (`amountIdr` integer, `xpRateUsed`, `xpGenerated`, `receiptNumber`, `branch: DEMANG | SEKIP`). Mendukung member `ACTIVE` maupun `PRE_REGISTERED`.
+- `referrals/{referralId}`: Riwayat referral valid antar member aktif (hanya tercipta saat Tahap 2 selesai).
 - `levelHistory/{historyId}`: Riwayat kenaikan/perubahan level (termasuk `ADMIN_MANUAL_OVERRIDE` dan `ADMIN_RECALCULATE`).
-- `benefits/{benefitId}`: Katalog benefit XP & benefit level (`claimable`, `redeemable`, `levelRequirement`, `stock`).
-- `campaigns/{campaignId}`: Challenge, Event, dan Promo (`startAt`, `endAt`, `xpReward`, `maxClaimsPerMember`, `status`).
-- `claims/{claimId}` & `redemptions/{redemptionId}`: Antrean persetujuan (`ON_PROCESS | APPROVED | DENIED`) dengan jejak reviewer.
-- `notifications/{notificationId}` & `memberNotifications/{id}`: Kampanye notifikasi (termasuk target inactivity) dan inbox read/unread member.
-- `membershipCycles/{cycleId}` & `cycleSnapshots/{snapshotId}`: Periode season dan snapshot saldo sebelum reset tanpa menghapus riwayat lama.
-- `auditLogs/{logId}`: Catatan audit setiap aksi penting (`actorId`, `actorRole`, `action`, `before`, `after`, `timestamp`).
-- `cmsPublished/homepage`: Konten halaman depan versi aktif (`PUBLISHED`) yang dibaca publik & member secara real-time.
-- `cmsDrafts/homepage`: Konten draft homepage khusus `ADMIN` / `SUPER_ADMIN` sebelum dipublikasikan.
-- `cmsVersions/{versionId}`: Riwayat snapshot versi immutable CMS homepage (`v1`, `v2`, dst.) dengan metadata pembuat, waktu publish, dan `sourceAction` (`PUBLISH | ROLLBACK`).
-- `xpAdjustments/{adjustmentId}`: Catatan immutable penyesuaian `XP Progress` (`ADMIN_ADJUSTMENT`) dan `XP Reward` (`XP_REWARD_ADMIN_ADJUSTMENT`) oleh `ADMIN`/`SUPER_ADMIN`, dengan `operationId` idempoten, `beforeBalance`, `afterBalance`, `levelBefore`, `levelAfter`, `reason`, `reference`, `auditId`, `adminId`, dan `timestamp`.
-- `levelOverrides/{overrideId}`: Catatan immutable perubahan level manual (`MANUAL_OVERRIDE`) dan rekalkulasi dari XP (`RECALCULATE`) oleh `ADMIN`/`SUPER_ADMIN`, menyimpan `operationId`, `xpProgressSnapshot`, `previousLevel`, `newLevel`, `previousLevelMode`, `newLevelMode`, `reason`, `reference`, `auditId`, dan `timestamp`.
-- `systemBackups/{backupId}`: Metadata immutable/terproteksi untuk setiap snapshot backup (`MANUAL`, `SCHEDULED`, `PRE_RESTORE`), status siklus hidup, `scopeType` (`FULL_SYSTEM_BACKUP | FIRESTORE_AND_STORAGE_BACKUP`), checksum manifest SHA-256, hasil verifikasi 9-cek, dan flag perlindungan retensi (`SUPER_ADMIN` only).
-- `restoreJobs/{restoreJobId}`: Riwayat permanen (`allow delete: if false`) setiap eksekusi Full System Restore termasuk `preRestoreBackupId`, log langkah (`steps`), perbandingan jumlah dokumen/storage, laporan 12-Point Data Integrity Audit, status akhir (`COMPLETED | VERIFICATION_FAILED | FAILED`), dan rekomendasi pemulihan (`SUPER_ADMIN` only).
-- `systemOperations/{opId}`: Tiga dokumen operasional singleton (`restoreLock` zero-PII untuk Maintenance Mode real-time, `backupLock` untuk pencegahan tabrakan backup paralel, dan `backupRetention` untuk konfigurasi retensi).
+- `benefits/{benefitId}` & `campaigns/{campaignId}`: Katalog benefit XP, benefit level, Challenge, Event, dan Promo (CRUD khusus `ADMIN` / `SUPER_ADMIN`).
+- `benefitRequests/{requestId}`: Pengajuan benefit terpadu (`GENERAL_BENEFIT | LEVEL_BENEFIT | CHALLENGE | EVENT | PROMO`) dengan kode `BRQ-...`, XP Hold (`holdLedgerId`), refund (`refundLedgerId`), validitas 7 hari (`expiresAt`), verifikasi Kasir (`usedAt`, `usedBy`, `usedBranch`, `receiptReference`), mendukung `PRE_REGISTERED` (via bantuan Kasir, `memberUsername: ''`) maupun `ACTIVE`.
+- `claims/{claimId}` & `redemptions/{redemptionId}`: Antrean persetujuan legacy (`ON_PROCESS | APPROVED | DENIED`).
+- `notifications/{notificationId}` & `memberNotifications/{id}`: Kampanye notifikasi (termasuk `NEW_PRE_REGISTERED` dan `NEW_MEMBER_REGISTERED`) serta inbox read/unread member.
+- `membershipCycles/{cycleId}` & `cycleSnapshots/{snapshotId}`: Periode season dan snapshot saldo sebelum reset non-destruktif.
+- `auditLogs/{logId}`: Catatan audit immutable (`allow update, delete: if false`) termasuk aksi baru `PRE_REGISTERED_MEMBER_CREATED`, `ONBOARDING_CODE_REGENERATED`, `MEMBER_REGISTRATION_COMPLETED`, `CASHIER_LOGIN`, `CASHIER_ACTION`, `CASHIER_DENIED_ACTION`.
+- `cmsPublished/homepage`, `cmsDrafts/homepage`, `cmsVersions/{versionId}`: Konten CMS homepage khusus `ADMIN`/`SUPER_ADMIN` (Kasir diblokir).
+- `xpAdjustments/{adjustmentId}` & `levelOverrides/{overrideId}`: Catatan immutable penyesuaian XP & override level khusus `ADMIN`/`SUPER_ADMIN` (Kasir diblokir).
+- `systemBackups/{backupId}`, `restoreJobs/{restoreJobId}`, `systemOperations/{opId}`: Backup, restore job permanen, dan restore lock zero-PII khusus `SUPER_ADMIN`.
 
 ## Index Komposit Tambahan (`firestore.indexes.json`)
-- `members`: `(status ASC, lastPlayAt ASC, createdAt ASC)`, `(status ASC, lastPlayBranch ASC, lastPlayAt ASC)`, `(status ASC, currentLevel ASC, lastPlayAt ASC)` untuk query Inactive Members berbasis cursor pagination.
-- `auditLogs`: `(action ASC, timestamp DESC)` untuk filter cepat riwayat `PASSWORD_CHANGED_BY_ADMIN` dan audit backup/restore.
-
-
+- `benefitRequests`: `(memberUid ASC, createdAt DESC)`, `(memberUid ASC, sourceId ASC)`, `(status ASC, createdAt DESC)`, `(memberUsername ASC, createdAt DESC)`, `(memberWhatsapp ASC, createdAt DESC)`.
+- `notifications`: `(targetType ASC, createdAt DESC)`.
+- `referrals`: `(referrerUid ASC, createdAt DESC)` & `(refereeUid ASC, createdAt DESC)`.
+- `members`: `(status ASC, lastPlayAt ASC, createdAt ASC)`, `(status ASC, lastPlayBranch ASC, lastPlayAt ASC)`, `(status ASC, currentLevel ASC, lastPlayAt ASC)`.
+- `auditLogs`: `(action ASC, timestamp DESC)` & `(targetId ASC, timestamp DESC)`.

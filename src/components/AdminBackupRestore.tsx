@@ -271,8 +271,8 @@ export function AdminBackupRestore({ adminProfile }: AdminBackupRestoreProps) {
       setFeedback({
         type: report.passed ? 'success' : 'error',
         text: report.passed
-          ? `12-Point Data Integrity Audit LULUS (${report.passedChecks}/${report.totalChecks}, 0 temuan kritikal).`
-          : `12-Point Data Integrity Audit menemukan ${report.criticalCount} masalah kritikal yang perlu ditindaklanjuti.`,
+          ? `15-Point Data Integrity Audit LULUS (${report.passedChecks}/${report.totalChecks}, 0 temuan kritikal).`
+          : `15-Point Data Integrity Audit menemukan ${report.criticalCount} masalah kritikal yang perlu ditindaklanjuti.`,
       });
     } catch (err) {
       setFeedback({ type: 'error', text: mapFriendlyError(err) });
@@ -330,7 +330,7 @@ export function AdminBackupRestore({ adminProfile }: AdminBackupRestoreProps) {
         <div>
           <h2 className="font-display text-xl font-bold text-white">Backup, Restore & System Integrity</h2>
           <p className="text-sm text-slate-400 mt-1">
-            Backup terisolasi dengan checksum SHA-256, verifikasi otomatis, Restore Lock & Pre-Restore Backup wajib, 12-Point Data Integrity Audit, dan monitor kesehatan 9 komponen sistem.
+            Backup terisolasi dengan checksum SHA-256, verifikasi otomatis, Restore Lock & Pre-Restore Backup wajib, 15-Point Data Integrity Audit, dan monitor kesehatan 9 komponen sistem.
           </p>
         </div>
         <button
@@ -351,7 +351,7 @@ export function AdminBackupRestore({ adminProfile }: AdminBackupRestoreProps) {
             ['overview', 'Overview & System Health', Activity],
             ['history', `Backup History (${backups.length})`, Database],
             ['restore', 'Restore Center', RotateCcw],
-            ['integrity', '12-Point Integrity Audit', ShieldCheck],
+            ['integrity', '15-Point Integrity Audit', ShieldCheck],
             ['retention', 'Retention Settings', Settings],
             ['restoreLogs', `Restore Logs (${restoreJobs.length})`, FileCheck2],
           ] as [BackupSubTab, string, typeof Activity][]
@@ -629,7 +629,7 @@ export function AdminBackupRestore({ adminProfile }: AdminBackupRestoreProps) {
             <div>
               <h3 className="font-display text-base font-bold text-white">Full System Restore Center</h3>
               <p className="text-xs text-slate-400 mt-1">
-                Setiap restore wajib melewati validasi manifest & checksum, Preview Perbandingan, konfirmasi ketik <span className="font-mono text-amber-300">{RESTORE_CONFIRMATION_PHRASE}</span>, pengaktifan Restore Lock, pembuatan Pre-Restore Backup otomatis, dan 12-Point Post-Restore Verification.
+                Setiap restore wajib melewati validasi manifest & checksum, Preview Perbandingan, konfirmasi ketik <span className="font-mono text-amber-300">{RESTORE_CONFIRMATION_PHRASE}</span>, pengaktifan Restore Lock, pembuatan Pre-Restore Backup otomatis, dan 15-Point Post-Restore Verification.
               </p>
             </div>
 
@@ -817,14 +817,14 @@ export function AdminBackupRestore({ adminProfile }: AdminBackupRestoreProps) {
         </div>
       )}
 
-      {/* TAB 4: 12-POINT DATA INTEGRITY AUDIT (MODULE 18) */}
+      {/* TAB 4: 15-POINT DATA INTEGRITY AUDIT (FASE 32) */}
       {subTab === 'integrity' && (
         <div className="space-y-5">
           <div className="rounded-xl bg-[#0B1124] border border-indigo-500/20 p-5 flex flex-wrap items-center justify-between gap-4">
             <div>
-              <h3 className="font-display text-base font-bold text-white">12-Point Data Integrity Verification</h3>
+              <h3 className="font-display text-base font-bold text-white">15-Point Data Integrity Verification</h3>
               <p className="text-xs text-slate-400 mt-1">
-                Audit menyeluruh atas konsistensi XP Progress, XP Reward, Level, saldo negatif, duplikat username/WA, referral, claims, redemptions, transaksi, storage, dan aset CMS.
+                Audit menyeluruh atas konsistensi XP Progress, XP Reward, Reserved XP, Benefit Requests, anti-duplicate hold/refund, profil member, Level, saldo negatif, duplikat username/WA, referral, claims, redemptions, transaksi, storage, dan aset CMS.
               </p>
             </div>
             <button
@@ -834,7 +834,7 @@ export function AdminBackupRestore({ adminProfile }: AdminBackupRestoreProps) {
               className="px-4 py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 disabled:opacity-40 text-slate-950 text-xs font-semibold flex items-center gap-2 whitespace-nowrap"
             >
               <ShieldCheck className="w-4 h-4" />
-              {busyAction === 'integrityAudit' ? 'Memeriksa 12 Indikator...' : 'Jalankan 12-Point Audit'}
+              {busyAction === 'integrityAudit' ? 'Memeriksa 15 Indikator...' : 'Jalankan 15-Point Audit'}
             </button>
           </div>
 
@@ -879,7 +879,7 @@ export function AdminBackupRestore({ adminProfile }: AdminBackupRestoreProps) {
             </div>
           ) : (
             <div className="rounded-xl bg-[#0B1124] border border-indigo-500/20 p-10 text-center text-xs text-slate-500">
-              Klik tombol &ldquo;Jalankan 12-Point Audit&rdquo; untuk memeriksa kesehatan data live secara real-time.
+              Klik tombol &ldquo;Jalankan 15-Point Audit&rdquo; untuk memeriksa kesehatan data live secara real-time.
             </div>
           )}
         </div>
@@ -1003,7 +1003,7 @@ export function AdminBackupRestore({ adminProfile }: AdminBackupRestoreProps) {
                   <th className="py-3 px-4 font-medium">Restore Job ID</th>
                   <th className="py-3 px-4 font-medium">Target & Pre-Restore Backup</th>
                   <th className="py-3 px-4 font-medium">Status</th>
-                  <th className="py-3 px-4 font-medium">Verifikasi 12-Point</th>
+                  <th className="py-3 px-4 font-medium">Verifikasi 15-Point</th>
                   <th className="py-3 px-4 font-medium">Waktu & Operator</th>
                 </tr>
               </thead>

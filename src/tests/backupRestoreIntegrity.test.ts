@@ -17,6 +17,7 @@ import { runDataIntegrityChecks, type IntegrityDataset } from '../shared/integri
 import { DEFAULT_LEVELS } from '../shared/xpLogic.ts';
 import type {
   BenefitItem,
+  BenefitRequestRecord,
   CampaignItem,
   ClaimRecord,
   CmsPublishedDoc,
@@ -88,6 +89,7 @@ function seedBaselineStore(store: InMemoryBackupDataStore, uploadsRoot: string):
     transactionXpRate: 10000,
     registrationBonusXp: 10,
     referralBonusXp: 5,
+    refundOnExpiry: false,
     currentCycleId: 'cycle_2026_q2',
     resetEnabled: false,
     resetInterval: 6,
@@ -118,9 +120,14 @@ function seedBaselineStore(store: InMemoryBackupDataStore, uploadsRoot: string):
     username: 'andi.gaming',
     whatsapp: '6281234500001',
     socialMedia: '@andigaming',
+    birthDate: '1999-08-17',
+    birthMonth: 8,
+    birthDay: 17,
+    memberCategory: 'MAHASISWA',
     status: 'ACTIVE',
     xpProgress: 180,
     xpReward: 80,
+    reservedXp: 0,
     currentLevel: 'SILVER',
     levelMode: 'AUTOMATIC',
     currentCycleId: 'cycle_2026_q2',
@@ -140,9 +147,14 @@ function seedBaselineStore(store: InMemoryBackupDataStore, uploadsRoot: string):
     username: 'siti.play',
     whatsapp: '6281234500002',
     socialMedia: '',
+    birthDate: '2001-03-10',
+    birthMonth: 3,
+    birthDay: 10,
+    memberCategory: 'PELAJAR',
     status: 'ACTIVE',
     xpProgress: 15,
     xpReward: 15,
+    reservedXp: 0,
     currentLevel: 'BRONZE',
     levelMode: 'AUTOMATIC',
     currentCycleId: 'cycle_2026_q2',
@@ -262,6 +274,48 @@ function seedBaselineStore(store: InMemoryBackupDataStore, uploadsRoot: string):
   };
   void store.setDocument('redemptions', redemption.id, redemption as unknown as Record<string, unknown>);
 
+  const benefitRequest: BenefitRequestRecord = {
+    id: 'BRQ-20260601-BASE',
+    memberId: member1.memberId,
+    memberUid: member1.uid,
+    memberUsername: member1.username,
+    memberName: member1.fullName,
+    memberWhatsapp: member1.whatsapp,
+    sourceType: 'GENERAL_BENEFIT',
+    sourceId: benefit.id,
+    title: benefit.name,
+    xpCost: 40,
+    xpRewardGrant: 0,
+    levelRequirement: 'BRONZE',
+    evidenceUrl: '',
+    evidencePath: '',
+    note: 'Baseline unified benefit request',
+    status: 'APPROVED',
+    resolution: null,
+    holdLedgerId: 'xpr_hold_base',
+    refundLedgerId: null,
+    branch: 'DEMANG',
+    approvedAt: now - 86400000,
+    approvedBy: 'uid_super',
+    approvedByRole: 'SUPER_ADMIN',
+    deniedAt: null,
+    deniedBy: null,
+    deniedReason: null,
+    expiresAt: now + 6 * 86400000,
+    expiredAt: null,
+    usedAt: null,
+    usedBy: null,
+    usedBranch: null,
+    receiptReference: null,
+    refundedAt: null,
+    refundReason: null,
+    refundedAmount: 0,
+    cycleId: 'cycle_2026_q2',
+    createdAt: now - 2 * 86400000,
+    updatedAt: now - 86400000,
+  };
+  void store.setDocument('benefitRequests', benefitRequest.id, benefitRequest as unknown as Record<string, unknown>);
+
   const tx: TransactionRecord = {
     id: 'tx_1',
     memberId: member1.memberId,
@@ -347,7 +401,7 @@ function seedBaselineStore(store: InMemoryBackupDataStore, uploadsRoot: string):
   });
 }
 
-describe('PHASES F, G, H, I, K — Backup, Verification, Restore, Lock & 12-Point Integrity (MODULES 7–24, 26, 27)', () => {
+describe('PHASES F, G, H, I, K — Backup, Verification, Restore, Lock & 15-Point Integrity (MODULES 7–24, 26, 27)', () => {
   let tmpDir: string;
   let backupsRoot: string;
   let uploadsRoot: string;
@@ -500,7 +554,7 @@ describe('PHASES F, G, H, I, K — Backup, Verification, Restore, Lock & 12-Poin
     expect(job.postRestoreVerificationPassed).toBe(true);
     expect(job.preRestoreBackupId).toMatch(/^backup_pre_restore_/);
     expect(job.integrityReport?.passed).toBe(true);
-    expect(job.integrityReport?.totalChecks).toBe(12);
+    expect(job.integrityReport?.totalChecks).toBe(15);
 
     // Confirm step order: PRE_RESTORE_BACKUP strictly preceded RESTORE_FIRESTORE
     const preIdx = job.steps.findIndex((s) => s.step === 'PRE_RESTORE_BACKUP');
@@ -508,10 +562,12 @@ describe('PHASES F, G, H, I, K — Backup, Verification, Restore, Lock & 12-Poin
     expect(preIdx).toBeGreaterThan(-1);
     expect(fsIdx).toBeGreaterThan(preIdx);
 
-    // Confirm live DB & storage were restored back to Backup A
+    // Confirm live DB & storage were restored back to Backup A (including benefitRequests)
     const m1Restored = await store.getDocument('members', 'uid_m1');
     expect(m1Restored?.xpProgress).toBe(180);
     expect(m1Restored?.currentLevel).toBe('SILVER');
+    const brqRestored = await store.getDocument('benefitRequests', 'BRQ-20260601-BASE');
+    expect(brqRestored?.status).toBe('APPROVED');
     expect(
       fs.readFileSync(path.join(uploadsRoot, 'claims', 'uid_m1', 'proof1.png'), 'utf8')
     ).toBe('PNGDATA_CLAIM_1');
@@ -774,7 +830,7 @@ describe('PHASES F, G, H, I, K — Backup, Verification, Restore, Lock & 12-Poin
     expect(fs.existsSync(path.join(backupsRoot, b1.record.backupId))).toBe(false);
   });
 
-  it('runs all 12 MODULE 18 Data Integrity Checks accurately on healthy and corrupted datasets', () => {
+  it('runs all 15 Data Integrity Checks accurately on healthy and corrupted datasets', () => {
     const now = Date.UTC(2026, 5, 1);
     const healthyMember: MemberProfile = {
       uid: 'm1',
@@ -783,9 +839,14 @@ describe('PHASES F, G, H, I, K — Backup, Verification, Restore, Lock & 12-Poin
       username: 'player.one',
       whatsapp: '628111111111',
       socialMedia: '',
+      birthDate: '2000-05-20',
+      birthMonth: 5,
+      birthDay: 20,
+      memberCategory: 'MAHASISWA',
       status: 'ACTIVE',
       xpProgress: 180,
       xpReward: 60,
+      reservedXp: 0,
       currentLevel: 'SILVER',
       levelMode: 'AUTOMATIC',
       currentCycleId: 'c1',
@@ -951,6 +1012,48 @@ describe('PHASES F, G, H, I, K — Backup, Verification, Restore, Lock & 12-Poin
         publishedByEmail: 'spv.xpplay@gmail.com',
         updatedAt: now,
       },
+      benefitRequests: [
+        {
+          id: 'BRQ-20260601-OK01',
+          memberId: 'XPP-001',
+          memberUid: 'm1',
+          memberUsername: 'player.one',
+          memberName: 'Player One',
+          memberWhatsapp: '628111111111',
+          sourceType: 'GENERAL_BENEFIT',
+          sourceId: 'ben1',
+          title: 'Free Hour',
+          xpCost: 20,
+          xpRewardGrant: 0,
+          levelRequirement: 'BRONZE',
+          evidenceUrl: '',
+          evidencePath: '',
+          note: '',
+          status: 'APPROVED',
+          resolution: null,
+          holdLedgerId: 'r_hold_ok',
+          refundLedgerId: null,
+          branch: 'DEMANG',
+          approvedAt: now,
+          approvedBy: 'admin',
+          approvedByRole: 'SUPER_ADMIN',
+          deniedAt: null,
+          deniedBy: null,
+          deniedReason: null,
+          expiresAt: now + 7 * 86400000,
+          expiredAt: null,
+          usedAt: null,
+          usedBy: null,
+          usedBranch: null,
+          receiptReference: null,
+          refundedAt: null,
+          refundReason: null,
+          refundedAmount: 0,
+          cycleId: 'c1',
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
       existingStoragePaths: new Set(['claims/m1/ok.png', 'cms/hero.png']),
     };
 
@@ -960,18 +1063,21 @@ describe('PHASES F, G, H, I, K — Backup, Verification, Restore, Lock & 12-Poin
       checkedAt: now,
     });
     expect(okReport.passed).toBe(true);
-    expect(okReport.totalChecks).toBe(12);
-    expect(okReport.passedChecks).toBe(12);
+    expect(okReport.totalChecks).toBe(15);
+    expect(okReport.passedChecks).toBe(15);
     expect(okReport.criticalCount).toBe(0);
 
-    // Corrupt ALL 12 checks simultaneously and verify every single check catches its fault
+    // Corrupt ALL 15 checks simultaneously and verify every single check catches its fault
     const badDataset: IntegrityDataset = {
       ...healthyDataset,
       members: [
         {
           ...healthyMember,
+          birthDate: '2099-12-31', // future birth date (check 15)
+          memberCategory: 'INVALID_CAT' as MemberProfile['memberCategory'], // invalid category (check 15)
           xpProgress: -10,
           xpReward: -5,
+          reservedXp: 99, // mismatched reservedXp (check 13)
           currentLevel: 'SULTAN', // mismatch in AUTOMATIC mode
           referredByUid: 'm1', // self-referral
         },
@@ -984,7 +1090,28 @@ describe('PHASES F, G, H, I, K — Backup, Verification, Restore, Lock & 12-Poin
         },
       ],
       xpProgressLedger: [{ ...healthyDataset.xpProgressLedger[0], memberUid: 'missing_uid' }],
-      xpRewardLedger: [{ ...healthyDataset.xpRewardLedger[0], memberUid: 'missing_uid' }],
+      xpRewardLedger: [
+        { ...healthyDataset.xpRewardLedger[0], memberUid: 'missing_uid' },
+        // Duplicate hold entries for same referenceId (check 14)
+        {
+          ...healthyDataset.xpRewardLedger[0],
+          id: 'dup_hold_1',
+          memberUid: 'm1',
+          amount: -20,
+          direction: 'DEBIT',
+          source: 'BENEFIT_REQUEST_HOLD',
+          referenceId: 'BRQ-DUP',
+        },
+        {
+          ...healthyDataset.xpRewardLedger[0],
+          id: 'dup_hold_2',
+          memberUid: 'm1',
+          amount: -20,
+          direction: 'DEBIT',
+          source: 'BENEFIT_REQUEST_HOLD',
+          referenceId: 'BRQ-DUP',
+        },
+      ],
       referrals: [
         {
           id: 'bad_ref',
@@ -1002,6 +1129,13 @@ describe('PHASES F, G, H, I, K — Backup, Verification, Restore, Lock & 12-Poin
       ],
       claims: [{ ...healthyDataset.claims[0], memberUid: 'missing_uid', campaignId: 'missing_camp' }],
       redemptions: [{ ...healthyDataset.redemptions[0], memberUid: 'missing_uid', benefitId: 'missing_ben' }],
+      benefitRequests: [
+        {
+          ...healthyDataset.benefitRequests![0],
+          memberUid: 'missing_uid',
+          sourceId: 'missing_ben',
+        },
+      ],
       transactions: [{ ...healthyDataset.transactions[0], memberUid: 'missing_uid', amountIdr: -100 }],
       existingStoragePaths: new Set(), // missing both claim evidence & CMS hero asset
     };
@@ -1012,7 +1146,7 @@ describe('PHASES F, G, H, I, K — Backup, Verification, Restore, Lock & 12-Poin
       checkedAt: now,
     });
     expect(badReport.passed).toBe(false);
-    expect(badReport.totalChecks).toBe(12);
+    expect(badReport.totalChecks).toBe(15);
     expect(badReport.passedChecks).toBe(0);
     for (const check of badReport.checks) {
       expect(check.passed).toBe(false);
