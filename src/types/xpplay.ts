@@ -210,6 +210,22 @@ export interface AdminUser {
   updatedAt: number;
 }
 
+export interface AdminInviteRecord {
+  email: string; // lowercase normalized email, also serves as doc ID in adminInvites
+  fullName: string;
+  role: AdminRole;
+  branchScope: BranchId | 'ALL';
+  branchId: BranchId | null;
+  cashierCode: string | null;
+  status: 'PENDING' | 'CLAIMED';
+  active: boolean;
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+  claimedByUid: string | null;
+  claimedAt: number | null;
+}
+
 export interface XpLedgerEntry {
   id: string;
   memberId: string;

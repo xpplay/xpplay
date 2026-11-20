@@ -11,13 +11,10 @@
    - **Aktivasi Akun Firebase Auth**: Akun Firebase Auth (`@member.xpplay.app` melalui `authIndex` berbasis hash SHA-256 tanpa PII) **hanya dibuat** saat pelanggan menyelesaikan Tahap 2 secara penuh (`PRE_REGISTERED -> ACTIVE`).
    - **Pemblokiran Login `PRE_REGISTERED`**: Pelanggan yang belum menyelesaikan Tahap 2 dilarang masuk ke `/member`. Halaman `/login` mendeteksi status `PRE_REGISTERED` dan mengarahkan ke `/register?wa=<nomor>`.
    - **Anti-Account-Enumeration**: Pesan kesalahan login untuk kredensial salah tetap generik.
-3. **Staff, Cashier, Admin & Super Admin Login (`/admin/login`)**:
-   - Semua operator (`CASHIER`, legacy `STAFF`, `ADMIN`, `SUPER_ADMIN`) masuk melalui `/admin/login` menggunakan **Email & Password** dengan verifikasi email wajib (`email_verified == true`).
-   - **Auto-Redirect Sesuai Role**:
-     - `CASHIER` / `STAFF` -> `/cashier`
-     - `ADMIN` -> `/admin`
-     - `SUPER_ADMIN` -> `/superadmin`
-   - **Aktivasi Pertama Kali**: Gunakan tab **Aktivasi Akun** untuk mendaftarkan password akun email yang sudah diotorisasi Super Admin (termasuk Super Admin bootstrap `spv.xpplay@gmail.com`), lalu klik tautan verifikasi email dari Firebase Authentication.
+3. **Pemisahan Portal Login Kasir vs Portal Login Admin (Email + Password + Email Verification)**:
+   - **Portal Login Kasir (`/cashier/login`)**: Khusus akun `CASHIER` (dan legacy `STAFF`) cabang `DEMANG`/`SEKIP` dengan identitas operasional tersendiri (aksen Emerald/Teal). Memverifikasi cabang tetap sebelum masuk ke `/cashier` dan menolak akun `ADMIN`/`SUPER_ADMIN`/`MEMBER`.
+   - **Portal Login Admin (`/admin/login`)**: Khusus akun `ADMIN` (`-> /admin`) dan `SUPER_ADMIN` (`-> /superadmin`) dengan identitas manajemen tersendiri (aksen Indigo/Purple). Akun Kasir yang mencoba masuk lewat `/admin/login` ditolak dan dicatat otomatis sebagai `CASHIER_DENIED_ACTION`.
+   - **Aktivasi Pertama Kali**: Masing-masing portal memiliki tab aktivasi akun (buat password + kirim verifikasi email wajib `email_verified == true`).
 
 ## Konfigurasi Wajib di Firebase Console
 1. Buka **Firebase Console** untuk project aktif aplikasi (`firebase-applet-config.json`).

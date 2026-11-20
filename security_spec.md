@@ -43,4 +43,7 @@
 19. **Cashier Benefit / Campaign CRUD Attempt:** Kasir mencoba membuat/mengubah/menghapus dokumen di `benefits` atau `campaigns`.
 20. **Cashier CMS Edit / Publish Attempt:** Kasir mencoba membaca `cmsDrafts`, `cmsVersions`, atau menulis ke `cmsPublished`/`cmsDrafts`/`cmsVersions`.
 21. **Cashier Admin / Backup / Settings Attempt:** Kasir mencoba mengakses `admins` (selain dokumen sendiri), `systemSettings` write, `systemBackups`, `restoreJobs`, atau membaca `auditLogs`.
-22. **Shadow Field / Value Poisoning Attack:** Pengguna atau Kasir menyisipkan field tak dikenal (e.g., `isVerified: true`, `superBonus: 999`) atau string 1MB pada `members`, `onboardingPublicStatus`, `onboardingVerifications`, atau `admins`.
+22. **Shadow Field / Value Poisoning Attack:** Pengguna atau Kasir menyisipkan field tak dikenal (e.g., `isVerified: true`, `superBonus: 999`) atau string 1MB pada `members`, `onboardingPublicStatus`, `onboardingVerifications`, `adminInvites`, atau `admins`.
+23. **Admin Invite Enumeration / Forgery:** Member, Kasir, atau Admin biasa mencoba `list` atau `create` pada `adminInvites/*` (hanya `SUPER_ADMIN` yang diizinkan).
+24. **Invite Role / Branch Escalation During Claim:** Pengguna terundang dengan `role: 'CASHIER', branchScope: 'DEMANG'` mencoba mengklaim undangan sambil menulis `role: 'SUPER_ADMIN'` atau `branchScope: 'ALL'` pada `admins/{uid}`.
+25. **Unverified Email or Double Invite Claim:** Pengguna dengan `email_verified == false`, email berbeda, atau mencoba mengklaim ulang undangan berstatus `CLAIMED` harus selalu ditolak dengan `PERMISSION_DENIED`.

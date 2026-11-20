@@ -83,6 +83,27 @@
       },
       "required": ["uid", "email", "fullName", "role", "branchScope", "active", "createdAt", "updatedAt"]
     },
+    "AdminInvite": {
+      "title": "AdminInvite",
+      "description": "Undangan otorisasi operator Admin/Kasir berbasis email tanpa input manual Firebase Auth UID",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "format": "email", "minLength": 5, "maxLength": 160 },
+        "fullName": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "role": { "type": "string", "enum": ["SUPER_ADMIN", "ADMIN", "CASHIER", "STAFF"] },
+        "branchScope": { "type": "string", "enum": ["ALL", "DEMANG", "SEKIP"] },
+        "branchId": { "type": "string", "enum": ["DEMANG", "SEKIP"] },
+        "cashierCode": { "type": "string", "maxLength": 40 },
+        "status": { "type": "string", "enum": ["PENDING", "CLAIMED"] },
+        "active": { "type": "boolean" },
+        "createdBy": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "integer" },
+        "updatedAt": { "type": "integer" },
+        "claimedByUid": { "type": "string", "maxLength": 128 },
+        "claimedAt": { "type": "integer" }
+      },
+      "required": ["email", "fullName", "role", "branchScope", "status", "active", "createdBy", "createdAt", "updatedAt"]
+    },
     "MemberProfile": {
       "title": "MemberProfile",
       "description": "Profil member XP PLAY dengan pemisahan saldo XP Progress dan XP Reward",
@@ -917,6 +938,10 @@
     "/onboardingVerifications/{wHash}": {
       "schema": { "$ref": "#/entities/OnboardingVerification" },
       "description": "HMAC-SHA256 kode verifikasi 6 digit sekali pakai (expiry 7 hari, maks 5 percobaan, terisolasi per cabang)"
+    },
+    "/adminInvites/{inviteEmail}": {
+      "schema": { "$ref": "#/entities/AdminInvite" },
+      "description": "Undangan otorisasi operator Admin/Kasir berbasis email yang diklaim otomatis saat login pertama terverifikasi"
     }
   }
 }

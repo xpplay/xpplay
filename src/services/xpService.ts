@@ -1,10 +1,15 @@
+import { deleteApp, initializeApp } from 'firebase/app';
 import {
   createUserWithEmailAndPassword,
+  getAuth,
+  sendEmailVerification,
   signInWithEmailAndPassword,
+  signOut,
   updateProfile,
 } from 'firebase/auth';
 import {
   collection,
+  deleteDoc,
   doc,
   getCountFromServer,
   getDoc,
@@ -23,7 +28,7 @@ import {
   type QueryConstraint,
   type QueryDocumentSnapshot,
 } from 'firebase/firestore';
-import { auth, db } from '../lib/firebase.ts';
+import { auth, clientFirebaseConfig, db } from '../lib/firebase.ts';
 import { handleFirestoreError, OperationType } from '../lib/firestoreError.ts';
 import {
   buildUsernameHashId,
@@ -85,6 +90,7 @@ import {
   type SplitNewMembersMetrics,
 } from '../shared/registrationLogic.ts';
 import type {
+  AdminInviteRecord,
   AdminPasswordChangeResult,
   AdminRole,
   AdminUser,
@@ -2172,6 +2178,259 @@ export async function upsertAdminUserBySuperAdmin(
     });
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `admins/${targetAdmin.uid}`);
+  }
+}
+
+const INVITE_EMAIL_REGEX = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/;
+
+export async function upsertAdminInviteBySuperAdmin(
+  input: {
+    email: string;
+    fullName: string;
+    role: AdminRole;
+    branchScope: BranchId | 'ALL';
+    cashierCode?: string | null;
+    active?: boolean;
+  },
+  actor: AdminUser
+): Promise<AdminInviteRecord> {
+  assertRolePermission(actor.role, 'ADMIN_MANAGEMENT', 'mengundang akun Admin/Kasir');
+  const normalizedEmail = input.email.trim().toLowerCase();
+  if (!INVITE_EMAIL_REGEX.test(normalizedEmail)) {
+    throw new Error('Format email operator tidak valid.');
+  }
+  const cleanName = input.fullName.trim();
+  if (cleanName.length < 2 || cleanName.length > 100) {
+    throw new Error('Nama lengkap operator minimal 2 karakter.');
+  }
+  if (isCashierRole(input.role)) {
+    if (input.branchScope !== 'DEMANG' && input.branchScope !== 'SEKIP') {
+      throw new Error('Akun Kasir wajib terikat ke 1 cabang tetap (DEMANG atau SEKIP).');
+    }
+  }
+  const normalizedBranchId: BranchId | null =
+    input.branchScope === 'DEMANG' || input.branchScope === 'SEKIP' ? input.branchScope : null;
+  const now = Date.now();
+  const record: AdminInviteRecord = {
+    email: normalizedEmail,
+    fullName: cleanName,
+    role: input.role,
+    branchScope: input.branchScope,
+    branchId: normalizedBranchId,
+    cashierCode: isCashierRole(input.role) ? (input.cashierCode?.trim() || null) : null,
+    status: 'PENDING',
+    active: input.active ?? true,
+    createdBy: actor.uid,
+    createdAt: now,
+    updatedAt: now,
+    claimedByUid: null,
+    claimedAt: null,
+  };
+
+  try {
+    await setDoc(doc(db, 'adminInvites', normalizedEmail), record);
+    const auditId = genId('audit');
+    await setDoc(doc(db, 'auditLogs', auditId), {
+      id: auditId,
+      actorId: actor.uid,
+      actorRole: actor.role,
+      action: isCashierRole(input.role) ? 'CASHIER_INVITE_CREATED' : 'ADMIN_INVITE_CREATED',
+      targetType: 'admin_invite',
+      targetId: normalizedEmail,
+      before: null,
+      after: {
+        email: normalizedEmail,
+        fullName: cleanName,
+        role: input.role,
+        branchScope: input.branchScope,
+        cashierCode: record.cashierCode,
+      },
+      metadata: null,
+      timestamp: now,
+    });
+    return record;
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `adminInvites/${normalizedEmail}`);
+  }
+}
+
+export async function fetchAdminInvitesBySuperAdmin(): Promise<AdminInviteRecord[]> {
+  try {
+    const snap = await getDocs(collection(db, 'adminInvites'));
+    return snap.docs
+      .map((d) => d.data() as AdminInviteRecord)
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.LIST, 'adminInvites');
+  }
+}
+
+export async function deleteAdminInviteBySuperAdmin(
+  email: string,
+  actor: AdminUser
+): Promise<void> {
+  assertRolePermission(actor.role, 'ADMIN_MANAGEMENT', 'menghapus undangan operator');
+  const normalizedEmail = email.trim().toLowerCase();
+  try {
+    await deleteDoc(doc(db, 'adminInvites', normalizedEmail));
+    const auditId = genId('audit');
+    await setDoc(doc(db, 'auditLogs', auditId), {
+      id: auditId,
+      actorId: actor.uid,
+      actorRole: actor.role,
+      action: 'ADMIN_INVITE_DELETED',
+      targetType: 'admin_invite',
+      targetId: normalizedEmail,
+      before: null,
+      after: null,
+      metadata: null,
+      timestamp: Date.now(),
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `adminInvites/${normalizedEmail}`);
+  }
+}
+
+export interface ProvisionOperatorResult {
+  mode: 'CREATED_DIRECTLY' | 'INVITED_EXISTING_EMAIL' | 'EMAIL_INVITE';
+  uid?: string;
+  email: string;
+  role: AdminRole;
+  branchScope: BranchId | 'ALL';
+  portalPath: '/cashier/login' | '/admin/login';
+}
+
+/**
+ * Zero-UID operator creation for Super Admin:
+ * - DIRECT_CREATE: Provisions real Firebase Auth account using an isolated secondary Firebase App
+ *   (keeping Super Admin signed in), sends verification email, captures the UID automatically,
+ *   and saves admins/{uid}. If the email already exists in Firebase Auth, seamlessly falls back
+ *   to an email-based authorization invite (adminInvites/{email}) claimed automatically on login.
+ * - EMAIL_INVITE: Creates adminInvites/{email} directly so the operator creates their own password
+ *   at /cashier/login or /admin/login and activates automatically once email is verified.
+ */
+export async function provisionOperatorAccountBySuperAdmin(
+  input: {
+    mode: 'DIRECT_CREATE' | 'EMAIL_INVITE';
+    email: string;
+    fullName: string;
+    password?: string;
+    role: AdminRole;
+    branchScope: BranchId | 'ALL';
+    cashierCode?: string | null;
+    active: boolean;
+  },
+  actor: AdminUser
+): Promise<ProvisionOperatorResult> {
+  assertRolePermission(actor.role, 'ADMIN_MANAGEMENT', 'membuat akun Admin/Kasir');
+  const normalizedEmail = input.email.trim().toLowerCase();
+  if (!INVITE_EMAIL_REGEX.test(normalizedEmail)) {
+    throw new Error('Format email operator tidak valid.');
+  }
+  const cleanName = input.fullName.trim();
+  if (cleanName.length < 2 || cleanName.length > 100) {
+    throw new Error('Nama lengkap operator minimal 2 karakter.');
+  }
+  if (isCashierRole(input.role) && input.branchScope !== 'DEMANG' && input.branchScope !== 'SEKIP') {
+    throw new Error('Akun Kasir wajib terikat ke 1 cabang tetap (DEMANG atau SEKIP).');
+  }
+
+  const portalPath: '/cashier/login' | '/admin/login' = isCashierRole(input.role)
+    ? '/cashier/login'
+    : '/admin/login';
+
+  if (input.mode === 'EMAIL_INVITE') {
+    await upsertAdminInviteBySuperAdmin(
+      {
+        email: normalizedEmail,
+        fullName: cleanName,
+        role: input.role,
+        branchScope: input.branchScope,
+        cashierCode: input.cashierCode || null,
+        active: input.active,
+      },
+      actor
+    );
+    return {
+      mode: 'EMAIL_INVITE',
+      email: normalizedEmail,
+      role: input.role,
+      branchScope: input.branchScope,
+      portalPath,
+    };
+  }
+
+  const rawPassword = (input.password || '').trim();
+  if (rawPassword.length < 8) {
+    throw new Error('Password awal wajib minimal 8 karakter.');
+  }
+
+  const secondaryAppName = `xpplay-op-provisioner-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const secondaryApp = initializeApp(clientFirebaseConfig, secondaryAppName);
+  const secondaryAuth = getAuth(secondaryApp);
+
+  try {
+    const cred = await createUserWithEmailAndPassword(secondaryAuth, normalizedEmail, rawPassword);
+    await updateProfile(cred.user, { displayName: cleanName }).catch(() => {});
+    await sendEmailVerification(cred.user).catch(() => {});
+    const newUid = cred.user.uid;
+    await signOut(secondaryAuth).catch(() => {});
+
+    const now = Date.now();
+    const targetAdmin: AdminUser = {
+      uid: newUid,
+      email: normalizedEmail,
+      fullName: cleanName,
+      role: input.role,
+      branchScope: input.branchScope,
+      branchId:
+        input.branchScope === 'DEMANG' || input.branchScope === 'SEKIP' ? input.branchScope : null,
+      cashierCode: isCashierRole(input.role) ? (input.cashierCode?.trim() || null) : null,
+      permissions: getDefaultPermissionsForRole(input.role),
+      active: input.active,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await upsertAdminUserBySuperAdmin(targetAdmin, actor);
+
+    // Clean up any stale pending invite for the same email (best-effort)
+    await deleteDoc(doc(db, 'adminInvites', normalizedEmail)).catch(() => {});
+
+    return {
+      mode: 'CREATED_DIRECTLY',
+      uid: newUid,
+      email: normalizedEmail,
+      role: input.role,
+      branchScope: input.branchScope,
+      portalPath,
+    };
+  } catch (err) {
+    const code = (err as { code?: string })?.code || '';
+    if (code === 'auth/email-already-in-use') {
+      await upsertAdminInviteBySuperAdmin(
+        {
+          email: normalizedEmail,
+          fullName: cleanName,
+          role: input.role,
+          branchScope: input.branchScope,
+          cashierCode: input.cashierCode || null,
+          active: input.active,
+        },
+        actor
+      );
+      return {
+        mode: 'INVITED_EXISTING_EMAIL',
+        email: normalizedEmail,
+        role: input.role,
+        branchScope: input.branchScope,
+        portalPath,
+      };
+    }
+    throw err;
+  } finally {
+    await signOut(secondaryAuth).catch(() => {});
+    await deleteApp(secondaryApp).catch(() => {});
   }
 }
 

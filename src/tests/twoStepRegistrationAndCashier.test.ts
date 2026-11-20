@@ -897,4 +897,59 @@ describe('Two-Step Membership Registration & Branch-Isolated Cashier RBAC (TEST 
     const dupCheck = badReport.checks.find((c) => c.code === 'NO_DUPLICATE_DEDUCTION_OR_REFUND');
     expect(dupCheck?.passed).toBe(false);
   });
+
+  it('EXTRA 5: Cashier Login (/cashier/login) and Admin Login (/admin/login) are completely separated portals with cross-role blocking', () => {
+    const adminLoginSrc = readProjectFile('src/pages/AdminLoginPage.tsx');
+    const cashierLoginSrc = readProjectFile('src/pages/CashierLoginPage.tsx');
+
+    // App.tsx mounts dedicated CashierLoginPage on /cashier/login and AdminLoginPage on /admin/login
+    expect(appTsxSrc).toContain('<Route path="/admin/login" element={<AdminLoginPage />} />');
+    expect(appTsxSrc).toContain('<Route path="/cashier/login" element={<CashierLoginPage />} />');
+
+    // AdminLoginPage rejects CASHIER role and logs CASHIER_DENIED_ACTION
+    expect(adminLoginSrc).toContain('isFullAdminRole(adminProfile.role)');
+    expect(adminLoginSrc).toContain('isCashierRole(adminProfile.role)');
+    expect(adminLoginSrc).toContain("action: 'CASHIER_DENIED_ACTION'");
+    expect(adminLoginSrc).toContain("targetId: '/admin/login'");
+
+    // CashierLoginPage enforces CASHIER role + fixed branch and blocks ADMIN/SUPER_ADMIN cross-login
+    expect(cashierLoginSrc).toContain('isCashierRole(adminProfile.role)');
+    expect(cashierLoginSrc).toContain('getEffectiveCashierBranch(adminProfile)');
+    expect(cashierLoginSrc).toContain('isFullAdminRole(adminProfile.role)');
+    expect(cashierLoginSrc).toContain("navigate('/cashier', { replace: true })");
+  });
+
+  it('EXTRA 6: Zero-UID operator provisioning & hardened adminInvites rules allow Super Admin to add Cashier/Admin without manual UID', () => {
+    const adminDashSrc = readProjectFile('src/pages/AdminDashboardPage.tsx');
+    const xpServiceSrc = readProjectFile('src/services/xpService.ts');
+    const authCtxSrc = readProjectFile('src/context/AuthContext.tsx');
+    const rulesSrc = readProjectFile('firestore.rules');
+
+    // UI no longer forces manual Firebase Auth UID entry when adding a new operator
+    expect(adminDashSrc).not.toContain('placeholder="Firebase Auth UID *"');
+    expect(adminDashSrc).toContain('provisionOperatorAccountBySuperAdmin');
+    expect(adminDashSrc).toContain('fetchAdminInvitesBySuperAdmin');
+    expect(adminDashSrc).toContain('deleteAdminInviteBySuperAdmin');
+    expect(adminDashSrc).toContain('Buat Akun Langsung (Email + Password)');
+    expect(adminDashSrc).toContain('Undang via Email Saja');
+
+    // Secondary Firebase app provisions account without logging out Super Admin and cleans up app
+    expect(xpServiceSrc).toContain('export async function provisionOperatorAccountBySuperAdmin');
+    expect(xpServiceSrc).toContain('initializeApp(clientFirebaseConfig, secondaryAppName)');
+    expect(xpServiceSrc).toContain('deleteApp(secondaryApp)');
+
+    // AuthContext atomically claims pending invite for verified email into admins/{uid}
+    expect(authCtxSrc).toContain("doc(db, 'adminInvites', email)");
+    expect(authCtxSrc).toContain("status: 'CLAIMED'");
+    expect(authCtxSrc).toContain('batch.commit()');
+
+    // Hardened firestore.rules restrict adminInvites listing/creation/deletion to Super Admin
+    // and enforce verified email + exact role/branch immutability on atomic claim
+    expect(rulesSrc).toContain('match /adminInvites/{inviteEmail}');
+    expect(rulesSrc).toContain('function isValidAdminInvite(data)');
+    expect(rulesSrc).toContain('allow list: if isSuperAdmin();');
+    expect(rulesSrc).toContain("getAfter(/databases/$(database)/documents/adminInvites/$(request.auth.token.email.lower())).data.status == 'CLAIMED'");
+    expect(rulesSrc).toContain("incoming().diff(existing()).affectedKeys().hasOnly(['status', 'claimedByUid', 'claimedAt', 'updatedAt'])");
+  });
 });
+

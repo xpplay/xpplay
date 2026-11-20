@@ -8,9 +8,12 @@ import {
   Calendar,
   CheckCircle2,
   Clock,
+  Copy,
   CreditCard,
   Crown,
   Database,
+  Eye,
+  EyeOff,
   FileCheck2,
   Gift,
   Globe,
@@ -18,6 +21,7 @@ import {
   KeyRound,
   LayoutDashboard,
   LogOut,
+  MailPlus,
   Menu,
   RefreshCw,
   Shield,
@@ -26,10 +30,12 @@ import {
   Sparkles,
   Tag,
   TicketCheck,
+  Trash2,
   Trophy,
   UserCog,
   UserPlus,
   Users,
+  Wand2,
   X,
 } from 'lucide-react';
 import { where, type DocumentData, type QueryConstraint, type QueryDocumentSnapshot } from 'firebase/firestore';
@@ -48,13 +54,16 @@ import { mapFriendlyError } from '../lib/firestoreError.ts';
 import {
   createAndDispatchNotificationByAdmin,
   createMemberByAdmin,
+  deleteAdminInviteBySuperAdmin,
   executeCycleResetByAdmin,
+  fetchAdminInvitesBySuperAdmin,
   fetchAdminSummaryMetrics,
   fetchMembersBatchForFilter,
   fetchNewMembersOverview,
   fetchPaginatedCollection,
   fetchTransactionsBatchForFilter,
   preRegisterCustomerClient,
+  provisionOperatorAccountBySuperAdmin,
   recordTransactionByAdmin,
   reviewClaimByAdmin,
   reviewRedemptionByAdmin,
@@ -66,6 +75,7 @@ import {
   upsertBenefitByAdmin,
   upsertBranchByAdmin,
   upsertCampaignByAdmin,
+  type ProvisionOperatorResult,
 } from '../services/xpService.ts';
 import {
   CASHIER_SLOT_TEMPLATES,
@@ -92,6 +102,7 @@ import {
   resolveCampaignStatus,
 } from '../shared/xpLogic.ts';
 import type {
+  AdminInviteRecord,
   AdminRole,
   AdminUser,
   AuditLogRecord,
@@ -332,15 +343,69 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
     resetReason: 'Reset periodik membership cycle',
   });
   const [adminOriginalCreatedAt, setAdminOriginalCreatedAt] = useState<number | null>(null);
+  const [adminInvites, setAdminInvites] = useState<AdminInviteRecord[]>([]);
+  const [loadingInvites, setLoadingInvites] = useState(false);
+  const [lastProvisionResult, setLastProvisionResult] = useState<ProvisionOperatorResult | null>(null);
+  const [copiedPortalLink, setCopiedPortalLink] = useState<string | null>(null);
   const [adminForm, setAdminForm] = useState({
     uid: '',
     email: '',
     fullName: '',
+    password: '',
+    createMode: 'DIRECT_CREATE' as 'DIRECT_CREATE' | 'EMAIL_INVITE',
+    showPassword: false,
     role: 'CASHIER' as AdminRole,
     branchScope: 'DEMANG' as BranchId | 'ALL',
     cashierCode: '',
     active: true,
   });
+
+  const resetAdminForm = (overrides?: Partial<typeof adminForm>) => {
+    setAdminOriginalCreatedAt(null);
+    setAdminForm({
+      uid: '',
+      email: '',
+      fullName: '',
+      password: '',
+      createMode: 'DIRECT_CREATE',
+      showPassword: false,
+      role: 'CASHIER',
+      branchScope: 'DEMANG',
+      cashierCode: '',
+      active: true,
+      ...overrides,
+    });
+  };
+
+  const generateOperatorPassword = () => {
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%';
+    const length = 12;
+    const bytes = new Uint32Array(length);
+    if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
+      window.crypto.getRandomValues(bytes);
+    } else {
+      for (let i = 0; i < length; i++) bytes[i] = Math.floor(Math.random() * alphabet.length);
+    }
+    let out = '';
+    for (let i = 0; i < length; i++) {
+      out += alphabet[bytes[i] % alphabet.length];
+    }
+    return out;
+  };
+
+  const copyPortalUrl = async (portalPath: '/cashier/login' | '/admin/login', key: string) => {
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const fullUrl = `${origin}${portalPath}`;
+    try {
+      await navigator.clipboard.writeText(fullUrl);
+      setCopiedPortalLink(key);
+      window.setTimeout(() => {
+        setCopiedPortalLink((curr) => (curr === key ? null : curr));
+      }, 2500);
+    } catch {
+      setFeedback({ type: 'success', text: `Link portal login: ${fullUrl}` });
+    }
+  };
 
   useEffect(() => {
     setLevelDrafts(levels);
@@ -391,6 +456,19 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
       setFeedback({ type: 'error', text: mapFriendlyError(err) });
     } finally {
       setLoadingTxBatch(false);
+    }
+  };
+
+  const loadAdminInvites = async () => {
+    if (!isSuper) return;
+    setLoadingInvites(true);
+    try {
+      const list = await fetchAdminInvitesBySuperAdmin();
+      setAdminInvites(list);
+    } catch (err) {
+      setFeedback({ type: 'error', text: mapFriendlyError(err) });
+    } finally {
+      setLoadingInvites(false);
     }
   };
 
@@ -452,6 +530,9 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
         colName = 'notifications';
       } else if (menu === 'adminManagement') {
         colName = 'admins';
+        if (reset && isSuper) {
+          void loadAdminInvites();
+        }
       } else if (menu === 'resetCycle') {
         colName = 'cycleSnapshots';
         orderByField = 'resetAt';
@@ -2646,285 +2727,664 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
           )}
 
           {/* 13. ADMIN & CASHIER MANAGEMENT (SUPER_ADMIN) */}
-          {menu === 'adminManagement' && isSuper && (
-            <div className="space-y-6">
-              {/* 4 Branch Cashier Slot Architecture (NO hardcoded accounts/credentials) */}
-              <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-4">
-                <div>
-                  <h2 className="font-display text-base font-bold text-white">
-                    Slot Akun Kasir Cabang (2 Demang · 2 Sekip)
-                  </h2>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    Tidak ada kredensial hardcoded. Superadmin menugaskan Firebase Auth UID &amp; email terverifikasi ke slot cabang tetap (isolasi data cabang ketat).
-                  </p>
-                </div>
-                <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
-                  {CASHIER_SLOT_TEMPLATES.map((slot) => {
-                    const assigned = (activeRows as AdminUser[]).find(
-                      (a) =>
-                        isCashierRole(a.role) &&
-                        (a.cashierCode === slot.code ||
-                          (!a.cashierCode && a.branchScope === slot.branchId))
-                    );
-                    return (
-                      <div
-                        key={slot.code}
-                        className="rounded-xl bg-[#070B19] border border-indigo-500/25 p-3.5 space-y-2"
-                      >
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="font-mono font-bold text-sky-300">{slot.code}</span>
-                          <span className="font-mono text-[10px] text-slate-400">{slot.branchId}</span>
-                        </div>
-                        <p className="text-xs font-semibold text-white">{slot.label}</p>
-                        {assigned ? (
-                          <div className="text-[11px] space-y-0.5">
-                            <p className="text-emerald-300 font-semibold truncate">{assigned.fullName}</p>
-                            <p className="font-mono text-slate-400 truncate">{assigned.email}</p>
+          {menu === 'adminManagement' && isSuper && (() => {
+            const isEditingOperator = Boolean(adminForm.uid);
+            const pendingInvites = adminInvites.filter((inv) => inv.status === 'PENDING');
+
+            return (
+              <div className="space-y-6">
+                {/* 4 Branch Cashier Slot Architecture (NO hardcoded accounts/credentials) */}
+                <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-4">
+                  <div>
+                    <h2 className="font-display text-base font-bold text-white">
+                      Slot Akun Kasir Cabang (2 Demang · 2 Sekip)
+                    </h2>
+                    <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
+                      Pilih slot cabang yang kosong untuk langsung membuat akun atau mengundang Kasir tanpa perlu menyalin Firebase Auth UID. Setiap kasir terisolasi ketat pada cabangnya.
+                    </p>
+                  </div>
+                  <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    {CASHIER_SLOT_TEMPLATES.map((slot) => {
+                      const assigned = (activeRows as AdminUser[]).find(
+                        (a) =>
+                          isCashierRole(a.role) &&
+                          (a.cashierCode === slot.code ||
+                            (!a.cashierCode && a.branchScope === slot.branchId))
+                      );
+                      const pendingSlotInvite = !assigned
+                        ? pendingInvites.find(
+                            (inv) =>
+                              isCashierRole(inv.role) &&
+                              inv.cashierCode === slot.code
+                          )
+                        : undefined;
+                      return (
+                        <div
+                          key={slot.code}
+                          className="rounded-xl bg-[#070B19] border border-indigo-500/25 p-3.5 space-y-2"
+                        >
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="font-mono font-bold text-sky-300">{slot.code}</span>
+                            <span className="font-mono text-[10px] text-slate-400">{slot.branchId}</span>
                           </div>
-                        ) : (
+                          <p className="text-xs font-semibold text-white">{slot.label}</p>
+                          {assigned ? (
+                            <div className="text-[11px] space-y-0.5">
+                              <p className="text-emerald-300 font-semibold truncate">{assigned.fullName}</p>
+                              <p className="font-mono text-slate-400 truncate">{assigned.email}</p>
+                              <p className="font-mono text-[10px] text-emerald-400/90">
+                                {assigned.active ? 'AKTIF' : 'NONAKTIF'}
+                              </p>
+                            </div>
+                          ) : pendingSlotInvite ? (
+                            <div className="text-[11px] space-y-1">
+                              <p className="text-amber-300 font-semibold truncate">
+                                {pendingSlotInvite.fullName}
+                              </p>
+                              <p className="font-mono text-slate-400 truncate">
+                                {pendingSlotInvite.email}
+                              </p>
+                              <p className="font-mono text-[10px] text-amber-300/90">
+                                MENUNGGU AKTIVASI
+                              </p>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setLastProvisionResult(null);
+                                resetAdminForm({
+                                  fullName: slot.label,
+                                  role: 'CASHIER',
+                                  branchScope: slot.branchId,
+                                  cashierCode: slot.code,
+                                });
+                                document
+                                  .getElementById('operator-management-form')
+                                  ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                              }}
+                              className="w-full min-h-[36px] py-1.5 rounded-lg border border-sky-400/35 text-[11px] font-semibold text-sky-300 hover:bg-sky-500/15 transition-colors"
+                            >
+                              Assign ke Slot Ini
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Zero-UID Operator Creation & Edit Form */}
+                <form
+                  id="operator-management-form"
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    setBusy(true);
+                    setFeedback(null);
+                    try {
+                      const now = Date.now();
+                      if (isCashierRole(adminForm.role) && adminForm.branchScope === 'ALL') {
+                        throw new Error(
+                          'Akun CASHIER wajib terikat ke 1 cabang tetap (DEMANG atau SEKIP).'
+                        );
+                      }
+
+                      if (isEditingOperator) {
+                        const target: AdminUser = {
+                          uid: adminForm.uid.trim(),
+                          email: adminForm.email.trim().toLowerCase(),
+                          fullName: adminForm.fullName.trim(),
+                          role: adminForm.role,
+                          branchScope: adminForm.branchScope,
+                          branchId:
+                            adminForm.branchScope === 'DEMANG' || adminForm.branchScope === 'SEKIP'
+                              ? adminForm.branchScope
+                              : null,
+                          cashierCode: isCashierRole(adminForm.role)
+                            ? adminForm.cashierCode.trim() || null
+                            : null,
+                          permissions: getDefaultPermissionsForRole(adminForm.role),
+                          active: adminForm.active,
+                          createdAt: adminOriginalCreatedAt || now,
+                          updatedAt: now,
+                        };
+                        await upsertAdminUserBySuperAdmin(target, adminProfile);
+                        setLastProvisionResult(null);
+                        setFeedback({
+                          type: 'success',
+                          text: `Perubahan operator ${target.email} (${target.role} · ${target.branchScope}) berhasil disimpan.`,
+                        });
+                        resetAdminForm();
+                        await loadMenuRows(true);
+                      } else {
+                        const result = await provisionOperatorAccountBySuperAdmin(
+                          {
+                            mode: adminForm.createMode,
+                            email: adminForm.email,
+                            fullName: adminForm.fullName,
+                            password:
+                              adminForm.createMode === 'DIRECT_CREATE'
+                                ? adminForm.password
+                                : undefined,
+                            role: adminForm.role,
+                            branchScope: adminForm.branchScope,
+                            cashierCode: isCashierRole(adminForm.role)
+                              ? adminForm.cashierCode.trim() || null
+                              : null,
+                            active: adminForm.active,
+                          },
+                          adminProfile
+                        );
+                        setLastProvisionResult(result);
+                        setFeedback({
+                          type: 'success',
+                          text:
+                            result.mode === 'CREATED_DIRECTLY'
+                              ? `Akun ${result.email} (${result.role} · ${result.branchScope}) berhasil dibuat otomatis. Email verifikasi telah dikirim.`
+                              : result.mode === 'INVITED_EXISTING_EMAIL'
+                                ? `Email ${result.email} sudah terdaftar di Firebase Auth — undangan otorisasi ${result.role} (${result.branchScope}) berhasil disimpan.`
+                                : `Undangan operator untuk ${result.email} (${result.role} · ${result.branchScope}) berhasil disimpan.`,
+                        });
+                        resetAdminForm({ createMode: adminForm.createMode });
+                        await Promise.all([loadMenuRows(true), loadAdminInvites()]);
+                      }
+                    } catch (err) {
+                      setFeedback({ type: 'error', text: mapFriendlyError(err) });
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                  className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-5"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h2 className="font-display text-base font-bold text-white">
+                        {isEditingOperator
+                          ? 'Edit Operator Terdaftar (RBAC)'
+                          : 'Tambah Admin, Superadmin atau Kasir Baru'}
+                      </h2>
+                      <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
+                        {isEditingOperator
+                          ? `Mengubah hak akses akun aktif · UID otomatis: ${adminForm.uid}`
+                          : 'Tidak perlu mengisi Firebase Auth UID. Cukup isi email dan data operator — sistem membuat UID dan hak akses secara otomatis.'}
+                      </p>
+                    </div>
+                    {isEditingOperator && (
+                      <button
+                        type="button"
+                        onClick={() => resetAdminForm()}
+                        className="text-xs font-semibold text-slate-300 hover:text-white underline min-h-[36px] px-2"
+                      >
+                        Batal Edit
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Mode Switcher for New Operators */}
+                  {!isEditingOperator && (
+                    <div className="grid sm:grid-cols-2 gap-2 p-1.5 rounded-xl bg-[#070B19] border border-indigo-500/25">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setAdminForm((prev) => ({ ...prev, createMode: 'DIRECT_CREATE' }))
+                        }
+                        className={`text-left rounded-lg px-3.5 py-2.5 transition-colors ${
+                          adminForm.createMode === 'DIRECT_CREATE'
+                            ? 'bg-indigo-600/25 border border-sky-400/50 text-white'
+                            : 'border border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 text-xs font-bold">
+                          <UserPlus className="w-4 h-4 text-sky-300 shrink-0" />
+                          <span>Buat Akun Langsung (Email + Password)</span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          Direkomendasikan · Akun login &amp; UID langsung dibuat otomatis tanpa logout Super Admin.
+                        </p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setAdminForm((prev) => ({
+                            ...prev,
+                            createMode: 'EMAIL_INVITE',
+                            password: '',
+                          }))
+                        }
+                        className={`text-left rounded-lg px-3.5 py-2.5 transition-colors ${
+                          adminForm.createMode === 'EMAIL_INVITE'
+                            ? 'bg-indigo-600/25 border border-sky-400/50 text-white'
+                            : 'border border-transparent text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 text-xs font-bold">
+                          <MailPlus className="w-4 h-4 text-emerald-300 shrink-0" />
+                          <span>Undang via Email Saja (Tanpa Password)</span>
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-0.5">
+                          Operator membuat password sendiri di portal login; role aktif otomatis setelah verifikasi email.
+                        </p>
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-medium text-slate-300">
+                        Email Operator *
+                      </label>
+                      <input
+                        type="email"
+                        required
+                        disabled={isEditingOperator}
+                        placeholder="contoh: kasir.demang1@xpplay.id"
+                        value={adminForm.email}
+                        onChange={(e) => setAdminForm({ ...adminForm, email: e.target.value })}
+                        className="w-full bg-[#070B19] text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm disabled:opacity-60 disabled:cursor-not-allowed"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-medium text-slate-300">
+                        Nama Lengkap *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="contoh: Kasir Demang Shift 1"
+                        value={adminForm.fullName}
+                        onChange={(e) => setAdminForm({ ...adminForm, fullName: e.target.value })}
+                        className="w-full bg-[#070B19] text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                      />
+                    </div>
+
+                    {!isEditingOperator && adminForm.createMode === 'DIRECT_CREATE' && (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <label className="block text-xs font-medium text-slate-300">
+                            Password Awal * (min. 8 karakter)
+                          </label>
                           <button
                             type="button"
-                            onClick={() => {
-                              setAdminOriginalCreatedAt(null);
-                              setAdminForm({
-                                uid: '',
-                                email: '',
-                                fullName: slot.label,
-                                role: 'CASHIER',
-                                branchScope: slot.branchId,
-                                cashierCode: slot.code,
-                                active: true,
-                              });
-                            }}
-                            className="w-full py-1.5 rounded-lg border border-sky-400/35 text-[11px] font-semibold text-sky-300 hover:bg-sky-500/15"
+                            onClick={() =>
+                              setAdminForm((prev) => ({
+                                ...prev,
+                                password: generateOperatorPassword(),
+                                showPassword: true,
+                              }))
+                            }
+                            className="inline-flex items-center gap-1 text-[11px] font-semibold text-sky-300 hover:text-sky-200"
                           >
-                            Assign ke Slot Ini
+                            <Wand2 className="w-3 h-3" />
+                            <span>Acak</span>
                           </button>
-                        )}
+                        </div>
+                        <div className="relative">
+                          <input
+                            type={adminForm.showPassword ? 'text' : 'password'}
+                            required
+                            minLength={8}
+                            autoComplete="new-password"
+                            placeholder="Minimal 8 karakter"
+                            value={adminForm.password}
+                            onChange={(e) =>
+                              setAdminForm({ ...adminForm, password: e.target.value })
+                            }
+                            className="w-full bg-[#070B19] text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 pl-3 pr-10 text-sm font-mono"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setAdminForm((prev) => ({
+                                ...prev,
+                                showPassword: !prev.showPassword,
+                              }))
+                            }
+                            aria-label={adminForm.showPassword ? 'Sembunyikan password' : 'Lihat password'}
+                            className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-white"
+                          >
+                            {adminForm.showPassword ? (
+                              <EyeOff className="w-4 h-4" />
+                            ) : (
+                              <Eye className="w-4 h-4" />
+                            )}
+                          </button>
+                        </div>
                       </div>
-                    );
-                  })}
-                </div>
-              </div>
+                    )}
 
-              <form
-                onSubmit={async (e) => {
-                  e.preventDefault();
-                  setBusy(true);
-                  setFeedback(null);
-                  try {
-                    const now = Date.now();
-                    if (isCashierRole(adminForm.role) && adminForm.branchScope === 'ALL') {
-                      throw new Error('Akun CASHIER wajib terikat ke 1 cabang tetap (DEMANG atau SEKIP).');
-                    }
-                    const target: AdminUser = {
-                      uid: adminForm.uid.trim(),
-                      email: adminForm.email.trim().toLowerCase(),
-                      fullName: adminForm.fullName.trim(),
-                      role: adminForm.role,
-                      branchScope: adminForm.branchScope,
-                      branchId:
-                        adminForm.branchScope === 'DEMANG' || adminForm.branchScope === 'SEKIP'
-                          ? adminForm.branchScope
-                          : null,
-                      cashierCode: isCashierRole(adminForm.role)
-                        ? adminForm.cashierCode.trim() || null
-                        : null,
-                      permissions: getDefaultPermissionsForRole(adminForm.role),
-                      active: adminForm.active,
-                      createdAt: adminOriginalCreatedAt || now,
-                      updatedAt: now,
-                    };
-                    await upsertAdminUserBySuperAdmin(target, adminProfile);
-                    setFeedback({
-                      type: 'success',
-                      text: `Operator ${target.email} (${target.role} · ${target.branchScope}) berhasil disimpan.`,
-                    });
-                    setAdminOriginalCreatedAt(null);
-                    setAdminForm({
-                      uid: '',
-                      email: '',
-                      fullName: '',
-                      role: 'CASHIER',
-                      branchScope: 'DEMANG',
-                      cashierCode: '',
-                      active: true,
-                    });
-                    await loadMenuRows(true);
-                  } catch (err) {
-                    setFeedback({ type: 'error', text: mapFriendlyError(err) });
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-                className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-4"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <h2 className="font-display text-base font-bold text-white">
-                    Kelola Admin, Superadmin &amp; Kasir Cabang (RBAC)
-                  </h2>
-                  {adminForm.uid && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAdminOriginalCreatedAt(null);
-                        setAdminForm({
-                          uid: '',
-                          email: '',
-                          fullName: '',
-                          role: 'CASHIER',
-                          branchScope: 'DEMANG',
-                          cashierCode: '',
-                          active: true,
-                        });
-                      }}
-                      className="text-xs font-semibold text-slate-300 hover:text-white underline"
-                    >
-                      Batal Edit
-                    </button>
-                  )}
-                </div>
-                <div className="grid sm:grid-cols-3 gap-3">
-                  <input
-                    type="text"
-                    required
-                    placeholder="Firebase Auth UID *"
-                    value={adminForm.uid}
-                    onChange={(e) => setAdminForm({ ...adminForm, uid: e.target.value })}
-                    className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm font-mono"
-                  />
-                  <input
-                    type="email"
-                    required
-                    placeholder="Email Operator (Terverifikasi) *"
-                    value={adminForm.email}
-                    onChange={(e) => setAdminForm({ ...adminForm, email: e.target.value })}
-                    className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
-                  />
-                  <input
-                    type="text"
-                    required
-                    placeholder="Nama Lengkap *"
-                    value={adminForm.fullName}
-                    onChange={(e) => setAdminForm({ ...adminForm, fullName: e.target.value })}
-                    className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
-                  />
-                  <select
-                    value={adminForm.role}
-                    onChange={(e) => {
-                      const nextRole = e.target.value as AdminRole;
-                      setAdminForm({
-                        ...adminForm,
-                        role: nextRole,
-                        branchScope:
-                          isCashierRole(nextRole) && adminForm.branchScope === 'ALL'
-                            ? 'DEMANG'
-                            : adminForm.branchScope,
-                      });
-                    }}
-                    className="bg-[#070B19] text-white focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
-                  >
-                    <option value="CASHIER">CASHIER (Kasir Cabang · Terisolasi)</option>
-                    <option value="ADMIN">ADMIN (Operasional Penuh)</option>
-                    <option value="SUPER_ADMIN">SUPER_ADMIN (Semua Izin Sistem)</option>
-                    <option value="STAFF">STAFF (Legacy Alias Kasir)</option>
-                  </select>
-                  <select
-                    value={adminForm.branchScope}
-                    onChange={(e) => setAdminForm({ ...adminForm, branchScope: e.target.value as BranchId | 'ALL' })}
-                    className="bg-[#070B19] text-white focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
-                  >
-                    {!isCashierRole(adminForm.role) && <option value="ALL">Semua Cabang (ALL)</option>}
-                    <option value="DEMANG">Cabang DEMANG</option>
-                    <option value="SEKIP">Cabang SEKIP</option>
-                  </select>
-                  {isCashierRole(adminForm.role) ? (
-                    <select
-                      value={adminForm.cashierCode}
-                      onChange={(e) => setAdminForm({ ...adminForm, cashierCode: e.target.value })}
-                      className="bg-[#070B19] text-white focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-xs font-mono"
-                    >
-                      <option value="">-- Kode Slot Kasir (Opsional) --</option>
-                      {CASHIER_SLOT_TEMPLATES.filter((s) => s.branchId === adminForm.branchScope).map((s) => (
-                        <option key={s.code} value={s.code}>
-                          {s.code} ({s.label})
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <label className="flex items-center gap-2 text-xs px-2">
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-medium text-slate-300">
+                        Role Akses *
+                      </label>
+                      <select
+                        value={adminForm.role}
+                        onChange={(e) => {
+                          const nextRole = e.target.value as AdminRole;
+                          setAdminForm({
+                            ...adminForm,
+                            role: nextRole,
+                            branchScope:
+                              isCashierRole(nextRole) && adminForm.branchScope === 'ALL'
+                                ? 'DEMANG'
+                                : adminForm.branchScope,
+                          });
+                        }}
+                        className="w-full bg-[#070B19] text-white focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                      >
+                        <option value="CASHIER">CASHIER (Kasir Cabang · Terisolasi)</option>
+                        <option value="ADMIN">ADMIN (Operasional Penuh)</option>
+                        <option value="SUPER_ADMIN">SUPER_ADMIN (Semua Izin Sistem)</option>
+                        <option value="STAFF">STAFF (Legacy Alias Kasir)</option>
+                      </select>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-medium text-slate-300">
+                        Cakupan Cabang *
+                      </label>
+                      <select
+                        value={adminForm.branchScope}
+                        onChange={(e) =>
+                          setAdminForm({
+                            ...adminForm,
+                            branchScope: e.target.value as BranchId | 'ALL',
+                            cashierCode: '',
+                          })
+                        }
+                        className="w-full bg-[#070B19] text-white focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                      >
+                        {!isCashierRole(adminForm.role) && (
+                          <option value="ALL">Semua Cabang (ALL)</option>
+                        )}
+                        <option value="DEMANG">Cabang DEMANG</option>
+                        <option value="SEKIP">Cabang SEKIP</option>
+                      </select>
+                    </div>
+
+                    {isCashierRole(adminForm.role) && (
+                      <div className="space-y-1.5">
+                        <label className="block text-xs font-medium text-slate-300">
+                          Kode Slot Kasir (Opsional)
+                        </label>
+                        <select
+                          value={adminForm.cashierCode}
+                          onChange={(e) =>
+                            setAdminForm({ ...adminForm, cashierCode: e.target.value })
+                          }
+                          className="w-full bg-[#070B19] text-white focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-xs font-mono"
+                        >
+                          <option value="">-- Pilih Kode Slot Kasir --</option>
+                          {CASHIER_SLOT_TEMPLATES.filter(
+                            (s) => s.branchId === adminForm.branchScope
+                          ).map((s) => (
+                            <option key={s.code} value={s.code}>
+                              {s.code} ({s.label})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-4 pt-1 border-t border-indigo-500/15">
+                    <label className="flex items-center gap-2 text-xs text-slate-300">
                       <input
                         type="checkbox"
                         checked={adminForm.active}
                         onChange={(e) => setAdminForm({ ...adminForm, active: e.target.checked })}
                       />
-                      <span>Status Aktif</span>
+                      <span>
+                        {isCashierRole(adminForm.role)
+                          ? `Akun Kasir Aktif (akses /cashier cabang ${adminForm.branchScope})`
+                          : 'Status Akun Aktif'}
+                      </span>
                     </label>
-                  )}
-                </div>
-                {isCashierRole(adminForm.role) && (
-                  <label className="flex items-center gap-2 text-xs">
-                    <input
-                      type="checkbox"
-                      checked={adminForm.active}
-                      onChange={(e) => setAdminForm({ ...adminForm, active: e.target.checked })}
-                    />
-                    <span>Akun Kasir Aktif (akses /cashier cabang {adminForm.branchScope})</span>
-                  </label>
-                )}
-                <button
-                  type="submit"
-                  disabled={busy}
-                  className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-5 text-xs font-semibold text-white disabled:opacity-50"
-                >
-                  {busy ? 'Menyimpan...' : 'Simpan Operator'}
-                </button>
-              </form>
 
-              <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 divide-y divide-indigo-500/15">
-                {activeRows.length === 0 ? (
-                  <div className="p-8 text-center text-sm text-slate-400">
-                    {loadingRows ? 'Memuat daftar operator...' : 'Belum ada data operator tambahan.'}
+                    <button
+                      type="submit"
+                      disabled={busy}
+                      className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 px-5 text-xs font-semibold text-white disabled:opacity-50 transition-colors"
+                    >
+                      {busy
+                        ? 'Memproses...'
+                        : isEditingOperator
+                          ? 'Simpan Perubahan Operator'
+                          : adminForm.createMode === 'DIRECT_CREATE'
+                            ? 'Buat Akun & Aktifkan Operator'
+                            : 'Simpan Undangan Operator'}
+                    </button>
                   </div>
-                ) : (
-                  (activeRows as AdminUser[]).map((a, idx) => (
-                    <div key={a.uid || a.email || `adm-${idx}`} className="p-4 flex items-center justify-between gap-4">
-                      <div>
+                </form>
+
+                {/* Post-Provisioning Actionable Guide */}
+                {lastProvisionResult && (
+                  <div className="rounded-2xl border border-emerald-500/35 bg-emerald-500/10 p-5 space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="space-y-1">
                         <p className="text-sm font-bold text-white">
-                          {a.fullName}{' '}
-                          <span className="font-mono text-xs text-sky-300">
-                            ({a.role}{a.cashierCode ? ` · ${a.cashierCode}` : ''})
-                          </span>
+                          {lastProvisionResult.mode === 'CREATED_DIRECTLY'
+                            ? 'Akun Operator Berhasil Dibuat Otomatis'
+                            : 'Undangan Otorisasi Operator Tersimpan'}
                         </p>
-                        <p className="text-xs font-mono text-slate-400">
-                          {a.email} · UID: {a.uid} · Cabang: {a.branchScope} · {a.active ? 'ACTIVE' : 'DISABLED'}
+                        <p className="text-xs text-emerald-100/90 leading-relaxed">
+                          {lastProvisionResult.mode === 'CREATED_DIRECTLY' ? (
+                            <>
+                              Akun <strong className="text-white">{lastProvisionResult.email}</strong>{' '}
+                              ({lastProvisionResult.role} · {lastProvisionResult.branchScope}) telah terdaftar dengan UID otomatis{' '}
+                              <span className="font-mono text-emerald-200">{lastProvisionResult.uid}</span>. Tautan verifikasi email sudah dikirim.
+                              <br />
+                              <strong className="text-white">Langkah operator:</strong> 1) Buka Inbox/Spam &amp; klik link verifikasi email, 2) Login di{' '}
+                              <span className="font-mono text-white">{lastProvisionResult.portalPath}</span> dengan email &amp; password awal tersebut.
+                            </>
+                          ) : lastProvisionResult.mode === 'INVITED_EXISTING_EMAIL' ? (
+                            <>
+                              Email <strong className="text-white">{lastProvisionResult.email}</strong> sudah terdaftar di Firebase Auth, sehingga otomatis dibuatkan undangan{' '}
+                              <strong className="text-white">
+                                {lastProvisionResult.role} · {lastProvisionResult.branchScope}
+                              </strong>
+                              . Operator cukup login di{' '}
+                              <span className="font-mono text-white">{lastProvisionResult.portalPath}</span> menggunakan password akun tersebut (setelah email terverifikasi) — akses langsung aktif otomatis.
+                            </>
+                          ) : (
+                            <>
+                              Undangan untuk <strong className="text-white">{lastProvisionResult.email}</strong>{' '}
+                              ({lastProvisionResult.role} · {lastProvisionResult.branchScope}) siap diklaim.
+                              <br />
+                              <strong className="text-white">Langkah operator:</strong> 1) Buka{' '}
+                              <span className="font-mono text-white">{lastProvisionResult.portalPath}</span>, 2) Pilih tab{' '}
+                              <strong className="text-white">Aktivasi Akun</strong> dan buat password sendiri dengan email tersebut, 3) Klik link verifikasi email &amp; muat ulang sesi.
+                            </>
+                          )}
                         </p>
                       </div>
                       <button
                         type="button"
-                        onClick={() => {
-                          setAdminOriginalCreatedAt(a.createdAt);
-                          setAdminForm({
-                            uid: a.uid,
-                            email: a.email,
-                            fullName: a.fullName,
-                            role: a.role,
-                            branchScope: a.branchScope,
-                            cashierCode: a.cashierCode || '',
-                            active: a.active,
-                          });
-                          window.scrollTo({ top: 0, behavior: 'smooth' });
-                        }}
-                        className="text-xs font-semibold text-sky-300 hover:underline shrink-0"
+                        onClick={() => setLastProvisionResult(null)}
+                        aria-label="Tutup panduan"
+                        className="p-1 text-emerald-200 hover:text-white"
                       >
-                        Edit
+                        <X className="w-4 h-4" />
                       </button>
                     </div>
-                  ))
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void copyPortalUrl(lastProvisionResult.portalPath, 'last-provision')
+                        }
+                        className="inline-flex items-center gap-1.5 min-h-[36px] rounded-lg border border-emerald-400/40 bg-emerald-500/15 hover:bg-emerald-500/25 px-3.5 text-xs font-semibold text-emerald-100 transition-colors"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>
+                          {copiedPortalLink === 'last-provision'
+                            ? 'Link Portal Tersalin!'
+                            : `Salin Link Portal (${lastProvisionResult.portalPath})`}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
                 )}
-              </div>
 
-              {/* Formal 4-Role RBAC Matrix */}
+                {/* Pending Email Invites waiting for operator activation */}
+                {(pendingInvites.length > 0 || loadingInvites) && (
+                  <div className="bg-[#0B1124] rounded-2xl border border-amber-400/25 overflow-hidden">
+                    <div className="px-5 py-3.5 border-b border-indigo-500/15 flex items-center justify-between gap-2">
+                      <div>
+                        <h3 className="font-display text-sm font-bold text-white">
+                          Undangan Menunggu Aktivasi ({pendingInvites.length})
+                        </h3>
+                        <p className="text-[11px] text-slate-400">
+                          Akses role &amp; cabang akan otomatis aktif saat operator memverifikasi email dan masuk ke portal login.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void loadAdminInvites()}
+                        disabled={loadingInvites}
+                        className="text-xs font-semibold text-sky-300 hover:underline disabled:opacity-50"
+                      >
+                        {loadingInvites ? 'Memuat...' : 'Muat Ulang'}
+                      </button>
+                    </div>
+                    <div className="divide-y divide-indigo-500/15">
+                      {pendingInvites.map((inv) => {
+                        const invitePortal: '/cashier/login' | '/admin/login' = isCashierRole(inv.role)
+                          ? '/cashier/login'
+                          : '/admin/login';
+                        const copyKey = `inv-${inv.email}`;
+                        return (
+                          <div
+                            key={inv.email}
+                            className="p-4 flex flex-wrap items-center justify-between gap-3"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-sm font-bold text-white">
+                                {inv.fullName}{' '}
+                                <span className="font-mono text-xs text-amber-300">
+                                  ({inv.role}
+                                  {inv.cashierCode ? ` · ${inv.cashierCode}` : ''})
+                                </span>
+                              </p>
+                              <p className="text-xs font-mono text-slate-400 break-all">
+                                {inv.email} · Cabang: {inv.branchScope} · MENUNGGU AKTIVASI · Portal: {invitePortal}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => void copyPortalUrl(invitePortal, copyKey)}
+                                className="inline-flex items-center gap-1 min-h-[34px] rounded-lg border border-indigo-500/30 px-3 text-xs font-semibold text-sky-300 hover:bg-indigo-500/15"
+                              >
+                                <Copy className="w-3.5 h-3.5" />
+                                <span>
+                                  {copiedPortalLink === copyKey ? 'Tersalin' : 'Salin Link'}
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() =>
+                                  void (async () => {
+                                    setBusy(true);
+                                    setFeedback(null);
+                                    try {
+                                      await deleteAdminInviteBySuperAdmin(inv.email, adminProfile);
+                                      setFeedback({
+                                        type: 'success',
+                                        text: `Undangan untuk ${inv.email} dibatalkan.`,
+                                      });
+                                      await loadAdminInvites();
+                                    } catch (err) {
+                                      setFeedback({ type: 'error', text: mapFriendlyError(err) });
+                                    } finally {
+                                      setBusy(false);
+                                    }
+                                  })()
+                                }
+                                className="inline-flex items-center gap-1 min-h-[34px] rounded-lg border border-rose-500/30 px-3 text-xs font-semibold text-rose-300 hover:bg-rose-500/15 disabled:opacity-50"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>Batalkan</span>
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Active Registered Operators List */}
+                <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 overflow-hidden">
+                  <div className="px-5 py-3.5 border-b border-indigo-500/15 flex items-center justify-between gap-2">
+                    <h3 className="font-display text-sm font-bold text-white">
+                      Daftar Operator Terdaftar ({activeRows.length})
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() => void loadMenuRows(true)}
+                      disabled={loadingRows}
+                      className="text-xs font-semibold text-sky-300 hover:underline disabled:opacity-50"
+                    >
+                      {loadingRows ? 'Memuat...' : 'Muat Ulang'}
+                    </button>
+                  </div>
+                  <div className="divide-y divide-indigo-500/15">
+                    {activeRows.length === 0 ? (
+                      <div className="p-8 text-center text-sm text-slate-400">
+                        {loadingRows ? 'Memuat daftar operator...' : 'Belum ada data operator tambahan.'}
+                      </div>
+                    ) : (
+                      (activeRows as AdminUser[]).map((a, idx) => (
+                        <div
+                          key={a.uid || a.email || `adm-${idx}`}
+                          className="p-4 flex items-center justify-between gap-4"
+                        >
+                          <div className="min-w-0">
+                            <p className="text-sm font-bold text-white">
+                              {a.fullName}{' '}
+                              <span className="font-mono text-xs text-sky-300">
+                                ({a.role}
+                                {a.cashierCode ? ` · ${a.cashierCode}` : ''})
+                              </span>
+                            </p>
+                            <p className="text-xs font-mono text-slate-400 break-all">
+                              {a.email} · Cabang: {a.branchScope} · {a.active ? 'ACTIVE' : 'DISABLED'} · UID: {a.uid}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setLastProvisionResult(null);
+                              setAdminOriginalCreatedAt(a.createdAt);
+                              setAdminForm({
+                                uid: a.uid,
+                                email: a.email,
+                                fullName: a.fullName,
+                                password: '',
+                                createMode: 'DIRECT_CREATE',
+                                showPassword: false,
+                                role: a.role,
+                                branchScope: a.branchScope,
+                                cashierCode: a.cashierCode || '',
+                                active: a.active,
+                              });
+                              document
+                                .getElementById('operator-management-form')
+                                ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            }}
+                            className="text-xs font-semibold text-sky-300 hover:underline shrink-0"
+                          >
+                            Edit
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                {/* Formal 4-Role RBAC Matrix */}
               <div className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-3 overflow-x-auto">
                 <h3 className="font-display text-sm font-bold text-white">
                   Matriks Hak Akses Role (MEMBER · CASHIER · ADMIN · SUPER_ADMIN)
@@ -2961,7 +3421,8 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                 </table>
               </div>
             </div>
-          )}
+            );
+          })()}
 
           {/* 14. LEVELS */}
           {menu === 'levels' && isSuper && (

@@ -3,10 +3,10 @@
 > Untuk panduan operasional khusus **Kasir (`/cashier`)**, lihat `CASHIER_GUIDE.md`. Untuk matriks izin lengkap 4 role, lihat `ROLE_PERMISSION.md`.
 
 ## Login & Routing Otomatis
-Akses **`/admin/login`** dan masuk dengan **Email & Password** yang terdaftar pada koleksi `admins` (Super Admin bootstrap: `spv.xpplay@gmail.com`). Untuk aktivasi pertama kali, gunakan tab **Aktivasi Akun** dan verifikasi tautan yang dikirim ke email Anda.
-- **`SUPER_ADMIN`** diarahkan ke **`/superadmin`** (juga dapat mengakses `/admin` & `/cashier` untuk supervisi).
+Akses **`/admin/login`** (**Portal Login Admin** khusus `ADMIN` & `SUPER_ADMIN`) dan masuk dengan **Email & Password** yang terdaftar pada koleksi `admins` (Super Admin bootstrap: `spv.xpplay@gmail.com`). Untuk aktivasi pertama kali, gunakan tab **Aktivasi Akun Admin** dan verifikasi tautan yang dikirim ke email Anda.
+- **`SUPER_ADMIN`** diarahkan ke **`/superadmin`** (juga dapat mengakses `/admin` untuk supervisi).
 - **`ADMIN`** diarahkan ke **`/admin`** (akses penuh operasional Demang & Sekip; diblokir dari `/superadmin`).
-- **`CASHIER` / `STAFF`** diarahkan ke **`/cashier`** dan diblokir (`403 Unauthorized`) dari `/admin/*` serta `/superadmin/*`.
+- **`CASHIER` / `STAFF`** wajib masuk melalui **`/cashier/login`** dan diblokir dari `/admin/login`, `/admin/*`, serta `/superadmin/*` (dengan pencatatan audit `CASHIER_DENIED_ACTION`).
 
 ## Ringkasan Role & Hak Akses
 - **SUPER_ADMIN**: Semua menu termasuk *Admin & Cashier Management* (dengan 4 slot kasir cabang Demang/Sekip + matriks RBAC), *Levels*, *XP Settings* (`refundOnExpiry`), *Reset / Membership Cycle*, *Branches*, dan *Backup & Restore / System Health*.

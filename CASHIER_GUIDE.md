@@ -6,8 +6,8 @@ Kasir memiliki portal operasional tersendiri pada rute **`/cashier`** yang teris
 
 ## Login & Isolasi Cabang Kasir
 
-1. Masuk melalui **`/admin/login`** menggunakan akun Email & Password yang dibuat oleh Super Admin (email wajib terverifikasi).
-2. Setelah login berhasil, role `CASHIER` otomatis diarahkan ke **`/cashier`**.
+1. Masuk melalui **`/cashier/login`** (**Portal Login Kasir** tersendiri, terpisah dari `/admin/login`) menggunakan akun Email & Password yang diotorisasi oleh Super Admin (email wajib terverifikasi).
+2. Setelah login berhasil dan cabang terverifikasi, role `CASHIER` otomatis diarahkan ke **`/cashier`**. Akun Kasir tidak diperbolehkan masuk melalui `/admin/login`.
 3. Setiap akun Kasir dikunci permanen ke satu cabang:
    - **Kasir Demang** (`branchScope: 'DEMANG'`): Hanya dapat melihat dan memproses operasional cabang **DEMANG**.
    - **Kasir Sekip** (`branchScope: 'SEKIP'`): Hanya dapat melihat dan memproses operasional cabang **SEKIP**.

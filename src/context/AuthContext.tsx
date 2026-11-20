@@ -15,6 +15,7 @@ import {
   getDoc,
   onSnapshot,
   setDoc,
+  writeBatch,
 } from 'firebase/firestore';
 import { auth, db } from '../lib/firebase.ts';
 import { handleFirestoreError, OperationType } from '../lib/firestoreError.ts';
@@ -35,6 +36,7 @@ import {
 } from '../shared/rbac.ts';
 import { isMemberAllowedDashboardAccess } from '../shared/registrationLogic.ts';
 import type {
+  AdminInviteRecord,
   AdminUser,
   BranchInfo,
   CmsPublishedDoc,
@@ -236,6 +238,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             };
             await setDoc(doc(db, 'admins', user.uid), newAdmin);
             resolvedAdmin = newAdmin;
+          } else if (email) {
+            // Auto-claim email-based Super Admin authorization invite (zero manual UID workflow)
+            try {
+              const inviteRef = doc(db, 'adminInvites', email);
+              const inviteSnap = await getDoc(inviteRef);
+              if (inviteSnap.exists()) {
+                const invite = inviteSnap.data() as AdminInviteRecord;
+                if (invite.status === 'PENDING' && invite.active) {
+                  const now = Date.now();
+                  const claimedAdmin: AdminUser = {
+                    uid: user.uid,
+                    email,
+                    fullName: invite.fullName || user.displayName || 'Operator XP PLAY',
+                    role: invite.role,
+                    branchScope: invite.branchScope,
+                    branchId: invite.branchId ?? (invite.branchScope !== 'ALL' ? invite.branchScope : null),
+                    cashierCode: invite.cashierCode ?? null,
+                    permissions: getDefaultPermissionsForRole(invite.role),
+                    active: true,
+                    createdAt: now,
+                    updatedAt: now,
+                  };
+                  const batch = writeBatch(db);
+                  batch.set(doc(db, 'admins', user.uid), claimedAdmin);
+                  batch.update(inviteRef, {
+                    status: 'CLAIMED',
+                    claimedByUid: user.uid,
+                    claimedAt: now,
+                    updatedAt: now,
+                  });
+                  await batch.commit();
+                  resolvedAdmin = claimedAdmin;
+                }
+              }
+            } catch {
+              // No pending invite or not eligible
+            }
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : '';

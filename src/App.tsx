@@ -5,6 +5,7 @@ import { AuthProvider, useAuth } from './context/AuthContext.tsx';
 import { AdminDashboardPage } from './pages/AdminDashboardPage.tsx';
 import { AdminLoginPage } from './pages/AdminLoginPage.tsx';
 import { CashierDashboardPage } from './pages/CashierDashboardPage.tsx';
+import { CashierLoginPage } from './pages/CashierLoginPage.tsx';
 import { LandingPage } from './pages/LandingPage.tsx';
 import { LoginPage } from './pages/LoginPage.tsx';
 import { MemberDashboardPage } from './pages/MemberDashboardPage.tsx';
@@ -205,7 +206,8 @@ export default function App() {
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/complete-membership" element={<RegisterPage />} />
           <Route path="/admin/login" element={<AdminLoginPage />} />
-          <Route path="/cashier/login" element={<AdminLoginPage />} />
+          <Route path="/superadmin/login" element={<Navigate to="/admin/login" replace />} />
+          <Route path="/cashier/login" element={<CashierLoginPage />} />
           <Route
             path="/member"
             element={

@@ -600,14 +600,17 @@ export function HomepageView({
             <p className="font-semibold text-slate-200">{cms.footerCopyright}</p>
             <p>{cms.footerText}</p>
           </div>
-          <div className="flex items-center gap-5">
-            <Link to="/login" className="hover:text-sky-300 transition-colors py-1">
+          <div className="flex flex-wrap items-center justify-center gap-5">
+            <Link to="/login" className="hover:text-sky-300 transition-colors py-1 whitespace-nowrap">
               Login Member
             </Link>
-            <Link to="/register" className="hover:text-sky-300 transition-colors py-1">
+            <Link to="/register" className="hover:text-sky-300 transition-colors py-1 whitespace-nowrap">
               Daftar Member
             </Link>
-            <Link to="/admin/login" className="hover:text-purple-300 transition-colors py-1">
+            <Link to="/cashier/login" className="hover:text-emerald-300 transition-colors py-1 whitespace-nowrap">
+              Portal Kasir
+            </Link>
+            <Link to="/admin/login" className="hover:text-purple-300 transition-colors py-1 whitespace-nowrap">
               Portal Admin
             </Link>
           </div>

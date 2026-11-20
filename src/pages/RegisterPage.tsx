@@ -717,10 +717,13 @@ export function RegisterPage() {
                   Masuk Member
                 </Link>
               </p>
-              <p className="text-xs text-slate-400">
-                Kasir atau Admin XP PLAY?{' '}
+              <p className="text-xs text-slate-400 flex items-center justify-center gap-2">
+                <Link to="/cashier/login" className="font-medium text-emerald-300 hover:underline">
+                  Portal Kasir
+                </Link>
+                <span aria-hidden="true">·</span>
                 <Link to="/admin/login" className="font-medium text-purple-300 hover:underline">
-                  Portal Kasir &amp; Admin
+                  Portal Admin
                 </Link>
               </p>
             </div>

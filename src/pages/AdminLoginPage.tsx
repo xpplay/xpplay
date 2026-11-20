@@ -1,10 +1,11 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, MailCheck, RefreshCw, ShieldCheck } from 'lucide-react';
+import { ArrowLeft, MailCheck, RefreshCw, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { CaptchaWidget } from '../components/CaptchaWidget.tsx';
 import { useAuth } from '../context/AuthContext.tsx';
 import { mapFriendlyError } from '../lib/firestoreError.ts';
-import { getDashboardRouteForRole } from '../shared/rbac.ts';
+import { logCashierAuditEvent } from '../services/xpService.ts';
+import { getDashboardRouteForRole, isCashierRole, isFullAdminRole } from '../shared/rbac.ts';
 
 type AdminAuthMode = 'login' | 'activate';
 
@@ -13,6 +14,7 @@ export function AdminLoginPage() {
   const {
     firebaseUser,
     adminProfile,
+    memberProfile,
     loading,
     signInWithEmail,
     registerAdminWithEmail,
@@ -31,12 +33,30 @@ export function AdminLoginPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
+  const loggedDeniedRef = useRef(false);
+
+  const isAuthenticatedAdmin = Boolean(adminProfile && isFullAdminRole(adminProfile.role));
+  const isWrongPortalCashier = Boolean(adminProfile && isCashierRole(adminProfile.role));
+  const isWrongPortalMember = Boolean(!adminProfile && memberProfile);
 
   useEffect(() => {
-    if (!loading && adminProfile) {
+    if (!loading && isAuthenticatedAdmin && adminProfile) {
       navigate(getDashboardRouteForRole(adminProfile.role), { replace: true });
     }
-  }, [loading, adminProfile, navigate]);
+  }, [loading, isAuthenticatedAdmin, adminProfile, navigate]);
+
+  useEffect(() => {
+    if (!loading && isWrongPortalCashier && adminProfile && !loggedDeniedRef.current) {
+      loggedDeniedRef.current = true;
+      void logCashierAuditEvent({
+        actor: adminProfile,
+        action: 'CASHIER_DENIED_ACTION',
+        targetType: 'route',
+        targetId: '/admin/login',
+        reason: 'Akun Kasir mencoba masuk melalui Portal Login Admin (/admin/login).',
+      });
+    }
+  }, [loading, isWrongPortalCashier, adminProfile]);
 
   const verifyCaptchaFirst = async () => {
     const capRes = await fetch('/api/captcha/verify', {
@@ -76,7 +96,7 @@ export function AdminLoginPage() {
       } else {
         await registerAdminWithEmail(cleanEmail, password, fullName.trim() || 'Admin XP PLAY');
         setInfo(
-          `Akun berhasil dibuat. Link verifikasi email telah dikirim ke ${cleanEmail}. Silakan klik link tersebut lalu muat ulang sesi.`
+          `Akun admin berhasil dibuat. Link verifikasi email telah dikirim ke ${cleanEmail}. Silakan klik link tersebut lalu muat ulang sesi.`
         );
       }
     } catch (err) {
@@ -124,11 +144,15 @@ export function AdminLoginPage() {
             <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-blue-600/25 to-purple-600/35 border border-sky-400/35 text-sky-300 flex items-center justify-center shrink-0">
               <ShieldCheck className="w-5 h-5" />
             </div>
-            <div>
-              <p className="text-xs font-medium text-purple-300">XP PLAY Internal Console</p>
-              <h1 className="mt-0.5 font-display text-xl font-extrabold text-white">Portal Admin &amp; Kasir</h1>
-              <p className="mt-1 text-xs text-slate-300">
-                Masuk menggunakan Email &amp; Password admin terdaftar.
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-purple-300">
+                XP PLAY Management Console · Admin &amp; Super Admin
+              </p>
+              <h1 className="mt-0.5 font-display text-xl font-extrabold text-white tracking-tight">
+                Portal Login Admin
+              </h1>
+              <p className="mt-1 text-xs text-slate-300 leading-relaxed">
+                Khusus akun Administrator &amp; Super Admin (akses terpisah dari Portal Kasir).
               </p>
             </div>
           </div>
@@ -142,6 +166,69 @@ export function AdminLoginPage() {
           {info && (
             <div className="rounded-xl border border-emerald-500/35 bg-emerald-500/10 p-3.5 text-xs text-emerald-200 leading-relaxed">
               {info}
+            </div>
+          )}
+
+          {isWrongPortalCashier && adminProfile && (
+            <div
+              role="alert"
+              className="rounded-xl border border-rose-500/40 bg-rose-500/10 p-4 text-xs text-rose-100 space-y-3"
+            >
+              <div className="flex items-start gap-2.5">
+                <ShieldAlert className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="font-semibold text-white">Akses Ditolak — Gunakan Portal Kasir</p>
+                  <p className="leading-relaxed">
+                    Akun <strong className="text-white">{adminProfile.email}</strong> terdaftar sebagai{' '}
+                    <span className="font-mono font-semibold text-emerald-300">
+                      {adminProfile.role}
+                      {adminProfile.branchScope !== 'ALL' ? ` · ${adminProfile.branchScope}` : ''}
+                    </span>
+                    . Akun Kasir tidak diperbolehkan masuk melalui Portal Admin.
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Link
+                  to="/cashier"
+                  className="inline-flex items-center justify-center min-h-[38px] rounded-lg bg-emerald-600 hover:bg-emerald-500 px-3.5 py-1.5 text-xs font-semibold text-white transition-colors"
+                >
+                  Buka Portal Kasir
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => void logout()}
+                  className="min-h-[38px] rounded-lg border border-rose-400/40 px-3.5 py-1.5 text-xs font-medium text-rose-100 hover:bg-rose-500/20 transition-colors"
+                >
+                  Keluar &amp; Ganti Akun Admin
+                </button>
+              </div>
+            </div>
+          )}
+
+          {isWrongPortalMember && (
+            <div
+              role="alert"
+              className="rounded-xl border border-amber-400/40 bg-amber-500/10 p-4 text-xs text-amber-100 space-y-3"
+            >
+              <p className="leading-relaxed">
+                Akun yang sedang aktif adalah akun <strong className="text-white">Member</strong>. Portal ini dikhususkan untuk Admin &amp; Super Admin XP PLAY.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Link
+                  to="/member"
+                  className="inline-flex items-center justify-center min-h-[38px] rounded-lg bg-indigo-600 hover:bg-indigo-500 px-3.5 py-1.5 text-xs font-semibold text-white transition-colors"
+                >
+                  Ke Member Dashboard
+                </Link>
+                <button
+                  type="button"
+                  onClick={() => void logout()}
+                  className="min-h-[38px] rounded-lg border border-amber-400/35 px-3.5 py-1.5 text-xs font-medium text-amber-100 hover:bg-amber-500/20 transition-colors"
+                >
+                  Keluar
+                </button>
+              </div>
             </div>
           )}
 
@@ -198,10 +285,10 @@ export function AdminLoginPage() {
             </div>
           )}
 
-          {firebaseUser && firebaseUser.emailVerified && !loading && !adminProfile && (
+          {firebaseUser && firebaseUser.emailVerified && !loading && !adminProfile && !memberProfile && (
             <div className="rounded-xl border border-purple-400/35 bg-purple-500/10 p-4 text-xs text-purple-100 space-y-3">
               <p>
-                Akun <strong className="text-white">{firebaseUser.email || firebaseUser.uid}</strong> belum terdaftar sebagai Admin/Staff aktif. Hubungi Super Admin untuk otorisasi role (UID:{' '}
+                Akun <strong className="text-white">{firebaseUser.email || firebaseUser.uid}</strong> belum terdaftar sebagai Admin aktif. Hubungi Super Admin untuk otorisasi role (UID:{' '}
                 <code className="font-mono text-sky-300 select-all">{firebaseUser.uid}</code>).
               </p>
               <button
@@ -221,7 +308,7 @@ export function AdminLoginPage() {
                 setMode('login');
                 setError('');
               }}
-              className={`min-h-[40px] rounded-lg text-xs font-semibold transition-all ${
+              className={`min-h-[40px] rounded-lg text-xs font-semibold transition-all whitespace-nowrap ${
                 mode === 'login'
                   ? 'bg-gradient-to-r from-blue-600 to-purple-600 text-white'
                   : 'text-slate-400 hover:text-white'
@@ -235,13 +322,13 @@ export function AdminLoginPage() {
                 setMode('activate');
                 setError('');
               }}
-              className={`min-h-[40px] rounded-lg text-xs font-semibold transition-all ${
+              className={`min-h-[40px] rounded-lg text-xs font-semibold transition-all whitespace-nowrap ${
                 mode === 'activate'
                   ? 'bg-gradient-to-r from-blue-600 to-purple-600 text-white'
                   : 'text-slate-400 hover:text-white'
               }`}
             >
-              Aktivasi Akun
+              Aktivasi Akun Admin
             </button>
           </div>
 
@@ -300,7 +387,7 @@ export function AdminLoginPage() {
                 required
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder={mode === 'activate' ? 'Minimal 8 karakter' : 'Masukkan password'}
+                placeholder={mode === 'activate' ? 'Minimal 8 karakter' : 'Masukkan password admin'}
                 autoComplete={mode === 'activate' ? 'new-password' : 'current-password'}
                 className="w-full h-[46px] rounded-xl border border-indigo-500/30 bg-[#070B19] px-3.5 text-sm text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none focus:ring-2 focus:ring-sky-400/20"
               />
@@ -323,9 +410,20 @@ export function AdminLoginPage() {
             </button>
           </form>
 
-          <p className="text-center text-xs text-slate-400">
-            Super Admin utama (<span className="font-mono text-sky-300">spv.xpplay@gmail.com</span>) diotorisasi otomatis setelah aktivasi &amp; verifikasi email.
-          </p>
+          <div className="pt-2 border-t border-indigo-500/20 text-center text-xs text-slate-400 space-y-2">
+            <p>
+              Super Admin utama (<span className="font-mono text-sky-300">spv.xpplay@gmail.com</span>) diotorisasi otomatis setelah aktivasi &amp; verifikasi email.
+            </p>
+            <p className="flex items-center justify-center gap-2">
+              <Link to="/cashier/login" className="font-medium text-emerald-300 hover:text-white hover:underline">
+                Portal Login Kasir
+              </Link>
+              <span aria-hidden="true">·</span>
+              <Link to="/login" className="font-medium text-sky-300 hover:text-white hover:underline">
+                Login Member
+              </Link>
+            </p>
+          </div>
         </div>
       </div>
     </div>
