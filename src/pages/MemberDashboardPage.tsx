@@ -375,7 +375,12 @@ export function MemberDashboardPage() {
 
       setFeedback({
         type: 'success',
-        text: `Benefit Request ${res.request.id} berhasil dikirim dan menunggu persetujuan Admin.`,
+        text:
+          campaignTarget.type === 'PROMO' && campaignTarget.xpReward > 0
+            ? `Klaim Promo ${res.request.id} dikirim! ${campaignTarget.xpReward} XP Reward ditahan sementara (Hold). Jika ditolak, XP otomatis kembali.`
+            : campaignTarget.type === 'PROMO'
+              ? `Klaim Promo ${res.request.id} berhasil dikirim dan menunggu persetujuan Admin/Kasir.`
+              : `Benefit Request ${res.request.id} berhasil dikirim dan menunggu persetujuan Admin.`,
       });
       setCampaignTarget(null);
       setEvidenceFile(null);
@@ -798,6 +803,9 @@ export function MemberDashboardPage() {
                 visibleCampaigns.map((camp) => {
                   const status = resolveCampaignStatus(camp);
                   const claimable = isCampaignClaimable(camp);
+                  const isPromo = camp.type === 'PROMO';
+                  const promoXpCost = isPromo ? Math.max(0, Math.floor(camp.xpReward || 0)) : 0;
+                  const enoughXpForPromo = !isPromo || memberProfile.xpReward >= promoXpCost;
                   const reqCount = myRequests.filter(
                     (r) => r.sourceId === camp.id && (r.status === 'ON_PROCESS' || r.status === 'APPROVED' || r.status === 'USED')
                   ).length;
@@ -806,15 +814,30 @@ export function MemberDashboardPage() {
                   ).length;
                   const limitReached = reqCount + legacyCount >= camp.maxClaimsPerMember;
 
+                  let buttonLabel = isPromo
+                    ? promoXpCost > 0
+                      ? `KLAIM PROMO (-${promoXpCost} XP)`
+                      : 'KLAIM PROMO (GRATIS)'
+                    : `AJUKAN ${camp.type} (+${camp.xpReward} XP)`;
+                  if (!claimable) buttonLabel = 'Program Tidak Aktif';
+                  else if (limitReached) buttonLabel = 'Sudah Diajukan';
+                  else if (!enoughXpForPromo) buttonLabel = `XP Kurang (Butuh ${promoXpCost} XP)`;
+
                   return (
                     <div
                       key={`camp_${camp.id}`}
-                      className="bg-[#0B1124] rounded-2xl border border-sky-500/25 p-5 flex flex-col justify-between gap-4"
+                      className={`bg-[#0B1124] rounded-2xl border p-5 flex flex-col justify-between gap-4 ${
+                        isPromo ? 'border-purple-500/30' : 'border-sky-500/25'
+                      }`}
                     >
                       <div className="space-y-2">
                         <div className="flex items-center justify-between text-xs">
-                          <span className="text-sky-300 font-mono font-semibold">
-                            {camp.type} · +{camp.xpReward} XP
+                          <span className={`font-mono font-semibold tabular-nums ${isPromo ? 'text-purple-300' : 'text-sky-300'}`}>
+                            {isPromo
+                              ? promoXpCost > 0
+                                ? `PROMO · -${promoXpCost} XP`
+                                : 'PROMO · Gratis (0 XP)'
+                              : `${camp.type} · +${camp.xpReward} XP`}
                           </span>
                           <span className={status === 'ACTIVE' ? 'text-emerald-400 font-semibold' : 'text-rose-400 font-semibold'}>
                             {status}
@@ -834,19 +857,19 @@ export function MemberDashboardPage() {
 
                       <button
                         type="button"
-                        disabled={!claimable || limitReached}
+                        disabled={!claimable || limitReached || !enoughXpForPromo}
                         onClick={() => {
                           setCampaignTarget(camp);
                           setEvidenceFile(null);
                           setRequestNote('');
                         }}
-                        className="w-full h-[46px] rounded-xl bg-gradient-to-r from-sky-600 to-indigo-600 text-sm font-semibold text-white hover:from-sky-500 hover:to-indigo-500 disabled:bg-none disabled:bg-slate-800 disabled:text-slate-500 transition-all"
+                        className={`w-full h-[46px] rounded-xl text-sm font-semibold text-white disabled:bg-none disabled:bg-slate-800 disabled:text-slate-500 transition-all ${
+                          isPromo
+                            ? 'bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500'
+                            : 'bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500'
+                        }`}
                       >
-                        {!claimable
-                          ? 'Program Tidak Aktif'
-                          : limitReached
-                            ? 'Sudah Diajukan'
-                            : `AJUKAN ${camp.type} (+${camp.xpReward} XP)`}
+                        {buttonLabel}
                       </button>
                     </div>
                   );
@@ -1365,82 +1388,128 @@ export function MemberDashboardPage() {
       )}
 
       {/* Campaign Benefit Request Modal (Challenge / Event / Promo) */}
-      {campaignTarget && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
-          <div className="w-full sm:max-w-md bg-[#0B1124] rounded-t-3xl sm:rounded-2xl border border-indigo-500/35 p-5 sm:p-6 space-y-4">
-            <div className="sm:hidden w-10 h-1.5 rounded-full bg-slate-700 mx-auto mb-1" />
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-xs font-medium text-sky-300 font-mono">
-                  {campaignTarget.type} · +{campaignTarget.xpReward} XP
-                </p>
-                <h2 className="font-display text-lg font-bold text-white">{campaignTarget.title}</h2>
-              </div>
-              <button
-                type="button"
-                disabled={submittingRequest}
-                onClick={() => setCampaignTarget(null)}
-                className="min-h-[36px] px-2 text-xs font-semibold text-slate-400 hover:text-white disabled:opacity-40"
-              >
-                Tutup
-              </button>
-            </div>
+      {campaignTarget && (() => {
+        const isPromoModal = campaignTarget.type === 'PROMO';
+        const promoCost = isPromoModal ? Math.max(0, Math.floor(campaignTarget.xpReward || 0)) : 0;
+        const promoInsufficientXp = isPromoModal && memberProfile.xpReward < promoCost;
 
-            <form onSubmit={handleCampaignRequestSubmit} className="space-y-4">
-              {campaignTarget.requiresEvidence && (
+        return (
+          <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+            <div className="w-full sm:max-w-md bg-[#0B1124] rounded-t-3xl sm:rounded-2xl border border-indigo-500/35 p-5 sm:p-6 space-y-4">
+              <div className="sm:hidden w-10 h-1.5 rounded-full bg-slate-700 mx-auto mb-1" />
+              <div className="flex items-start justify-between gap-4">
                 <div>
-                  <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                    Upload Bukti Foto (JPG/PNG/WEBP, maks. 5 MB) *
-                  </label>
-                  <label className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-indigo-500/35 bg-[#070B19] p-4 cursor-pointer hover:border-sky-400/60 transition-colors">
-                    <Upload className="w-5 h-5 text-sky-300 mb-1.5" />
-                    <span className="text-xs font-medium text-slate-200 text-center">
-                      {evidenceFile ? evidenceFile.name : 'Pilih foto dari galeri / kamera'}
-                    </span>
-                    <input
-                      type="file"
-                      accept="image/jpeg,image/png,image/webp"
-                      className="hidden"
-                      onChange={(e) => setEvidenceFile(e.target.files?.[0] || null)}
-                    />
-                  </label>
+                  <p className={`text-xs font-medium font-mono tabular-nums ${isPromoModal ? 'text-purple-300' : 'text-sky-300'}`}>
+                    {isPromoModal
+                      ? promoCost > 0
+                        ? `PROMO · Biaya -${promoCost} XP`
+                        : 'PROMO · Gratis (0 XP)'
+                      : `${campaignTarget.type} · +${campaignTarget.xpReward} XP`}
+                  </p>
+                  <h2 className="font-display text-lg font-bold text-white">{campaignTarget.title}</h2>
                 </div>
-              )}
-
-              <div>
-                <label className="block text-xs font-medium text-slate-300 mb-1.5">
-                  Catatan / Keterangan (Opsional)
-                </label>
-                <textarea
-                  rows={3}
-                  value={requestNote}
-                  onChange={(e) => setRequestNote(e.target.value)}
-                  placeholder="Contoh: Sudah follow & tag story IG @xpplay"
-                  className="w-full rounded-xl border border-indigo-500/30 bg-[#070B19] p-3 text-sm text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
-                />
-              </div>
-
-              <div className="flex items-center gap-3">
                 <button
                   type="button"
                   disabled={submittingRequest}
                   onClick={() => setCampaignTarget(null)}
-                  className="flex-1 h-[46px] rounded-xl border border-indigo-500/30 text-sm font-semibold text-slate-300 hover:text-white disabled:opacity-40"
+                  className="min-h-[36px] px-2 text-xs font-semibold text-slate-400 hover:text-white disabled:opacity-40"
                 >
-                  Batal
-                </button>
-                <button
-                  type="submit"
-                  disabled={submittingRequest}
-                  className="flex-1 h-[46px] rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 text-sm font-semibold text-white hover:from-blue-500 hover:to-purple-500 disabled:opacity-50"
-                >
-                  {submittingRequest ? 'Mengirim...' : 'Kirim Pengajuan'}
+                  Tutup
                 </button>
               </div>
-            </form>
+
+              {isPromoModal && (
+                <>
+                  <div className="rounded-xl bg-[#070B19] border border-indigo-500/20 p-4 space-y-2 text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">XP Reward Tersedia</span>
+                      <span className="font-mono font-bold text-white tabular-nums">{memberProfile.xpReward} XP</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-slate-400">Biaya Promo (Hold)</span>
+                      <span className="font-mono font-bold text-purple-300 tabular-nums">
+                        {promoCost > 0 ? `-${promoCost} XP` : '0 XP (Gratis)'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between pt-2 border-t border-indigo-500/15">
+                      <span className="text-slate-300">Sisa XP Reward Tersedia</span>
+                      <span className={`font-mono font-bold tabular-nums ${promoInsufficientXp ? 'text-rose-400' : 'text-sky-300'}`}>
+                        {memberProfile.xpReward - promoCost} XP
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-xs text-slate-300 leading-relaxed">
+                    {promoCost > 0
+                      ? 'XP Reward akan langsung ditahan (Hold) saat promo diajukan. XP Progress & Level Anda tidak berkurang. Jika ditolak Admin/Kasir, XP otomatis dikembalikan 100%. Setelah disetujui, promo berlaku 7 hari.'
+                      : 'Pengajuan promo akan dikirim ke Admin/Kasir untuk verifikasi. Setelah disetujui, promo berlaku 7 hari dan dapat dipakai di kasir.'}
+                  </p>
+                </>
+              )}
+
+              <form onSubmit={handleCampaignRequestSubmit} className="space-y-4">
+                {campaignTarget.requiresEvidence && (
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                      Upload Bukti Foto (JPG/PNG/WEBP, maks. 5 MB) *
+                    </label>
+                    <label className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-indigo-500/35 bg-[#070B19] p-4 cursor-pointer hover:border-sky-400/60 transition-colors">
+                      <Upload className="w-5 h-5 text-sky-300 mb-1.5" />
+                      <span className="text-xs font-medium text-slate-200 text-center">
+                        {evidenceFile ? evidenceFile.name : 'Pilih foto dari galeri / kamera'}
+                      </span>
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        className="hidden"
+                        onChange={(e) => setEvidenceFile(e.target.files?.[0] || null)}
+                      />
+                    </label>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                    Catatan / Keterangan (Opsional)
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={requestNote}
+                    onChange={(e) => setRequestNote(e.target.value)}
+                    placeholder={
+                      isPromoModal
+                        ? 'Contoh: Klaim promo cabang Demang / Sekip'
+                        : 'Contoh: Sudah follow & tag story IG @xpplay'
+                    }
+                    className="w-full rounded-xl border border-indigo-500/30 bg-[#070B19] p-3 text-sm text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
+                  />
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    disabled={submittingRequest}
+                    onClick={() => setCampaignTarget(null)}
+                    className="flex-1 h-[46px] rounded-xl border border-indigo-500/30 text-sm font-semibold text-slate-300 hover:text-white disabled:opacity-40"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={submittingRequest || promoInsufficientXp}
+                    className="flex-1 h-[46px] rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 text-sm font-semibold text-white hover:from-blue-500 hover:to-purple-500 disabled:opacity-50"
+                  >
+                    {submittingRequest
+                      ? 'Mengirim...'
+                      : isPromoModal
+                        ? 'Konfirmasi & Klaim Promo'
+                        : 'Kirim Pengajuan'}
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Mobile Bottom Tab Bar — Clean 4-Tab Navigation (44px+ hitboxes) */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#070B1A]/95 backdrop-blur-md border-t border-indigo-500/25 grid grid-cols-4 h-16">

@@ -58,7 +58,7 @@ export const DEFAULT_HOMEPAGE_CMS: HomepageCmsContent = {
       id: 'faq_3',
       question: 'Bagaimana cara mendapatkan XP tambahan?',
       answer:
-        'Selain bonus pendaftaran (+10 XP) dan referral (+5 XP), Anda mendapatkan +1 XP setiap transaksi Rp2.000 di kasir cabang Demang atau Sekip serta dari Challenge, Event, dan Promo.',
+        'Selain bonus pendaftaran (+10 XP) dan referral (+5 XP), Anda mendapatkan +1 XP setiap transaksi Rp2.000 di kasir cabang Demang atau Sekip serta dari XP Challenge dan Event. XP Reward dapat ditukarkan untuk klaim Benefit dan Promo spesial.',
     },
   ],
   contactTitle: 'Hubungi & Kunjungi XP PLAY',

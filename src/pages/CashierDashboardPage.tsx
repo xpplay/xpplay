@@ -407,7 +407,10 @@ export function CashierDashboardPage() {
       setAssistCatalogChoice('');
       setFeedback({
         type: 'success',
-        text: `Benefit Request ${created.id} (${created.title}) berhasil diajukan untuk ${assistMember.fullName} dengan status ON_PROCESS.`,
+        text:
+          created.xpCost > 0
+            ? `Benefit Request ${created.id} (${created.title}) berhasil diajukan untuk ${assistMember.fullName}. ${created.xpCost} XP Reward ditahan (Hold) dengan status ON_PROCESS.`
+            : `Benefit Request ${created.id} (${created.title}) berhasil diajukan untuk ${assistMember.fullName} dengan status ON_PROCESS.`,
       });
       await loadData();
     } catch (err) {
@@ -1334,7 +1337,13 @@ export function CashierDashboardPage() {
                         ))}
                         {campaigns.map((c) => (
                           <option key={c.id} value={`${c.type}::${c.id}`}>
-                            [{c.type}] {c.title} (+{c.xpReward} XP)
+                            [{c.type}] {c.title} (
+                            {c.type === 'PROMO'
+                              ? c.xpReward > 0
+                                ? `-${c.xpReward} XP`
+                                : 'GRATIS'
+                              : `+${c.xpReward} XP`}
+                            )
                           </option>
                         ))}
                       </select>
@@ -1422,8 +1431,12 @@ export function CashierDashboardPage() {
                               </span>
                             </p>
                             <p className="text-[11px] text-slate-400">
-                              {r.xpCost > 0 ? `XP Hold: ${r.xpCost} XP` : `Reward: +${r.xpRewardGrant} XP`} ·{' '}
-                              {formatJakartaDateTime(r.createdAt)}
+                              {r.xpCost > 0
+                                ? `XP Hold: -${r.xpCost} XP`
+                                : r.xpRewardGrant > 0
+                                  ? `Reward: +${r.xpRewardGrant} XP`
+                                  : 'Gratis (0 XP)'}{' '}
+                              · {formatJakartaDateTime(r.createdAt)}
                               {r.status === 'APPROVED' && r.expiresAt ? ` · ${getBenefitRemainingDaysLabel(r.expiresAt)}` : ''}
                             </p>
                           </div>

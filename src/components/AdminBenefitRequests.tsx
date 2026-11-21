@@ -732,8 +732,13 @@ export function AdminBenefitRequests({
                     <div className="grid grid-cols-2 gap-2.5 text-xs bg-[#070B19] rounded-xl p-3 border border-indigo-500/15">
                       <div>
                         <p className="text-slate-400">Jenis / Biaya XP</p>
-                        <p className="font-mono text-white font-semibold mt-0.5">
-                          {req.sourceType} · {req.xpCost > 0 ? `${req.xpCost} XP` : `+${req.xpRewardGrant} XP`}
+                        <p className="font-mono text-white font-semibold mt-0.5 tabular-nums">
+                          {req.sourceType} ·{' '}
+                          {req.xpCost > 0
+                            ? `-${req.xpCost} XP`
+                            : req.xpRewardGrant > 0
+                              ? `+${req.xpRewardGrant} XP`
+                              : 'Gratis (0 XP)'}
                         </p>
                       </div>
                       <div>
@@ -808,7 +813,9 @@ export function AdminBenefitRequests({
                     <div className="min-w-0">
                       <p className="text-sm font-bold text-white truncate">{cl.campaignTitle}</p>
                       <p className="text-xs font-mono text-slate-400">
-                        @{cl.memberUsername} · +{cl.xpRewardSnapshot} XP · {formatJakartaDateTime(cl.createdAt)}
+                        @{cl.memberUsername} ·{' '}
+                        {cl.campaignType === 'PROMO' ? `-${cl.xpRewardSnapshot} XP` : `+${cl.xpRewardSnapshot} XP`} ·{' '}
+                        {formatJakartaDateTime(cl.createdAt)}
                       </p>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">

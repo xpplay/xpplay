@@ -951,5 +951,121 @@ describe('Two-Step Membership Registration & Branch-Isolated Cashier RBAC (TEST 
     expect(rulesSrc).toContain("getAfter(/databases/$(database)/documents/adminInvites/$(request.auth.token.email.lower())).data.status == 'CLAIMED'");
     expect(rulesSrc).toContain("incoming().diff(existing()).affectedKeys().hasOnly(['status', 'claimedByUid', 'claimedAt', 'updatedAt'])");
   });
+
+  it('EXTRA 7: Super Admin can edit operator profiles/passwords (NO old password form) and hard-delete Admin/Cashier accounts (NO password form) with strict self-lockout and rules guards', () => {
+    const adminDashSrc = readProjectFile('src/pages/AdminDashboardPage.tsx');
+    const xpServiceSrc = readProjectFile('src/services/xpService.ts');
+    const rulesSrc = readProjectFile('firestore.rules');
+
+    // Service functions exported and properly guarded — zero old-password reauth and zero delete-password forms
+    expect(xpServiceSrc).toContain('export async function updateOperatorPasswordBySuperAdmin');
+    expect(xpServiceSrc).toContain('export async function deleteOperatorAccountBySuperAdmin');
+    expect(xpServiceSrc).toContain('sendPasswordResetEmail(auth, targetEmail)');
+    expect(xpServiceSrc).toContain('await updatePassword(auth.currentUser, newPassword)');
+    expect(xpServiceSrc).not.toContain('reauthenticateWithCredential');
+    expect(xpServiceSrc).not.toContain('operatorPassword');
+    expect(xpServiceSrc).toContain('Super Admin tidak dapat menghapus akun miliknya sendiri.');
+    expect(xpServiceSrc).toContain('Super Admin tidak dapat menurunkan role akun miliknya sendiri.');
+
+    // Admin Management UI exposes Edit Profil, Password modal (no Password Lama), and Delete modal (no password input)
+    expect(adminDashSrc).toContain('updateOperatorPasswordBySuperAdmin');
+    expect(adminDashSrc).toContain('deleteOperatorAccountBySuperAdmin');
+    expect(adminDashSrc).toContain('Ubah Password Operator');
+    expect(adminDashSrc).toContain('Isi Password Baru Langsung');
+    expect(adminDashSrc).toContain('Kirim Link Reset ke Email');
+    expect(adminDashSrc).not.toContain('Password Lama *');
+    expect(adminDashSrc).not.toContain('Password Operator (Opsional');
+    expect(adminDashSrc).toContain('Hapus Permanen User Admin / Kasir?');
+    expect(adminDashSrc).toContain('Ya, Hapus Permanen');
+
+    // Hardened firestore.rules allow Super Admin deletion while blocking self-deletion, bootstrap deletion, and self-demotion
+    expect(rulesSrc).toContain("existing().email != 'spv.xpplay@gmail.com'");
+    expect(rulesSrc).toContain("(uid != request.auth.uid || (incoming().role == 'SUPER_ADMIN' && incoming().active == true))");
+    expect(rulesSrc).toContain('&& (isSuperAdminRestoring() || (isSuperAdmin() && !isSystemRestoreLocked()));');
+  });
+
+  it('EXTRA 8: SuperAdmin-created operators skip email verification AND system-wide delete permanently hard-deletes docs in Firebase Firestore', () => {
+    const adminDashSrc = readProjectFile('src/pages/AdminDashboardPage.tsx');
+    const memberDetailSrc = readProjectFile('src/components/AdminMemberDetail.tsx');
+    const adminLoginSrc = readProjectFile('src/pages/AdminLoginPage.tsx');
+    const cashierLoginSrc = readProjectFile('src/pages/CashierLoginPage.tsx');
+    const authCtxSrc = readProjectFile('src/context/AuthContext.tsx');
+    const xpServiceSrc = readProjectFile('src/services/xpService.ts');
+    const rulesSrc = readProjectFile('firestore.rules');
+
+    // 1. Zero email verification required for SuperAdmin-added operators (UID-bound), while keeping email verification for bootstrap & email invites
+    expect(xpServiceSrc).not.toContain('sendEmailVerification');
+    expect(authCtxSrc).toContain("const adminSnap = await getDoc(doc(db, 'admins', user.uid));");
+    expect(authCtxSrc).toContain('else if (user.emailVerified && isBootstrapAdmin)');
+    expect(authCtxSrc).toContain('else if (user.emailVerified && email)');
+    expect(adminLoginSrc).toContain('!firebaseUser.emailVerified && !loading && !adminProfile && !memberProfile');
+    expect(cashierLoginSrc).toContain('!firebaseUser.emailVerified && !loading && !adminProfile && !memberProfile');
+    expect(rulesSrc).toContain("function isBootstrappedSuperAdmin() {\n      return isVerifiedEmailUser()");
+    expect(rulesSrc).toContain('function isCashier() {\n      return adminDocExists()');
+
+    // 2. System-wide true Firestore hard delete functions exported and wired to Admin UI (no soft-delete DELETED on members)
+    expect(xpServiceSrc).toContain('export async function deleteMemberPermanentlyByAdmin');
+    expect(xpServiceSrc).toContain('export async function deleteBenefitByAdmin');
+    expect(xpServiceSrc).toContain('export async function deleteCampaignByAdmin');
+    expect(xpServiceSrc).toContain('export async function deleteNotificationCampaignByAdmin');
+    expect(xpServiceSrc).toContain("await deleteDoc(doc(db, 'members', member.uid))");
+    expect(xpServiceSrc).toContain("await deleteDoc(doc(db, 'benefits', benefit.id))");
+    expect(xpServiceSrc).toContain("await deleteDoc(doc(db, 'campaigns', campaign.id))");
+    expect(xpServiceSrc).toContain("await deleteDoc(doc(db, 'notifications', campaign.id))");
+
+    expect(adminDashSrc).toContain('deleteMemberPermanentlyByAdmin');
+    expect(adminDashSrc).toContain('deleteBenefitByAdmin');
+    expect(adminDashSrc).toContain('deleteCampaignByAdmin');
+    expect(adminDashSrc).toContain('deleteNotificationCampaignByAdmin');
+    expect(adminDashSrc).not.toContain("handleMemberStatusChange(m.uid, 'DELETED')");
+    expect(memberDetailSrc).toContain('onRequestHardDelete');
+
+    // 3. Firestore rules permit Admin/SuperAdmin hard delete while keeping Cashier/Member denied and auditLogs strictly immutable
+    expect(rulesSrc).toMatch(/match \/members\/\{uid\}[\s\S]*?allow delete: if isValidId\(uid\) && \(isSuperAdminRestoring\(\) \|\| \(isFullAdminOrSuper\(\) && !isSystemRestoreLocked\(\)\)\);/);
+    expect(rulesSrc).toMatch(/match \/benefits\/\{benefitId\}[\s\S]*?allow delete: if isValidId\(benefitId\) && \(isSuperAdminRestoring\(\) \|\| \(isFullAdminOrSuper\(\) && !isSystemRestoreLocked\(\)\)\);/);
+    expect(rulesSrc).toMatch(/match \/campaigns\/\{campaignId\}[\s\S]*?allow delete: if isValidId\(campaignId\) && \(isSuperAdminRestoring\(\) \|\| \(isFullAdminOrSuper\(\) && !isSystemRestoreLocked\(\)\)\);/);
+    expect(rulesSrc).toMatch(/match \/notifications\/\{notificationId\}[\s\S]*?allow delete: if isValidId\(notificationId\) && \(isSuperAdminRestoring\(\) \|\| \(isFullAdminOrSuper\(\) && !isSystemRestoreLocked\(\)\)\);/);
+    expect(rulesSrc).toMatch(/match \/auditLogs\/\{logId\}[\s\S]*?allow update, delete: if false;/);
+  });
+
+  it('EXTRA 9: Challenges, Promos, Benefits, and Events support full Edit & Hard Delete, and Promo claims enforce XP Hold deduction across client, server, and firestore.rules', () => {
+    const adminDashSrc = readProjectFile('src/pages/AdminDashboardPage.tsx');
+    const memberDashSrc = readProjectFile('src/pages/MemberDashboardPage.tsx');
+    const cashierDashSrc = readProjectFile('src/pages/CashierDashboardPage.tsx');
+    const xpServiceSrc = readProjectFile('src/services/xpService.ts');
+    const serverSrc = readProjectFile('src/server/services/xpEngineServer.ts');
+    const rulesSrc = readProjectFile('firestore.rules');
+
+    // 1. Edit & Hard Delete across all 4 catalog menus (Benefits, Challenges, Events, Promos)
+    expect(adminDashSrc).toContain("menu === 'benefits'");
+    expect(adminDashSrc).toContain("menu === 'challenges' || menu === 'events' || menu === 'promos'");
+    expect(adminDashSrc).toContain('upsertBenefitByAdmin');
+    expect(adminDashSrc).toContain('upsertCampaignByAdmin');
+    expect(adminDashSrc).toContain('deleteBenefitByAdmin');
+    expect(adminDashSrc).toContain('deleteCampaignByAdmin');
+    expect(adminDashSrc).toContain('Biaya XP Promo (Potong XP Member) *');
+    expect(adminDashSrc).toContain('benefitFormRef.current?.scrollIntoView');
+    expect(adminDashSrc).toContain('campaignFormRef.current?.scrollIntoView');
+
+    // 2. Promo claim uses resolveCampaignBenefitRequestEconomics (xpCost = xpReward, xpRewardGrant = 0) across client + server
+    expect(xpServiceSrc).toContain('resolveCampaignBenefitRequestEconomics(camp)');
+    expect(serverSrc).toContain('resolveCampaignBenefitRequestEconomics(camp)');
+    expect(memberDashSrc).toContain('KLAIM PROMO (-${promoXpCost} XP)');
+    expect(memberDashSrc).toContain('Biaya Promo (Hold)');
+    expect(memberDashSrc).toContain('Konfirmasi & Klaim Promo');
+    expect(cashierDashSrc).toContain("c.type === 'PROMO'");
+
+    // 3. Firestore security rules strictly enforce Promo XP Hold deduction & prevent cross-type Challenge/Promo spoofing
+    expect(rulesSrc).toContain("incoming().sourceType in ['CHALLENGE', 'EVENT']");
+    expect(rulesSrc).toContain('get(/databases/$(database)/documents/campaigns/$(incoming().sourceId)).data.type == incoming().sourceType');
+    expect(rulesSrc).toContain("incoming().sourceType == 'PROMO'");
+    expect(rulesSrc).toContain("get(/databases/$(database)/documents/campaigns/$(incoming().sourceId)).data.type == 'PROMO'");
+    expect(rulesSrc).toContain('incoming().xpCost == get(/databases/$(database)/documents/campaigns/$(incoming().sourceId)).data.xpReward');
+    expect(rulesSrc).toContain('&& incoming().xpRewardGrant == 0');
+    expect(rulesSrc).toContain("((data.type == 'PROMO' && data.xpReward >= 0) || (data.type in ['CHALLENGE', 'EVENT'] && data.xpReward >= 1))");
+  });
 });
+
+
+
 

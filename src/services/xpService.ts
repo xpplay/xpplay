@@ -2,9 +2,10 @@ import { deleteApp, initializeApp } from 'firebase/app';
 import {
   createUserWithEmailAndPassword,
   getAuth,
-  sendEmailVerification,
+  sendPasswordResetEmail,
   signInWithEmailAndPassword,
   signOut,
+  updatePassword,
   updateProfile,
 } from 'firebase/auth';
 import {
@@ -67,6 +68,7 @@ import {
   computeBenefitExpiry,
   computeBenefitHoldBalances,
   computeBenefitMarkUsed,
+  resolveCampaignBenefitRequestEconomics,
   resolveJakartaDateRange,
   validateBirthDate,
   validateMemberCategory,
@@ -1586,13 +1588,28 @@ export async function reviewClaimByAdmin(input: {
         });
       }
 
-      const xpAward = claim.xpRewardSnapshot;
-      const newProgress = member.xpProgress + xpAward;
-      const newReward = member.xpReward + xpAward;
+      const xpAmount = Math.max(0, Math.floor(claim.xpRewardSnapshot || 0));
+      const isPromoClaim = claim.campaignType === 'PROMO';
       const isManualOverride = member.levelMode === 'MANUAL_OVERRIDE';
-      const levelEval = resolveLevelFromXp(newProgress, levels);
-      const nextLevel: LevelId = isManualOverride ? member.currentLevel : levelEval.current.id;
+
+      let newProgress = member.xpProgress;
+      let newReward = member.xpReward;
+      let nextLevel: LevelId = member.currentLevel;
       const nextLevelMode: LevelMode = isManualOverride ? 'MANUAL_OVERRIDE' : 'AUTOMATIC';
+
+      if (isPromoClaim) {
+        if (member.xpReward < xpAmount) {
+          throw new Error(
+            `XP Reward member (${member.xpReward} XP) tidak mencukupi untuk klaim promo ini (butuh ${xpAmount} XP).`
+          );
+        }
+        newReward = member.xpReward - xpAmount;
+      } else {
+        newProgress = member.xpProgress + xpAmount;
+        newReward = member.xpReward + xpAmount;
+        const levelEval = resolveLevelFromXp(newProgress, levels);
+        nextLevel = isManualOverride ? member.currentLevel : levelEval.current.id;
+      }
 
       tx.update(claimRef, {
         status: 'APPROVED',
@@ -1610,40 +1627,61 @@ export async function reviewClaimByAdmin(input: {
         updatedAt: now,
       });
 
-      const pId = genId('xpp');
-      const rId = genId('xpr');
-      tx.set(doc(db, 'xpProgressLedger', pId), {
-        id: pId,
-        memberId: member.memberId,
-        memberUid: member.uid,
-        amount: xpAward,
-        type: 'PROGRESS',
-        direction: 'CREDIT',
-        source: claim.campaignType,
-        referenceId: claim.id,
-        branch: null,
-        cycleId: settings.currentCycleId,
-        createdAt: now,
-        createdBy: input.admin.uid,
-        note: `Claim disetujui: ${claim.campaignTitle}`,
-      });
-      tx.set(doc(db, 'xpRewardLedger', rId), {
-        id: rId,
-        memberId: member.memberId,
-        memberUid: member.uid,
-        amount: xpAward,
-        type: 'REWARD',
-        direction: 'CREDIT',
-        source: claim.campaignType,
-        referenceId: claim.id,
-        branch: null,
-        cycleId: settings.currentCycleId,
-        createdAt: now,
-        createdBy: input.admin.uid,
-        note: `Claim disetujui: ${claim.campaignTitle}`,
-      });
+      if (isPromoClaim) {
+        if (xpAmount > 0) {
+          const rId = genId('xpr');
+          tx.set(doc(db, 'xpRewardLedger', rId), {
+            id: rId,
+            memberId: member.memberId,
+            memberUid: member.uid,
+            amount: -xpAmount,
+            type: 'REWARD',
+            direction: 'DEBIT',
+            source: 'PROMO',
+            referenceId: claim.id,
+            branch: null,
+            cycleId: settings.currentCycleId,
+            createdAt: now,
+            createdBy: input.admin.uid,
+            note: `Promo disetujui (-${xpAmount} XP): ${claim.campaignTitle}`,
+          });
+        }
+      } else {
+        const pId = genId('xpp');
+        const rId = genId('xpr');
+        tx.set(doc(db, 'xpProgressLedger', pId), {
+          id: pId,
+          memberId: member.memberId,
+          memberUid: member.uid,
+          amount: xpAmount,
+          type: 'PROGRESS',
+          direction: 'CREDIT',
+          source: claim.campaignType,
+          referenceId: claim.id,
+          branch: null,
+          cycleId: settings.currentCycleId,
+          createdAt: now,
+          createdBy: input.admin.uid,
+          note: `Claim disetujui: ${claim.campaignTitle}`,
+        });
+        tx.set(doc(db, 'xpRewardLedger', rId), {
+          id: rId,
+          memberId: member.memberId,
+          memberUid: member.uid,
+          amount: xpAmount,
+          type: 'REWARD',
+          direction: 'CREDIT',
+          source: claim.campaignType,
+          referenceId: claim.id,
+          branch: null,
+          cycleId: settings.currentCycleId,
+          createdAt: now,
+          createdBy: input.admin.uid,
+          note: `Claim disetujui: ${claim.campaignTitle}`,
+        });
+      }
 
-      if (!isManualOverride && nextLevel !== member.currentLevel) {
+      if (!isPromoClaim && !isManualOverride && nextLevel !== member.currentLevel) {
         const lhId = genId('lvl');
         tx.set(doc(db, 'levelHistory', lhId), {
           id: lhId,
@@ -1665,8 +1703,12 @@ export async function reviewClaimByAdmin(input: {
         memberUid: member.uid,
         notificationCampaignId: null,
         category: 'CLAIM',
-        title: `Claim Disetujui (+${xpAward} XP)`,
-        message: `Claim "${claim.campaignTitle}" telah disetujui! XP Progress dan XP Reward bertambah ${xpAward} XP.`,
+        title: isPromoClaim
+          ? `Promo Disetujui (-${xpAmount} XP)`
+          : `Claim Disetujui (+${xpAmount} XP)`,
+        message: isPromoClaim
+          ? `Promo "${claim.campaignTitle}" telah disetujui! Saldo XP Reward terpotong ${xpAmount} XP (sisa ${newReward} XP).`
+          : `Claim "${claim.campaignTitle}" telah disetujui! XP Progress dan XP Reward bertambah ${xpAmount} XP.`,
         read: false,
         readAt: null,
         status: 'SENT',
@@ -1972,6 +2014,7 @@ export async function updateMemberDetailsByAdmin(
 }
 
 export async function upsertBenefitByAdmin(benefit: BenefitItem, admin: AdminUser): Promise<void> {
+  assertRolePermission(admin.role, 'BENEFIT_CRUD', 'menyimpan perubahan benefit');
   const now = Date.now();
   const payload = { ...benefit, updatedAt: now };
   try {
@@ -1995,6 +2038,13 @@ export async function upsertBenefitByAdmin(benefit: BenefitItem, admin: AdminUse
 }
 
 export async function upsertCampaignByAdmin(campaign: CampaignItem, admin: AdminUser): Promise<void> {
+  const perm =
+    campaign.type === 'CHALLENGE'
+      ? 'CHALLENGE_CRUD'
+      : campaign.type === 'EVENT'
+        ? 'EVENT_CRUD'
+        : 'PROMO_CRUD';
+  assertRolePermission(admin.role, perm, `menyimpan perubahan ${campaign.type}`);
   const now = Date.now();
   const payload = { ...campaign, updatedAt: now };
   try {
@@ -2014,6 +2064,262 @@ export async function upsertCampaignByAdmin(campaign: CampaignItem, admin: Admin
     });
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `campaigns/${campaign.id}`);
+  }
+}
+
+async function commitBatchDeletes(refs: ReturnType<typeof doc>[]): Promise<number> {
+  if (refs.length === 0) return 0;
+  let deleted = 0;
+  const CHUNK_SIZE = 400;
+  for (let i = 0; i < refs.length; i += CHUNK_SIZE) {
+    const chunk = refs.slice(i, i + CHUNK_SIZE);
+    const batch = writeBatch(db);
+    for (const ref of chunk) {
+      batch.delete(ref);
+    }
+    await batch.commit();
+    deleted += chunk.length;
+  }
+  return deleted;
+}
+
+async function deleteCollectionDocsByField(
+  collectionName: string,
+  fieldName: string,
+  value: string
+): Promise<number> {
+  const snap = await getDocs(query(collection(db, collectionName), where(fieldName, '==', value)));
+  if (snap.empty) return 0;
+  return commitBatchDeletes(snap.docs.map((d) => d.ref));
+}
+
+export interface HardDeleteMemberResult {
+  uid: string;
+  memberId: string;
+  deletedDocsCount: number;
+}
+
+/**
+ * Permanent system-wide Firestore Hard Delete for a Member:
+ * Deletes members/{uid}, all member-linked sub-collections (transactions, ledgers, benefit requests,
+ * legacy claims/redemptions, referrals, level history, notifications, cycle snapshots, adjustments,
+ * overrides), and auth/onboarding/identity index docs so Firebase storage never piles up.
+ * Records a single compact immutable audit log entry for compliance.
+ */
+export async function deleteMemberPermanentlyByAdmin(
+  member: MemberProfile,
+  actor: AdminUser,
+  reason?: string
+): Promise<HardDeleteMemberResult> {
+  assertRolePermission(actor.role, 'MEMBER_STATUS_MANAGE', 'menghapus permanen data member');
+  if (isCashierRole(actor.role)) {
+    throw new Error('AKSES DITOLAK (403): Kasir tidak diizinkan menghapus permanen data member.');
+  }
+
+  let deletedDocsCount = 0;
+  try {
+    const memberUidCollections = [
+      'memberNotifications',
+      'claims',
+      'redemptions',
+      'benefitRequests',
+      'xpProgressLedger',
+      'xpRewardLedger',
+      'transactions',
+      'levelHistory',
+      'cycleSnapshots',
+      'xpAdjustments',
+      'levelOverrides',
+      'notifications',
+    ];
+
+    for (const col of memberUidCollections) {
+      deletedDocsCount += await deleteCollectionDocsByField(col, 'memberUid', member.uid).catch(
+        () => 0
+      );
+    }
+
+    // Delete referral records referencing this member as either referee or referrer
+    deletedDocsCount += await deleteCollectionDocsByField('referrals', 'refereeUid', member.uid).catch(
+      () => 0
+    );
+    deletedDocsCount += await deleteCollectionDocsByField('referrals', 'referrerUid', member.uid).catch(
+      () => 0
+    );
+
+    // Delete deterministic admin alert & lookup/index documents
+    const directRefs: ReturnType<typeof doc>[] = [
+      doc(db, 'notifications', `new_member_${member.uid}`),
+    ];
+
+    if (member.username && member.username.trim()) {
+      const normUser = normalizeUsername(member.username);
+      if (normUser) {
+        const uHash = await buildUsernameHashId(normUser);
+        directRefs.push(doc(db, 'authIndex', uHash));
+        directRefs.push(doc(db, 'identityIndex', `username:${normUser}`));
+      }
+    }
+
+    if (member.whatsapp && member.whatsapp.trim()) {
+      const normWa = normalizeWhatsapp(member.whatsapp);
+      if (normWa) {
+        const wHash = await buildWhatsappHashId(normWa);
+        directRefs.push(doc(db, 'authIndex', wHash));
+        directRefs.push(doc(db, 'onboardingPublicStatus', wHash));
+        directRefs.push(doc(db, 'onboardingVerifications', wHash));
+        directRefs.push(doc(db, 'identityIndex', `wa:${normWa}`));
+      }
+    }
+
+    if (member.migratedFromUid && member.migratedFromUid !== member.uid) {
+      directRefs.push(doc(db, 'members', member.migratedFromUid));
+    }
+
+    for (const ref of directRefs) {
+      try {
+        await deleteDoc(ref);
+        deletedDocsCount += 1;
+      } catch {
+        // Optional lookup document may not exist
+      }
+    }
+
+    // Finally delete the primary member document from Firestore
+    await deleteDoc(doc(db, 'members', member.uid));
+    deletedDocsCount += 1;
+
+    const now = Date.now();
+    const auditId = genId('audit');
+    await setDoc(doc(db, 'auditLogs', auditId), {
+      id: auditId,
+      actorId: actor.uid,
+      actorRole: actor.role,
+      action: 'MEMBER_HARD_DELETED',
+      targetType: 'member',
+      targetId: member.uid,
+      before: {
+        memberId: member.memberId,
+        username: member.username,
+        fullName: member.fullName,
+        whatsapp: member.whatsapp,
+        status: member.status,
+        xpProgress: member.xpProgress,
+        xpReward: member.xpReward,
+        currentLevel: member.currentLevel,
+      },
+      after: { deleted: true, hardDeleted: true, deletedDocsCount },
+      metadata: {
+        reason: (reason || 'Penghapusan permanen member oleh Admin').trim().slice(0, 240),
+      },
+      timestamp: now,
+    });
+
+    return { uid: member.uid, memberId: member.memberId, deletedDocsCount };
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `members/${member.uid}`);
+  }
+}
+
+export async function deleteBenefitByAdmin(benefit: BenefitItem, actor: AdminUser): Promise<void> {
+  assertRolePermission(actor.role, 'BENEFIT_CRUD', 'menghapus benefit permanen');
+  try {
+    await deleteDoc(doc(db, 'benefits', benefit.id));
+    const now = Date.now();
+    const auditId = genId('audit');
+    await setDoc(doc(db, 'auditLogs', auditId), {
+      id: auditId,
+      actorId: actor.uid,
+      actorRole: actor.role,
+      action: 'BENEFIT_DELETED',
+      targetType: 'benefit',
+      targetId: benefit.id,
+      before: {
+        name: benefit.name,
+        xpCost: benefit.xpCost,
+        levelRequirement: benefit.levelRequirement,
+      },
+      after: { deleted: true, hardDeleted: true },
+      metadata: null,
+      timestamp: now,
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `benefits/${benefit.id}`);
+  }
+}
+
+export async function deleteCampaignByAdmin(
+  campaign: CampaignItem,
+  actor: AdminUser
+): Promise<void> {
+  const perm =
+    campaign.type === 'CHALLENGE'
+      ? 'CHALLENGE_CRUD'
+      : campaign.type === 'EVENT'
+        ? 'EVENT_CRUD'
+        : 'PROMO_CRUD';
+  assertRolePermission(actor.role, perm, `menghapus ${campaign.type} permanen`);
+  try {
+    await deleteDoc(doc(db, 'campaigns', campaign.id));
+    const now = Date.now();
+    const auditId = genId('audit');
+    await setDoc(doc(db, 'auditLogs', auditId), {
+      id: auditId,
+      actorId: actor.uid,
+      actorRole: actor.role,
+      action: `${campaign.type}_DELETED`,
+      targetType: 'campaign',
+      targetId: campaign.id,
+      before: {
+        title: campaign.title,
+        type: campaign.type,
+        xpReward: campaign.xpReward,
+        status: campaign.status,
+      },
+      after: { deleted: true, hardDeleted: true },
+      metadata: null,
+      timestamp: now,
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `campaigns/${campaign.id}`);
+  }
+}
+
+export async function deleteNotificationCampaignByAdmin(
+  campaign: NotificationCampaign,
+  actor: AdminUser
+): Promise<{ deletedMemberNotifications: number }> {
+  assertRolePermission(actor.role, 'NOTIFICATIONS_MANAGE', 'menghapus kampanye notifikasi permanen');
+  try {
+    const deletedMemberNotifications = await deleteCollectionDocsByField(
+      'memberNotifications',
+      'notificationCampaignId',
+      campaign.id
+    ).catch(() => 0);
+
+    await deleteDoc(doc(db, 'notifications', campaign.id));
+
+    const now = Date.now();
+    const auditId = genId('audit');
+    await setDoc(doc(db, 'auditLogs', auditId), {
+      id: auditId,
+      actorId: actor.uid,
+      actorRole: actor.role,
+      action: 'NOTIFICATION_CAMPAIGN_DELETED',
+      targetType: 'notification',
+      targetId: campaign.id,
+      before: {
+        title: campaign.title,
+        targetType: campaign.targetType,
+      },
+      after: { deleted: true, hardDeleted: true, deletedMemberNotifications },
+      metadata: null,
+      timestamp: now,
+    });
+
+    return { deletedMemberNotifications };
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `notifications/${campaign.id}`);
   }
 }
 
@@ -2136,6 +2442,18 @@ export async function upsertAdminUserBySuperAdmin(
   actor: AdminUser
 ): Promise<void> {
   assertRolePermission(actor.role, 'ADMIN_MANAGEMENT', 'mengelola akun Admin/Kasir');
+  const cleanName = targetAdmin.fullName.trim();
+  if (cleanName.length < 2 || cleanName.length > 100) {
+    throw new Error('Nama lengkap operator minimal 2 karakter dan maksimal 100 karakter.');
+  }
+  if (targetAdmin.uid === actor.uid) {
+    if (targetAdmin.role !== 'SUPER_ADMIN') {
+      throw new Error('Super Admin tidak dapat menurunkan role akun miliknya sendiri.');
+    }
+    if (!targetAdmin.active) {
+      throw new Error('Super Admin tidak dapat menonaktifkan akun miliknya sendiri.');
+    }
+  }
   if (isCashierRole(targetAdmin.role)) {
     if (targetAdmin.branchScope !== 'DEMANG' && targetAdmin.branchScope !== 'SEKIP') {
       throw new Error('Akun Kasir wajib terikat ke 1 cabang tetap (DEMANG atau SEKIP).');
@@ -2149,6 +2467,8 @@ export async function upsertAdminUserBySuperAdmin(
 
   const normalizedRecord: AdminUser = {
     ...targetAdmin,
+    email: targetAdmin.email.trim().toLowerCase(),
+    fullName: cleanName,
     branchId: normalizedBranchId,
     cashierCode: isCashierRole(targetAdmin.role) ? (targetAdmin.cashierCode || null) : null,
     permissions: getDefaultPermissionsForRole(targetAdmin.role),
@@ -2157,6 +2477,9 @@ export async function upsertAdminUserBySuperAdmin(
 
   try {
     await setDoc(doc(db, 'admins', targetAdmin.uid), normalizedRecord);
+    if (auth.currentUser && auth.currentUser.uid === targetAdmin.uid) {
+      await updateProfile(auth.currentUser, { displayName: cleanName }).catch(() => {});
+    }
     const auditId = genId('audit');
     await setDoc(doc(db, 'auditLogs', auditId), {
       id: auditId,
@@ -2167,17 +2490,188 @@ export async function upsertAdminUserBySuperAdmin(
       targetId: targetAdmin.uid,
       before: null,
       after: {
-        email: targetAdmin.email,
-        role: targetAdmin.role,
-        branchScope: targetAdmin.branchScope,
+        email: normalizedRecord.email,
+        fullName: normalizedRecord.fullName,
+        role: normalizedRecord.role,
+        branchScope: normalizedRecord.branchScope,
         cashierCode: normalizedRecord.cashierCode,
-        active: targetAdmin.active,
+        active: normalizedRecord.active,
       },
       metadata: null,
       timestamp: now,
     });
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, `admins/${targetAdmin.uid}`);
+  }
+}
+
+export interface UpdateOperatorPasswordResult {
+  method: 'DIRECT_UPDATE' | 'RESET_EMAIL';
+  email: string;
+}
+
+/**
+ * Super Admin password management for Admin, Cashier, or own Super Admin account (Starter Tier / Client SDK):
+ * - NO old-password form required!
+ * - RESET_EMAIL (for any Admin/Cashier or self): 1-click official Firebase Auth password reset link to target email.
+ * - DIRECT_UPDATE (for Super Admin's own account): Direct new-password update via updatePassword(auth.currentUser)
+ *   without requiring old-password input (never stores passwords in Firestore or audit logs).
+ */
+export async function updateOperatorPasswordBySuperAdmin(
+  input: {
+    target: AdminUser;
+    mode: 'DIRECT_UPDATE' | 'RESET_EMAIL';
+    newPassword?: string;
+    confirmPassword?: string;
+    reason?: string;
+  },
+  actor: AdminUser
+): Promise<UpdateOperatorPasswordResult> {
+  assertRolePermission(actor.role, 'ADMIN_MANAGEMENT', 'mengubah password Admin/Kasir');
+  const targetEmail = input.target.email.trim().toLowerCase();
+  if (!INVITE_EMAIL_REGEX.test(targetEmail)) {
+    throw new Error('Email operator tidak valid.');
+  }
+  const cleanReason = (input.reason || 'Pembaruan password operator oleh Super Admin')
+    .trim()
+    .slice(0, 240);
+
+  if (input.mode === 'RESET_EMAIL') {
+    await sendPasswordResetEmail(auth, targetEmail);
+    const now = Date.now();
+    const auditId = genId('audit');
+    await setDoc(doc(db, 'auditLogs', auditId), {
+      id: auditId,
+      actorId: actor.uid,
+      actorRole: actor.role,
+      action: 'OPERATOR_PASSWORD_RESET_SENT',
+      targetType: 'admin',
+      targetId: input.target.uid,
+      before: null,
+      after: {
+        email: targetEmail,
+        role: input.target.role,
+        branchScope: input.target.branchScope,
+        method: 'RESET_EMAIL',
+      },
+      metadata: { reason: cleanReason },
+      timestamp: now,
+    });
+    return { method: 'RESET_EMAIL', email: targetEmail };
+  }
+
+  const isSelf = auth.currentUser?.uid === input.target.uid;
+  if (!isSelf || !auth.currentUser) {
+    throw new Error(
+      'Untuk mengubah password akun Admin/Kasir lain tanpa password lama di Starter Tier, gunakan 1-klik "Kirim Link Reset Password ke Email".'
+    );
+  }
+
+  const newPassword = (input.newPassword || '').trim();
+  const confirmPassword = (input.confirmPassword || '').trim();
+
+  if (newPassword.length < 8) {
+    throw new Error('Password baru minimal 8 karakter.');
+  }
+  if (newPassword !== confirmPassword) {
+    throw new Error('Konfirmasi password baru tidak sama.');
+  }
+
+  try {
+    await updatePassword(auth.currentUser, newPassword);
+  } catch (err) {
+    const code = (err as { code?: string })?.code || '';
+    if (code === 'auth/requires-recent-login') {
+      throw new Error(
+        'Sesi login Anda sudah berlangsung lama sehingga Firebase membutuhkan login ulang, atau klik "Kirim Link Reset ke Email Saya" tanpa perlu password lama.'
+      );
+    }
+    throw err;
+  }
+
+  const now = Date.now();
+  const auditId = genId('audit');
+  await setDoc(doc(db, 'auditLogs', auditId), {
+    id: auditId,
+    actorId: actor.uid,
+    actorRole: actor.role,
+    action: 'OPERATOR_PASSWORD_UPDATED',
+    targetType: 'admin',
+    targetId: input.target.uid,
+    before: null,
+    after: {
+      email: targetEmail,
+      role: input.target.role,
+      branchScope: input.target.branchScope,
+      method: 'DIRECT_UPDATE',
+      selfUpdate: true,
+    },
+    metadata: { reason: cleanReason },
+    timestamp: now,
+  });
+
+  return { method: 'DIRECT_UPDATE', email: targetEmail };
+}
+
+export interface DeleteOperatorResult {
+  uid: string;
+  email: string;
+  hardDeleted: boolean;
+}
+
+/**
+ * Super Admin permanent hard-delete for Admin/Cashier accounts (NO password required):
+ * - Blocks self-deletion and deletion of primary bootstrap Super Admin.
+ * - Permanently deletes admins/{uid} and adminInvites/{email} from Firebase Firestore so storage stays clean
+ *   and all portal/RBAC access is revoked immediately.
+ */
+export async function deleteOperatorAccountBySuperAdmin(
+  input: {
+    target: AdminUser;
+    reason?: string;
+  },
+  actor: AdminUser
+): Promise<DeleteOperatorResult> {
+  assertRolePermission(actor.role, 'ADMIN_MANAGEMENT', 'menghapus akun Admin/Kasir');
+  const targetEmail = input.target.email.trim().toLowerCase();
+  if (input.target.uid === actor.uid) {
+    throw new Error('Super Admin tidak dapat menghapus akun miliknya sendiri.');
+  }
+  if (targetEmail === 'spv.xpplay@gmail.com') {
+    throw new Error('Akun Super Admin utama (spv.xpplay@gmail.com) tidak dapat dihapus.');
+  }
+
+  const now = Date.now();
+  try {
+    await deleteDoc(doc(db, 'admins', input.target.uid));
+    if (INVITE_EMAIL_REGEX.test(targetEmail)) {
+      await deleteDoc(doc(db, 'adminInvites', targetEmail)).catch(() => {});
+    }
+    const auditId = genId('audit');
+    await setDoc(doc(db, 'auditLogs', auditId), {
+      id: auditId,
+      actorId: actor.uid,
+      actorRole: actor.role,
+      action: isCashierRole(input.target.role) ? 'CASHIER_USER_DELETED' : 'ADMIN_USER_DELETED',
+      targetType: 'admin',
+      targetId: input.target.uid,
+      before: {
+        email: targetEmail,
+        fullName: input.target.fullName,
+        role: input.target.role,
+        branchScope: input.target.branchScope,
+        cashierCode: input.target.cashierCode ?? null,
+        active: input.target.active,
+      },
+      after: { deleted: true, hardDeleted: true },
+      metadata: {
+        reason: (input.reason || 'Penghapusan permanen operator oleh Super Admin').trim().slice(0, 240),
+      },
+      timestamp: now,
+    });
+    return { uid: input.target.uid, email: targetEmail, hardDeleted: true };
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `admins/${input.target.uid}`);
   }
 }
 
@@ -2301,11 +2795,11 @@ export interface ProvisionOperatorResult {
 }
 
 /**
- * Zero-UID operator creation for Super Admin:
+ * Zero-UID, Zero-Email-Verification operator creation for Super Admin:
  * - DIRECT_CREATE: Provisions real Firebase Auth account using an isolated secondary Firebase App
- *   (keeping Super Admin signed in), sends verification email, captures the UID automatically,
- *   and saves admins/{uid}. If the email already exists in Firebase Auth, seamlessly falls back
- *   to an email-based authorization invite (adminInvites/{email}) claimed automatically on login.
+ *   (keeping Super Admin signed in), captures the UID automatically, and saves admins/{uid}.
+ *   Operator can log in IMMEDIATELY without email verification! If the email already exists in
+ *   Firebase Auth, seamlessly falls back to adminInvites/{email}.
  * - EMAIL_INVITE: Creates adminInvites/{email} directly so the operator creates their own password
  *   at /cashier/login or /admin/login and activates automatically once email is verified.
  */
@@ -2372,7 +2866,6 @@ export async function provisionOperatorAccountBySuperAdmin(
   try {
     const cred = await createUserWithEmailAndPassword(secondaryAuth, normalizedEmail, rawPassword);
     await updateProfile(cred.user, { displayName: cleanName }).catch(() => {});
-    await sendEmailVerification(cred.user).catch(() => {});
     const newUid = cred.user.uid;
     await signOut(secondaryAuth).catch(() => {});
 
@@ -4183,8 +4676,9 @@ export async function submitBenefitRequestForMember(input: {
     }
 
     title = camp.title;
-    xpCost = 0;
-    xpRewardGrant = Math.max(0, Math.floor(camp.xpReward || 0));
+    const econ = resolveCampaignBenefitRequestEconomics(camp);
+    xpCost = econ.xpCost;
+    xpRewardGrant = econ.xpRewardGrant;
     levelRequirement = 'BRONZE';
   } else {
     const benefit = input.benefit;
@@ -4297,7 +4791,7 @@ export async function submitBenefitRequestForMember(input: {
           cycleId: freshMember.currentCycleId,
           createdAt: now,
           createdBy: freshMember.uid,
-          note: `XP Ditahan (Hold) untuk Benefit Request: ${title}`,
+          note: `XP Ditahan (Hold) untuk ${input.sourceType === 'PROMO' ? 'Klaim Promo' : 'Benefit Request'}: ${title}`,
         });
       }
 
@@ -6042,8 +6536,9 @@ export async function submitAssistedBenefitRequestByCashier(input: {
           throw new Error('Program tidak aktif, kadaluarsa, atau kuota penuh.');
         }
         title = camp.title;
-        xpCost = 0;
-        xpRewardGrant = Math.max(0, Math.floor(camp.xpReward || 0));
+        const econ = resolveCampaignBenefitRequestEconomics(camp);
+        xpCost = econ.xpCost;
+        xpRewardGrant = econ.xpRewardGrant;
       } else {
         const benSnap = await tx.get(doc(db, 'benefits', input.sourceId));
         if (!benSnap.exists()) throw new Error('Benefit tidak ditemukan.');

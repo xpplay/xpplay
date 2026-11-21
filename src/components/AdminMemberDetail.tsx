@@ -9,6 +9,7 @@ import {
   KeyRound,
   RefreshCw,
   SlidersHorizontal,
+  Trash2,
   Trophy,
   User,
   Users,
@@ -71,6 +72,7 @@ interface AdminMemberDetailProps {
   onJumpToXpAdjustment: (member: MemberProfile) => void;
   onJumpToLevelOverride: (member: MemberProfile) => void;
   onJumpToPassword: (member: MemberProfile) => void;
+  onRequestHardDelete?: (member: MemberProfile) => void;
 }
 
 export function AdminMemberDetail({
@@ -84,6 +86,7 @@ export function AdminMemberDetail({
   onJumpToXpAdjustment,
   onJumpToLevelOverride,
   onJumpToPassword,
+  onRequestHardDelete,
 }: AdminMemberDetailProps) {
   const [tab, setTab] = useState<DetailTab>('PROFILE');
   const [bundle, setBundle] = useState<MemberDetailBundle | null>(null);
@@ -445,6 +448,20 @@ export function AdminMemberDetail({
                           className="min-h-[40px] px-3.5 py-2 rounded-xl bg-amber-600 text-xs font-semibold text-white disabled:opacity-50"
                         >
                           Suspend Akun
+                        </button>
+                      )}
+                      {canManageCatalog && onRequestHardDelete && (
+                        <button
+                          type="button"
+                          disabled={busy || restoreLocked}
+                          onClick={() => {
+                            onClose();
+                            onRequestHardDelete(m);
+                          }}
+                          className="min-h-[40px] px-3.5 py-2 rounded-xl border border-rose-500/40 bg-rose-500/10 hover:bg-rose-500/20 text-xs font-semibold text-rose-300 inline-flex items-center gap-1.5 disabled:opacity-50 whitespace-nowrap"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Hapus Permanen</span>
                         </button>
                       )}
                     </div>

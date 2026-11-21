@@ -211,78 +211,78 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const email = (user.email || '').toLowerCase();
       const isBootstrapAdmin = user.emailVerified && BOOTSTRAP_SUPER_ADMINS.includes(email);
 
-      // Load admin profile (requires verified email for admin RBAC security)
+      // Load admin/cashier profile:
+      // 1) UID-bound admins/{uid} created directly by Super Admin works immediately without email verification.
+      // 2) Email-based bootstrap (spv.xpplay@gmail.com) & adminInvites/{email} auto-claim still require verified email.
       let resolvedAdmin: AdminUser | null = null;
-      if (user.emailVerified) {
-        try {
-          const adminSnap = await getDoc(doc(db, 'admins', user.uid));
-          if (adminSnap.exists()) {
-            const data = adminSnap.data() as AdminUser;
-            if (data.active) {
-              resolvedAdmin = data;
-            }
-          } else if (isBootstrapAdmin) {
-            const now = Date.now();
-            const newAdmin: AdminUser = {
-              uid: user.uid,
-              email,
-              fullName: user.displayName || 'Super Admin XP PLAY',
-              role: 'SUPER_ADMIN',
-              branchScope: 'ALL',
-              branchId: null,
-              cashierCode: null,
-              permissions: getDefaultPermissionsForRole('SUPER_ADMIN'),
-              active: true,
-              createdAt: now,
-              updatedAt: now,
-            };
-            await setDoc(doc(db, 'admins', user.uid), newAdmin);
-            resolvedAdmin = newAdmin;
-          } else if (email) {
-            // Auto-claim email-based Super Admin authorization invite (zero manual UID workflow)
-            try {
-              const inviteRef = doc(db, 'adminInvites', email);
-              const inviteSnap = await getDoc(inviteRef);
-              if (inviteSnap.exists()) {
-                const invite = inviteSnap.data() as AdminInviteRecord;
-                if (invite.status === 'PENDING' && invite.active) {
-                  const now = Date.now();
-                  const claimedAdmin: AdminUser = {
-                    uid: user.uid,
-                    email,
-                    fullName: invite.fullName || user.displayName || 'Operator XP PLAY',
-                    role: invite.role,
-                    branchScope: invite.branchScope,
-                    branchId: invite.branchId ?? (invite.branchScope !== 'ALL' ? invite.branchScope : null),
-                    cashierCode: invite.cashierCode ?? null,
-                    permissions: getDefaultPermissionsForRole(invite.role),
-                    active: true,
-                    createdAt: now,
-                    updatedAt: now,
-                  };
-                  const batch = writeBatch(db);
-                  batch.set(doc(db, 'admins', user.uid), claimedAdmin);
-                  batch.update(inviteRef, {
-                    status: 'CLAIMED',
-                    claimedByUid: user.uid,
-                    claimedAt: now,
-                    updatedAt: now,
-                  });
-                  await batch.commit();
-                  resolvedAdmin = claimedAdmin;
-                }
+      try {
+        const adminSnap = await getDoc(doc(db, 'admins', user.uid));
+        if (adminSnap.exists()) {
+          const data = adminSnap.data() as AdminUser;
+          if (data.active) {
+            resolvedAdmin = data;
+          }
+        } else if (user.emailVerified && isBootstrapAdmin) {
+          const now = Date.now();
+          const newAdmin: AdminUser = {
+            uid: user.uid,
+            email,
+            fullName: user.displayName || 'Super Admin XP PLAY',
+            role: 'SUPER_ADMIN',
+            branchScope: 'ALL',
+            branchId: null,
+            cashierCode: null,
+            permissions: getDefaultPermissionsForRole('SUPER_ADMIN'),
+            active: true,
+            createdAt: now,
+            updatedAt: now,
+          };
+          await setDoc(doc(db, 'admins', user.uid), newAdmin);
+          resolvedAdmin = newAdmin;
+        } else if (user.emailVerified && email) {
+          // Auto-claim email-based Super Admin authorization invite (zero manual UID workflow)
+          try {
+            const inviteRef = doc(db, 'adminInvites', email);
+            const inviteSnap = await getDoc(inviteRef);
+            if (inviteSnap.exists()) {
+              const invite = inviteSnap.data() as AdminInviteRecord;
+              if (invite.status === 'PENDING' && invite.active) {
+                const now = Date.now();
+                const claimedAdmin: AdminUser = {
+                  uid: user.uid,
+                  email,
+                  fullName: invite.fullName || user.displayName || 'Operator XP PLAY',
+                  role: invite.role,
+                  branchScope: invite.branchScope,
+                  branchId: invite.branchId ?? (invite.branchScope !== 'ALL' ? invite.branchScope : null),
+                  cashierCode: invite.cashierCode ?? null,
+                  permissions: getDefaultPermissionsForRole(invite.role),
+                  active: true,
+                  createdAt: now,
+                  updatedAt: now,
+                };
+                const batch = writeBatch(db);
+                batch.set(doc(db, 'admins', user.uid), claimedAdmin);
+                batch.update(inviteRef, {
+                  status: 'CLAIMED',
+                  claimedByUid: user.uid,
+                  claimedAt: now,
+                  updatedAt: now,
+                });
+                await batch.commit();
+                resolvedAdmin = claimedAdmin;
               }
-            } catch {
-              // No pending invite or not eligible
             }
+          } catch {
+            // No pending invite or not eligible
           }
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : '';
-          if (isBootstrapAdmin) {
-            console.error('Bootstrap admin initialization failed:', msg);
-          } else if (!msg.includes('permission-denied') && !msg.includes('insufficient permissions')) {
-            console.warn('Admin check warning:', msg);
-          }
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : '';
+        if (isBootstrapAdmin) {
+          console.error('Bootstrap admin initialization failed:', msg);
+        } else if (!msg.includes('permission-denied') && !msg.includes('insufficient permissions')) {
+          console.warn('Admin check warning:', msg);
         }
       }
 

@@ -49,11 +49,12 @@ service cloud.firestore {
     }
 
     // Strictly ADMIN and SUPER_ADMIN (NEVER includes CASHIER / STAFF)
+    // UID-bound admins/{uid} docs are explicitly created/authorized by Super Admin (no email verification required),
+    // while email-based bootstrap (spv.xpplay@gmail.com) and invite claiming strictly retain isVerifiedEmailUser().
     function isAdmin() {
       return isBootstrappedSuperAdmin()
         || (
-          isVerifiedEmailUser()
-          && adminDocExists()
+          adminDocExists()
           && adminData().active == true
           && adminData().role in ['SUPER_ADMIN', 'ADMIN']
         );
@@ -70,8 +71,7 @@ service cloud.firestore {
 
     // Branch-isolated CASHIER (and legacy STAFF alias) — MUST have fixed branchScope DEMANG or SEKIP
     function isCashier() {
-      return isVerifiedEmailUser()
-        && adminDocExists()
+      return adminDocExists()
         && adminData().active == true
         && adminData().role in ['CASHIER', 'STAFF']
         && adminData().branchScope in ['DEMANG', 'SEKIP'];
@@ -445,7 +445,7 @@ service cloud.firestore {
         && data.startAt is int
         && data.endAt is int
         && data.endAt >= data.startAt
-        && data.xpReward is int && data.xpReward >= 1 && data.xpReward <= 100000
+        && data.xpReward is int && ((data.type == 'PROMO' && data.xpReward >= 0) || (data.type in ['CHALLENGE', 'EVENT'] && data.xpReward >= 1)) && data.xpReward <= 100000
         && data.imageUrl is string && data.imageUrl.size() <= 500
         && data.terms is string && data.terms.size() <= 600
         && data.maxClaimsPerMember is int && data.maxClaimsPerMember >= 1 && data.maxClaimsPerMember <= 100
@@ -1058,8 +1058,24 @@ service cloud.firestore {
           && getAfter(/databases/$(database)/documents/adminInvites/$(request.auth.token.email.lower())).data.claimedByUid == request.auth.uid
         )
       );
-      allow update: if isSuperAdmin() && isValidId(uid) && isValidAdminUser(incoming()) && incoming().uid == uid;
-      allow delete: if isSuperAdminRestoring() && isValidId(uid) && uid != request.auth.uid;
+      allow update: if isSignedIn()
+        && isValidId(uid)
+        && isValidAdminUser(incoming())
+        && incoming().uid == uid
+        && (
+          isSuperAdminRestoring() || (
+            isSuperAdmin()
+            && !isSystemRestoreLocked()
+            && incoming().email == existing().email
+            && incoming().createdAt == existing().createdAt
+            && (uid != request.auth.uid || (incoming().role == 'SUPER_ADMIN' && incoming().active == true))
+          )
+        );
+      allow delete: if isSignedIn()
+        && isValidId(uid)
+        && uid != request.auth.uid
+        && existing().email != 'spv.xpplay@gmail.com'
+        && (isSuperAdminRestoring() || (isSuperAdmin() && !isSystemRestoreLocked()));
     }
 
     // ---------- Email-Based Operator Authorization Invites (Zero Manual UID Workflow) ----------
@@ -1093,11 +1109,12 @@ service cloud.firestore {
       allow delete: if isValidInviteEmail(inviteEmail) && isSuperAdmin();
     }
 
-    // ---------- Internal Identity Mapping (Super Admin Backup/Restore Only) ----------
+    // ---------- Internal Identity Mapping (Super Admin Backup/Restore + Admin Member Hard-Delete Cleanup) ----------
     match /identityIndex/{indexKey} {
       allow get: if isValidId(indexKey) && isSuperAdmin();
       allow list: if isSuperAdmin();
-      allow create, update, delete: if isSuperAdminRestoring() && isValidId(indexKey);
+      allow create, update: if isSuperAdminRestoring() && isValidId(indexKey);
+      allow delete: if isValidId(indexKey) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     // ---------- Zero-PII Hashed Auth Lookup (Get by Exact SHA-256 Only; List Super Admin Backup Only) ----------
@@ -1113,7 +1130,7 @@ service cloud.firestore {
         )
       );
       allow update: if isSuperAdminRestoring() && isValidAuthIndexHash(hashId) && isValidAuthIndex(incoming());
-      allow delete: if isSuperAdminRestoring() && isValidAuthIndexHash(hashId);
+      allow delete: if isValidAuthIndexHash(hashId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     // ---------- Two-Step Onboarding Zero-PII Status & Cryptographic Verifications ----------
@@ -1135,7 +1152,7 @@ service cloud.firestore {
           )
         ))
       );
-      allow delete: if isSuperAdminRestoring() && isValidWhatsappHash(wHash);
+      allow delete: if isValidWhatsappHash(wHash) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     match /onboardingVerifications/{wHash} {
@@ -1154,7 +1171,7 @@ service cloud.firestore {
           )
         ))
       );
-      allow delete: if isSuperAdminRestoring() && isValidWhatsappHash(wHash);
+      allow delete: if isValidWhatsappHash(wHash) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     // ---------- Members Collection (Two-Step Registration + Cashier Branch Isolation) ----------
@@ -1271,11 +1288,10 @@ service cloud.firestore {
             && (!('levelMode' in incoming()) || incoming().levelMode == ('levelMode' in existing() ? existing().levelMode : 'AUTOMATIC'))
             && (
               (
-                ('reservedXp' in existing())
-                && incoming().reservedXp <= existing().reservedXp
+                incoming().reservedXp <= ('reservedXp' in existing() ? existing().reservedXp : 0)
                 && incoming().xpProgress == existing().xpProgress
                 && incoming().xpReward >= existing().xpReward
-                && (incoming().xpReward - existing().xpReward) <= (existing().reservedXp - incoming().reservedXp)
+                && (incoming().xpReward - existing().xpReward) <= (('reservedXp' in existing() ? existing().reservedXp : 0) - incoming().reservedXp)
               ) || (
                 incoming().xpProgress > existing().xpProgress
                 && (incoming().xpProgress - existing().xpProgress) == (incoming().xpReward - existing().xpReward)
@@ -1346,7 +1362,7 @@ service cloud.firestore {
           )
         ))
       );
-      allow delete: if isSuperAdminRestoring() && isValidId(uid);
+      allow delete: if isValidId(uid) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     // ---------- Immutable Ledgers & Transactions ----------
@@ -1394,7 +1410,8 @@ service cloud.firestore {
           )
         ))
       );
-      allow update, delete: if isSuperAdminRestoring() && isValidId(entryId);
+      allow update: if isSuperAdminRestoring() && isValidId(entryId);
+      allow delete: if isValidId(entryId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     match /xpRewardLedger/{entryId} {
@@ -1453,7 +1470,8 @@ service cloud.firestore {
           )
         ))
       );
-      allow update, delete: if isSuperAdminRestoring() && isValidId(entryId);
+      allow update: if isSuperAdminRestoring() && isValidId(entryId);
+      allow delete: if isValidId(entryId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     match /transactions/{transactionId} {
@@ -1475,7 +1493,8 @@ service cloud.firestore {
           )
         ))
       );
-      allow update, delete: if isSuperAdminRestoring() && isValidId(transactionId);
+      allow update: if isSuperAdminRestoring() && isValidId(transactionId);
+      allow delete: if isValidId(transactionId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     match /referrals/{referralId} {
@@ -1499,7 +1518,8 @@ service cloud.firestore {
           )
         ))
       );
-      allow update, delete: if isSuperAdminRestoring() && isValidId(referralId);
+      allow update: if isSuperAdminRestoring() && isValidId(referralId);
+      allow delete: if isValidId(referralId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     match /levelHistory/{historyId} {
@@ -1511,7 +1531,8 @@ service cloud.firestore {
           || (isCashier() && incoming().source in ['TRANSACTION', 'CHALLENGE', 'EVENT', 'PROMO'])
         ))
       );
-      allow update, delete: if isSuperAdminRestoring() && isValidId(historyId);
+      allow update: if isSuperAdminRestoring() && isValidId(historyId);
+      allow delete: if isValidId(historyId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     // ---------- Benefits & Campaigns (CRUD STRICTLY ADMIN/SUPER_ADMIN ONLY; Cashier Read + Atomic Stock/Claim Counter Only) ----------
@@ -1530,7 +1551,7 @@ service cloud.firestore {
           )
         ))
       );
-      allow delete: if isSuperAdminRestoring() && isValidId(benefitId);
+      allow delete: if isValidId(benefitId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     match /campaigns/{campaignId} {
@@ -1547,7 +1568,7 @@ service cloud.firestore {
           )
         ))
       );
-      allow delete: if isSuperAdminRestoring() && isValidId(campaignId);
+      allow delete: if isValidId(campaignId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     // ---------- Legacy Claims & Redemptions ----------
@@ -1579,7 +1600,7 @@ service cloud.firestore {
           && incoming().createdAt == existing().createdAt
         )
       );
-      allow delete: if isSuperAdminRestoring() && isValidId(claimId);
+      allow delete: if isValidId(claimId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     match /redemptions/{redemptionId} {
@@ -1610,7 +1631,7 @@ service cloud.firestore {
           && incoming().createdAt == existing().createdAt
         )
       );
-      allow delete: if isSuperAdminRestoring() && isValidId(redemptionId);
+      allow delete: if isValidId(redemptionId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     // ---------- Unified Benefit Requests (XP Hold, 7-Day Validity, Cashier Assisted + Branch Isolation, Auto-Refund) ----------
@@ -1671,12 +1692,33 @@ service cloud.firestore {
             && incoming().refundedAmount == 0
             && (
               (
-                incoming().sourceType in ['CHALLENGE', 'EVENT', 'PROMO']
+                incoming().sourceType in ['CHALLENGE', 'EVENT']
                 && exists(/databases/$(database)/documents/campaigns/$(incoming().sourceId))
                 && get(/databases/$(database)/documents/campaigns/$(incoming().sourceId)).data.active == true
+                && get(/databases/$(database)/documents/campaigns/$(incoming().sourceId)).data.type == incoming().sourceType
                 && incoming().xpCost == 0
                 && incoming().xpRewardGrant == get(/databases/$(database)/documents/campaigns/$(incoming().sourceId)).data.xpReward
                 && incoming().holdLedgerId == null
+              ) || (
+                incoming().sourceType == 'PROMO'
+                && exists(/databases/$(database)/documents/campaigns/$(incoming().sourceId))
+                && get(/databases/$(database)/documents/campaigns/$(incoming().sourceId)).data.active == true
+                && get(/databases/$(database)/documents/campaigns/$(incoming().sourceId)).data.type == 'PROMO'
+                && incoming().xpCost == get(/databases/$(database)/documents/campaigns/$(incoming().sourceId)).data.xpReward
+                && incoming().xpRewardGrant == 0
+                && (
+                  (incoming().xpCost == 0 && incoming().holdLedgerId == null) || (
+                    incoming().xpCost > 0
+                    && incoming().holdLedgerId is string
+                    && existsAfter(/databases/$(database)/documents/xpRewardLedger/$(incoming().holdLedgerId))
+                    && getAfter(/databases/$(database)/documents/members/$(request.auth.uid)).data.xpReward
+                       == get(/databases/$(database)/documents/members/$(request.auth.uid)).data.xpReward - incoming().xpCost
+                    && getAfter(/databases/$(database)/documents/members/$(request.auth.uid)).data.reservedXp
+                       == (('reservedXp' in get(/databases/$(database)/documents/members/$(request.auth.uid)).data
+                          ? get(/databases/$(database)/documents/members/$(request.auth.uid)).data.reservedXp
+                          : 0) + incoming().xpCost)
+                  )
+                )
               ) || (
                 incoming().sourceType in ['GENERAL_BENEFIT', 'LEVEL_BENEFIT']
                 && exists(/databases/$(database)/documents/benefits/$(incoming().sourceId))
@@ -1726,7 +1768,7 @@ service cloud.firestore {
           )
         )
       );
-      allow delete: if isSuperAdminRestoring() && isValidId(requestId);
+      allow delete: if isValidId(requestId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     // ---------- Notifications ----------
@@ -1756,7 +1798,7 @@ service cloud.firestore {
         ))
       );
       allow update: if isValidId(notificationId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
-      allow delete: if isSuperAdminRestoring() && isValidId(notificationId);
+      allow delete: if isValidId(notificationId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     match /memberNotifications/{notificationId} {
@@ -1781,7 +1823,7 @@ service cloud.firestore {
           )
         ))
       );
-      allow delete: if isSuperAdminRestoring() && isValidId(notificationId);
+      allow delete: if isValidId(notificationId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     // ---------- Membership Cycles & Snapshots ----------
@@ -1796,7 +1838,8 @@ service cloud.firestore {
       allow get: if isValidId(snapshotId) && (isFullAdminOrSuper() || (isSignedIn() && existing().memberUid == request.auth.uid));
       allow list: if isFullAdminOrSuper() || (isSignedIn() && resource.data.memberUid == request.auth.uid);
       allow create: if isSuperAdmin() && isValidId(snapshotId);
-      allow update, delete: if isSuperAdminRestoring() && isValidId(snapshotId);
+      allow update: if isSuperAdminRestoring() && isValidId(snapshotId);
+      allow delete: if isValidId(snapshotId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     // ---------- Immutable Audit Logs (NEVER Deleted or Overwritten; Cashier Cannot Read Audit Logs) ----------
@@ -1873,7 +1916,7 @@ service cloud.firestore {
         )
       );
       allow update: if isSuperAdminRestoring() && isValidId(adjustmentId) && isValidXpAdjustment(incoming()) && incoming().id == adjustmentId;
-      allow delete: if isSuperAdminRestoring() && isValidId(adjustmentId);
+      allow delete: if isValidId(adjustmentId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     // ---------- Immutable Admin Level Override & Recalculate Records (STRICTLY ADMIN / SUPER_ADMIN; Cashier DENIED) ----------
@@ -1889,7 +1932,7 @@ service cloud.firestore {
         )
       );
       allow update: if isSuperAdminRestoring() && isValidId(overrideId) && isValidLevelOverride(incoming()) && incoming().id == overrideId;
-      allow delete: if isSuperAdminRestoring() && isValidId(overrideId);
+      allow delete: if isValidId(overrideId) && (isSuperAdminRestoring() || (isFullAdminOrSuper() && !isSystemRestoreLocked()));
     }
 
     // ---------- Protected System Collections: Backups, Restore Jobs & System Operations (SUPER_ADMIN ONLY) ----------

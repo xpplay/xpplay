@@ -26,6 +26,7 @@ import {
   computeBenefitExpiry,
   computeBenefitHoldBalances,
   computeBenefitMarkUsed,
+  resolveCampaignBenefitRequestEconomics,
   validateBirthDate,
   validateMemberCategory,
 } from '../../shared/benefitRequestLogic.ts';
@@ -1153,13 +1154,28 @@ export async function reviewClaimServer(input: {
       });
     }
 
-    const xpAward = claim.xpRewardSnapshot;
-    const newProgress = member.xpProgress + xpAward;
-    const newReward = member.xpReward + xpAward;
+    const xpAmount = Math.max(0, Math.floor(claim.xpRewardSnapshot || 0));
+    const isPromoClaim = claim.campaignType === 'PROMO';
     const isManualOverride = member.levelMode === 'MANUAL_OVERRIDE';
-    const levelEval = resolveLevelFromXp(newProgress, levels);
-    const nextLevel: LevelId = isManualOverride ? member.currentLevel : levelEval.current.id;
+
+    let newProgress = member.xpProgress;
+    let newReward = member.xpReward;
+    let nextLevel: LevelId = member.currentLevel;
     const nextLevelMode: LevelMode = isManualOverride ? 'MANUAL_OVERRIDE' : 'AUTOMATIC';
+
+    if (isPromoClaim) {
+      if (member.xpReward < xpAmount) {
+        throw new Error(
+          `XP Reward member (${member.xpReward} XP) tidak mencukupi untuk klaim promo ini (butuh ${xpAmount} XP).`
+        );
+      }
+      newReward = member.xpReward - xpAmount;
+    } else {
+      newProgress = member.xpProgress + xpAmount;
+      newReward = member.xpReward + xpAmount;
+      const levelEval = resolveLevelFromXp(newProgress, levels);
+      nextLevel = isManualOverride ? member.currentLevel : levelEval.current.id;
+    }
 
     tx.update(claimRef, {
       status: 'APPROVED',
@@ -1177,40 +1193,61 @@ export async function reviewClaimServer(input: {
       updatedAt: now,
     });
 
-    const progId = generateDocId('xpp');
-    const rewId = generateDocId('xpr');
-    tx.set(db.collection('xpProgressLedger').doc(progId), {
-      id: progId,
-      memberId: member.memberId,
-      memberUid: member.uid,
-      amount: xpAward,
-      type: 'PROGRESS',
-      direction: 'CREDIT',
-      source: claim.campaignType,
-      referenceId: claim.id,
-      branch: null,
-      cycleId: settings.currentCycleId,
-      createdAt: now,
-      createdBy: input.adminUid,
-      note: `Claim disetujui: ${claim.campaignTitle}`,
-    });
-    tx.set(db.collection('xpRewardLedger').doc(rewId), {
-      id: rewId,
-      memberId: member.memberId,
-      memberUid: member.uid,
-      amount: xpAward,
-      type: 'REWARD',
-      direction: 'CREDIT',
-      source: claim.campaignType,
-      referenceId: claim.id,
-      branch: null,
-      cycleId: settings.currentCycleId,
-      createdAt: now,
-      createdBy: input.adminUid,
-      note: `Claim disetujui: ${claim.campaignTitle}`,
-    });
+    if (isPromoClaim) {
+      if (xpAmount > 0) {
+        const rewId = generateDocId('xpr');
+        tx.set(db.collection('xpRewardLedger').doc(rewId), {
+          id: rewId,
+          memberId: member.memberId,
+          memberUid: member.uid,
+          amount: -xpAmount,
+          type: 'REWARD',
+          direction: 'DEBIT',
+          source: 'PROMO',
+          referenceId: claim.id,
+          branch: null,
+          cycleId: settings.currentCycleId,
+          createdAt: now,
+          createdBy: input.adminUid,
+          note: `Promo disetujui (-${xpAmount} XP): ${claim.campaignTitle}`,
+        });
+      }
+    } else {
+      const progId = generateDocId('xpp');
+      const rewId = generateDocId('xpr');
+      tx.set(db.collection('xpProgressLedger').doc(progId), {
+        id: progId,
+        memberId: member.memberId,
+        memberUid: member.uid,
+        amount: xpAmount,
+        type: 'PROGRESS',
+        direction: 'CREDIT',
+        source: claim.campaignType,
+        referenceId: claim.id,
+        branch: null,
+        cycleId: settings.currentCycleId,
+        createdAt: now,
+        createdBy: input.adminUid,
+        note: `Claim disetujui: ${claim.campaignTitle}`,
+      });
+      tx.set(db.collection('xpRewardLedger').doc(rewId), {
+        id: rewId,
+        memberId: member.memberId,
+        memberUid: member.uid,
+        amount: xpAmount,
+        type: 'REWARD',
+        direction: 'CREDIT',
+        source: claim.campaignType,
+        referenceId: claim.id,
+        branch: null,
+        cycleId: settings.currentCycleId,
+        createdAt: now,
+        createdBy: input.adminUid,
+        note: `Claim disetujui: ${claim.campaignTitle}`,
+      });
+    }
 
-    if (!isManualOverride && nextLevel !== member.currentLevel) {
+    if (!isPromoClaim && !isManualOverride && nextLevel !== member.currentLevel) {
       const lhId = generateDocId('lvl');
       tx.set(db.collection('levelHistory').doc(lhId), {
         id: lhId,
@@ -1232,8 +1269,12 @@ export async function reviewClaimServer(input: {
       memberUid: member.uid,
       notificationCampaignId: null,
       category: 'CLAIM',
-      title: `Claim Disetujui (+${xpAward} XP)`,
-      message: `Claim "${claim.campaignTitle}" disetujui. XP Progress dan XP Reward Anda bertambah ${xpAward} XP.`,
+      title: isPromoClaim
+        ? `Promo Disetujui (-${xpAmount} XP)`
+        : `Claim Disetujui (+${xpAmount} XP)`,
+      message: isPromoClaim
+        ? `Promo "${claim.campaignTitle}" disetujui. Saldo XP Reward Anda terpotong ${xpAmount} XP (sisa ${newReward} XP).`
+        : `Claim "${claim.campaignTitle}" disetujui. XP Progress dan XP Reward Anda bertambah ${xpAmount} XP.`,
       read: false,
       readAt: null,
       status: 'SENT',
@@ -1255,7 +1296,7 @@ export async function reviewClaimServer(input: {
       timestamp: now,
     });
 
-    return { status: 'APPROVED', xpAward, newProgress, newReward };
+    return { status: 'APPROVED', xpAward: isPromoClaim ? -xpAmount : xpAmount, newProgress, newReward };
   });
 }
 
@@ -2308,8 +2349,9 @@ export async function submitBenefitRequestServer(input: {
       }
 
       title = camp.title;
-      xpCost = 0;
-      xpRewardGrant = Math.max(0, Math.floor(camp.xpReward || 0));
+      const econ = resolveCampaignBenefitRequestEconomics(camp);
+      xpCost = econ.xpCost;
+      xpRewardGrant = econ.xpRewardGrant;
       levelRequirement = 'BRONZE';
     } else {
       const benSnap = await tx.get(db.collection('benefits').doc(input.sourceId));

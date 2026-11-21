@@ -23,6 +23,7 @@ import {
   LogOut,
   MailPlus,
   Menu,
+  Pencil,
   RefreshCw,
   Shield,
   Sliders,
@@ -55,6 +56,11 @@ import {
   createAndDispatchNotificationByAdmin,
   createMemberByAdmin,
   deleteAdminInviteBySuperAdmin,
+  deleteBenefitByAdmin,
+  deleteCampaignByAdmin,
+  deleteMemberPermanentlyByAdmin,
+  deleteNotificationCampaignByAdmin,
+  deleteOperatorAccountBySuperAdmin,
   executeCycleResetByAdmin,
   fetchAdminInvitesBySuperAdmin,
   fetchAdminSummaryMetrics,
@@ -71,6 +77,7 @@ import {
   saveSystemSettingsByAdmin,
   updateMemberDetailsByAdmin,
   updateMemberStatusByAdmin,
+  updateOperatorPasswordBySuperAdmin,
   upsertAdminUserBySuperAdmin,
   upsertBenefitByAdmin,
   upsertBranchByAdmin,
@@ -289,7 +296,13 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
   const [denyReason, setDenyReason] = useState('');
 
   // Forms: Benefit CRUD
-  const [benefitOriginalMeta, setBenefitOriginalMeta] = useState<{ createdAt: number; createdBy: string } | null>(null);
+  const benefitFormRef = useRef<HTMLFormElement | null>(null);
+  const [benefitOriginalMeta, setBenefitOriginalMeta] = useState<{
+    createdAt: number;
+    createdBy: string;
+    imageUrl: string;
+    expiryAt: number | null;
+  } | null>(null);
   const [benefitForm, setBenefitForm] = useState({
     id: '',
     name: '',
@@ -304,26 +317,28 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
   });
 
   // Forms: Campaign CRUD (Challenge / Event / Promo)
+  const campaignFormRef = useRef<HTMLFormElement | null>(null);
   const [campaignOriginalMeta, setCampaignOriginalMeta] = useState<{
     createdAt: number;
     createdBy: string;
     claimsCount: number;
+    imageUrl: string;
   } | null>(null);
-  const makeDefaultCampaignForm = () => ({
+  const makeDefaultCampaignForm = (type?: CampaignType) => ({
     id: '',
     title: '',
     description: '',
-    xpReward: '25',
+    xpReward: type === 'PROMO' ? '50' : '25',
     startAt: formatDateTimeLocalInput(Date.now()),
     endAt: formatDateTimeLocalInput(Date.now() + 7 * 24 * 60 * 60 * 1000),
     terms: '',
     maxClaimsPerMember: '1',
     totalClaimLimit: '',
-    requiresEvidence: true,
+    requiresEvidence: type !== 'PROMO',
     status: 'ACTIVE' as CampaignStatus,
     active: true,
   });
-  const [campaignForm, setCampaignForm] = useState(makeDefaultCampaignForm);
+  const [campaignForm, setCampaignForm] = useState(() => makeDefaultCampaignForm());
 
   // Forms: Notification & Inactivity
   const [notifForm, setNotifForm] = useState({
@@ -347,6 +362,31 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
   const [loadingInvites, setLoadingInvites] = useState(false);
   const [lastProvisionResult, setLastProvisionResult] = useState<ProvisionOperatorResult | null>(null);
   const [copiedPortalLink, setCopiedPortalLink] = useState<string | null>(null);
+  const [passwordModalOperator, setPasswordModalOperator] = useState<AdminUser | null>(null);
+  const [operatorPwdForm, setOperatorPwdForm] = useState({
+    mode: 'RESET_EMAIL' as 'RESET_EMAIL' | 'DIRECT_UPDATE',
+    newPassword: '',
+    confirmPassword: '',
+    reason: '',
+    showPasswords: false,
+    submitting: false,
+    error: '',
+  });
+  const [deleteModalOperator, setDeleteModalOperator] = useState<AdminUser | null>(null);
+  const [operatorDeleteForm, setOperatorDeleteForm] = useState({
+    reason: '',
+    submitting: false,
+    error: '',
+  });
+  const [hardDeleteTarget, setHardDeleteTarget] = useState<
+    | { kind: 'member'; item: MemberProfile }
+    | { kind: 'benefit'; item: BenefitItem }
+    | { kind: 'campaign'; item: CampaignItem }
+    | { kind: 'notification'; item: NotificationCampaign }
+    | null
+  >(null);
+  const [hardDeleteReason, setHardDeleteReason] = useState('');
+  const [hardDeleteBusy, setHardDeleteBusy] = useState(false);
   const [adminForm, setAdminForm] = useState({
     uid: '',
     email: '',
@@ -359,6 +399,161 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
     cashierCode: '',
     active: true,
   });
+
+  const openOperatorEdit = (a: AdminUser) => {
+    setLastProvisionResult(null);
+    setAdminOriginalCreatedAt(a.createdAt);
+    setAdminForm({
+      uid: a.uid,
+      email: a.email,
+      fullName: a.fullName,
+      password: '',
+      createMode: 'DIRECT_CREATE',
+      showPassword: false,
+      role: a.role,
+      branchScope: a.branchScope,
+      cashierCode: a.cashierCode || '',
+      active: a.active,
+    });
+    document
+      .getElementById('operator-management-form')
+      ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+
+  const openOperatorPasswordModal = (a: AdminUser) => {
+    const isSelfAccount = a.uid === adminProfile?.uid;
+    setPasswordModalOperator(a);
+    setOperatorPwdForm({
+      mode: isSelfAccount ? 'DIRECT_UPDATE' : 'RESET_EMAIL',
+      newPassword: '',
+      confirmPassword: '',
+      reason: '',
+      showPasswords: false,
+      submitting: false,
+      error: '',
+    });
+  };
+
+  const closeOperatorPasswordModal = () => {
+    setPasswordModalOperator(null);
+    setOperatorPwdForm({
+      mode: 'RESET_EMAIL',
+      newPassword: '',
+      confirmPassword: '',
+      reason: '',
+      showPasswords: false,
+      submitting: false,
+      error: '',
+    });
+  };
+
+  const openOperatorDeleteModal = (a: AdminUser) => {
+    setDeleteModalOperator(a);
+    setOperatorDeleteForm({
+      reason: '',
+      submitting: false,
+      error: '',
+    });
+  };
+
+  const closeOperatorDeleteModal = () => {
+    setDeleteModalOperator(null);
+    setOperatorDeleteForm({
+      reason: '',
+      submitting: false,
+      error: '',
+    });
+  };
+
+  const openHardDeleteModal = (
+    target:
+      | { kind: 'member'; item: MemberProfile }
+      | { kind: 'benefit'; item: BenefitItem }
+      | { kind: 'campaign'; item: CampaignItem }
+      | { kind: 'notification'; item: NotificationCampaign }
+  ) => {
+    setHardDeleteTarget(target);
+    setHardDeleteReason('');
+  };
+
+  const closeHardDeleteModal = () => {
+    if (hardDeleteBusy) return;
+    setHardDeleteTarget(null);
+    setHardDeleteReason('');
+  };
+
+  const handleConfirmHardDelete = async () => {
+    if (!hardDeleteTarget || !adminProfile) return;
+    setHardDeleteBusy(true);
+    setFeedback(null);
+    try {
+      if (hardDeleteTarget.kind === 'member') {
+        const res = await deleteMemberPermanentlyByAdmin(
+          hardDeleteTarget.item,
+          adminProfile,
+          hardDeleteReason
+        );
+        if (detailMemberUid === hardDeleteTarget.item.uid) {
+          setDetailMemberUid(null);
+        }
+        setFeedback({
+          type: 'success',
+          text: `Member ${hardDeleteTarget.item.fullName} (${res.memberId}) beserta ${res.deletedDocsCount} dokumen terkait berhasil dihapus permanen dari database Firebase.`,
+        });
+        setHardDeleteTarget(null);
+        setHardDeleteReason('');
+        await Promise.all([loadMembersBatch(), loadDashboardMetrics()]);
+      } else if (hardDeleteTarget.kind === 'benefit') {
+        await deleteBenefitByAdmin(hardDeleteTarget.item, adminProfile);
+        if (benefitForm.id === hardDeleteTarget.item.id) {
+          setBenefitForm({
+            id: '',
+            name: '',
+            description: '',
+            xpCost: '50',
+            levelRequirement: 'BRONZE',
+            claimable: true,
+            redeemable: true,
+            stock: '',
+            terms: '',
+            active: true,
+          });
+          setBenefitOriginalMeta(null);
+        }
+        setFeedback({
+          type: 'success',
+          text: `Benefit "${hardDeleteTarget.item.name}" berhasil dihapus permanen dari database Firebase.`,
+        });
+        setHardDeleteTarget(null);
+        await loadMenuRows(true);
+      } else if (hardDeleteTarget.kind === 'campaign') {
+        await deleteCampaignByAdmin(hardDeleteTarget.item, adminProfile);
+        if (campaignForm.id === hardDeleteTarget.item.id) {
+          setCampaignForm(makeDefaultCampaignForm(hardDeleteTarget.item.type));
+          setCampaignOriginalMeta(null);
+        }
+        setFeedback({
+          type: 'success',
+          text: `${hardDeleteTarget.item.type} "${hardDeleteTarget.item.title}" berhasil dihapus permanen dari database Firebase.`,
+        });
+        setHardDeleteTarget(null);
+        await loadMenuRows(true);
+      } else if (hardDeleteTarget.kind === 'notification') {
+        const res = await deleteNotificationCampaignByAdmin(hardDeleteTarget.item, adminProfile);
+        setFeedback({
+          type: 'success',
+          text: `Kampanye notifikasi "${hardDeleteTarget.item.title}" berhasil dihapus permanen dari Firebase (${res.deletedMemberNotifications} notifikasi inbox member dibersihkan).`,
+        });
+        setHardDeleteTarget(null);
+        await loadMenuRows(true);
+      }
+    } catch (err) {
+      setFeedback({ type: 'error', text: mapFriendlyError(err) });
+      setHardDeleteTarget(null);
+    } finally {
+      setHardDeleteBusy(false);
+    }
+  };
 
   const resetAdminForm = (overrides?: Partial<typeof adminForm>) => {
     setAdminOriginalCreatedAt(null);
@@ -569,8 +764,25 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
   };
 
   useEffect(() => {
-    setCampaignForm(makeDefaultCampaignForm());
+    const nextCampaignType: CampaignType | undefined =
+      menu === 'challenges' ? 'CHALLENGE' : menu === 'events' ? 'EVENT' : menu === 'promos' ? 'PROMO' : undefined;
+    setCampaignForm(makeDefaultCampaignForm(nextCampaignType));
     setCampaignOriginalMeta(null);
+    if (menu !== 'benefits') {
+      setBenefitOriginalMeta(null);
+      setBenefitForm({
+        id: '',
+        name: '',
+        description: '',
+        xpCost: '50',
+        levelRequirement: 'BRONZE',
+        claimable: true,
+        redeemable: true,
+        stock: '',
+        terms: '',
+        active: true,
+      });
+    }
   }, [menu]);
 
   useEffect(() => {
@@ -839,20 +1051,25 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
     setBusy(true);
     setFeedback(null);
     try {
+      const cleanName = benefitForm.name.trim();
+      if (cleanName.length < 2) {
+        throw new Error('Nama benefit minimal 2 karakter.');
+      }
+      const isEditing = Boolean(benefitForm.id);
       const now = Date.now();
       const id = benefitForm.id || `ben_${now}`;
       const item: BenefitItem = {
         id,
-        name: benefitForm.name.trim(),
-        description: benefitForm.description.trim(),
-        imageUrl: '',
+        name: cleanName.slice(0, 120),
+        description: benefitForm.description.trim().slice(0, 600),
+        imageUrl: benefitOriginalMeta?.imageUrl || '',
         xpCost: Math.max(0, Math.floor(Number(benefitForm.xpCost) || 0)),
         levelRequirement: benefitForm.levelRequirement,
         claimable: benefitForm.claimable,
         redeemable: benefitForm.redeemable,
         stock: benefitForm.stock.trim() === '' ? null : Math.max(0, Math.floor(Number(benefitForm.stock))),
-        expiryAt: null,
-        terms: benefitForm.terms.trim(),
+        expiryAt: benefitOriginalMeta?.expiryAt ?? null,
+        terms: benefitForm.terms.trim().slice(0, 600),
         active: benefitForm.active,
         createdBy: benefitOriginalMeta?.createdBy || adminProfile.uid,
         createdAt: benefitOriginalMeta?.createdAt || now,
@@ -860,7 +1077,10 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
       };
       await upsertBenefitByAdmin(item, adminProfile);
       resetBenefitForm();
-      setFeedback({ type: 'success', text: `Benefit "${item.name}" berhasil disimpan.` });
+      setFeedback({
+        type: 'success',
+        text: `Benefit "${item.name}" berhasil ${isEditing ? 'diperbarui' : 'ditambahkan'}.`,
+      });
       await loadMenuRows(true);
     } catch (err) {
       setFeedback({ type: 'error', text: mapFriendlyError(err) });
@@ -874,27 +1094,43 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
     setBusy(true);
     setFeedback(null);
     try {
+      const cleanTitle = campaignForm.title.trim();
+      if (cleanTitle.length < 2) {
+        throw new Error(`Judul ${type} minimal 2 karakter.`);
+      }
       const startAt = new Date(campaignForm.startAt).getTime();
       const endAt = new Date(campaignForm.endAt).getTime();
       if (!Number.isFinite(startAt) || !Number.isFinite(endAt) || endAt < startAt) {
         throw new Error('Tanggal berakhir harus lebih besar atau sama dengan tanggal mulai.');
       }
+      const parsedXp = Number(campaignForm.xpReward);
+      if (!Number.isFinite(parsedXp) || (type === 'PROMO' ? parsedXp < 0 : parsedXp < 1)) {
+        throw new Error(
+          type === 'PROMO'
+            ? 'Biaya XP Promo tidak boleh negatif (isi 0 untuk promo gratis).'
+            : `XP Reward ${type} minimal 1 XP.`
+        );
+      }
       const totalClaimLimit =
         campaignForm.totalClaimLimit.trim() === ''
           ? null
           : Math.max(1, Math.floor(Number(campaignForm.totalClaimLimit) || 1));
+      const isEditing = Boolean(campaignForm.id);
       const now = Date.now();
       const id = campaignForm.id || `camp_${now}`;
       const item: CampaignItem = {
         id,
         type,
-        title: campaignForm.title.trim(),
-        description: campaignForm.description.trim(),
+        title: cleanTitle.slice(0, 120),
+        description: campaignForm.description.trim().slice(0, 1000),
         startAt,
         endAt,
-        xpReward: Math.max(1, Math.floor(Number(campaignForm.xpReward) || 10)),
-        imageUrl: '',
-        terms: campaignForm.terms.trim(),
+        xpReward:
+          type === 'PROMO'
+            ? Math.max(0, Math.floor(parsedXp))
+            : Math.max(1, Math.floor(parsedXp)),
+        imageUrl: campaignOriginalMeta?.imageUrl || '',
+        terms: campaignForm.terms.trim().slice(0, 600),
         maxClaimsPerMember: Math.max(1, Math.floor(Number(campaignForm.maxClaimsPerMember) || 1)),
         totalClaimLimit,
         claimsCount: campaignOriginalMeta?.claimsCount ?? 0,
@@ -906,8 +1142,12 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
         updatedAt: now,
       };
       await upsertCampaignByAdmin(item, adminProfile);
-      setFeedback({ type: 'success', text: `${type} "${item.title}" berhasil disimpan.` });
-      setCampaignForm(makeDefaultCampaignForm());
+      const label = type === 'CHALLENGE' ? 'XP Challenge' : type === 'EVENT' ? 'Event' : 'Promo';
+      setFeedback({
+        type: 'success',
+        text: `${label} "${item.title}" berhasil ${isEditing ? 'diperbarui' : 'ditambahkan'}.`,
+      });
+      setCampaignForm(makeDefaultCampaignForm(type));
       setCampaignOriginalMeta(null);
       await loadMenuRows(true);
     } catch (err) {
@@ -1825,16 +2065,14 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                                     Suspend
                                   </button>
                                 )}
-                                {m.status !== 'DELETED' && (
-                                  <button
-                                    type="button"
-                                    disabled={busy}
-                                    onClick={() => void handleMemberStatusChange(m.uid, 'DELETED')}
-                                    className="font-semibold text-rose-400 hover:underline disabled:opacity-50"
-                                  >
-                                    Delete
-                                  </button>
-                                )}
+                                <button
+                                  type="button"
+                                  disabled={busy || hardDeleteBusy}
+                                  onClick={() => openHardDeleteModal({ kind: 'member', item: m })}
+                                  className="font-semibold text-rose-400 hover:underline disabled:opacity-50"
+                                >
+                                  Hapus
+                                </button>
                               </>
                             )}
                           </td>
@@ -2235,7 +2473,8 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                         )}
                         <div className="space-y-1">
                           <p className="text-sm font-bold text-white">
-                            @{cl.memberUsername} · {cl.campaignTitle} (+{cl.xpRewardSnapshot} XP)
+                            @{cl.memberUsername} · {cl.campaignTitle} (
+                            {cl.campaignType === 'PROMO' ? `-${cl.xpRewardSnapshot} XP` : `+${cl.xpRewardSnapshot} XP`})
                           </p>
                           <p className="text-xs text-slate-400">
                             {cl.campaignType} · {formatJakartaDateTime(cl.createdAt)} · Status: <strong>{cl.status}</strong>
@@ -2309,72 +2548,106 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
           {menu === 'benefits' && (
             <div className="space-y-6">
               {canManageCatalog ? (
-                <form onSubmit={handleSaveBenefit} className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <h2 className="font-display text-base font-bold text-white">
-                      {benefitForm.id ? 'Ubah Benefit' : 'Tambah Benefit Baru'}
-                    </h2>
+                <form
+                  ref={benefitFormRef}
+                  onSubmit={handleSaveBenefit}
+                  className={`bg-[#0B1124] rounded-2xl border p-5 space-y-4 transition-colors ${
+                    benefitForm.id ? 'border-sky-400/60' : 'border-indigo-500/20'
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h2 className="font-display text-base font-bold text-white">
+                        {benefitForm.id ? `Edit Benefit: ${benefitForm.name || benefitForm.id}` : 'Tambah Benefit Baru'}
+                      </h2>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Klaim Benefit dengan XP Cost &gt; 0 akan memotong saldo XP Reward member melalui sistem Hold (otomatis kembali jika ditolak).
+                      </p>
+                    </div>
                     {benefitForm.id && (
                       <button
                         type="button"
                         onClick={resetBenefitForm}
-                        className="text-xs font-semibold text-slate-300 hover:text-white underline"
+                        className="h-8 px-3 rounded-lg border border-indigo-500/30 text-xs font-semibold text-slate-200 hover:border-sky-400/50 hover:text-white whitespace-nowrap shrink-0"
                       >
                         Batal Edit
                       </button>
                     )}
                   </div>
                   <div className="grid sm:grid-cols-3 gap-3">
-                    <input
-                      type="text"
-                      required
-                      placeholder="Nama Benefit *"
-                      value={benefitForm.name}
-                      onChange={(e) => setBenefitForm({ ...benefitForm, name: e.target.value })}
-                      className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
-                    />
-                    <input
-                      type="number"
-                      min={0}
-                      placeholder="XP Cost (0 untuk Level Benefit)"
-                      value={benefitForm.xpCost}
-                      onChange={(e) => setBenefitForm({ ...benefitForm, xpCost: e.target.value })}
-                      className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm font-mono"
-                    />
-                    <select
-                      value={benefitForm.levelRequirement}
-                      onChange={(e) => setBenefitForm({ ...benefitForm, levelRequirement: e.target.value as LevelId })}
-                      className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
-                    >
-                      <option value="BRONZE">Min Level: BRONZE</option>
-                      <option value="SILVER">Min Level: SILVER</option>
-                      <option value="JURAGAN">Min Level: JURAGAN</option>
-                      <option value="SULTAN">Min Level: SULTAN</option>
-                    </select>
-                    <input
-                      type="text"
-                      placeholder="Deskripsi benefit"
-                      value={benefitForm.description}
-                      onChange={(e) => setBenefitForm({ ...benefitForm, description: e.target.value })}
-                      className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm sm:col-span-2"
-                    />
-                    <input
-                      type="number"
-                      min={0}
-                      placeholder="Kuota/Stok (kosong = unlimited)"
-                      value={benefitForm.stock}
-                      onChange={(e) => setBenefitForm({ ...benefitForm, stock: e.target.value })}
-                      className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm font-mono"
-                    />
-                    <input
-                      type="text"
-                      placeholder="Syarat & ketentuan"
-                      value={benefitForm.terms}
-                      onChange={(e) => setBenefitForm({ ...benefitForm, terms: e.target.value })}
-                      className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm sm:col-span-2"
-                    />
-                    <div className="flex items-center gap-4 text-xs">
-                      <label className="flex items-center gap-1.5">
+                    <div className="space-y-1">
+                      <label className="block text-[11px] font-medium text-slate-400">Nama Benefit *</label>
+                      <input
+                        type="text"
+                        required
+                        minLength={2}
+                        maxLength={120}
+                        placeholder="Contoh: Gratis 1 Jam PS5"
+                        value={benefitForm.name}
+                        onChange={(e) => setBenefitForm({ ...benefitForm, name: e.target.value })}
+                        className="w-full bg-[#070B19] text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="block text-[11px] font-medium text-slate-400">Biaya XP Reward (0 = Benefit Level)</label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={1000000}
+                        placeholder="0 untuk Benefit Level"
+                        value={benefitForm.xpCost}
+                        onChange={(e) => setBenefitForm({ ...benefitForm, xpCost: e.target.value })}
+                        className="w-full bg-[#070B19] text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm font-mono tabular-nums"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="block text-[11px] font-medium text-slate-400">Syarat Minimal Level</label>
+                      <select
+                        value={benefitForm.levelRequirement}
+                        onChange={(e) => setBenefitForm({ ...benefitForm, levelRequirement: e.target.value as LevelId })}
+                        className="w-full bg-[#070B19] text-white focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                      >
+                        <option value="BRONZE">Min Level: BRONZE</option>
+                        <option value="SILVER">Min Level: SILVER</option>
+                        <option value="JURAGAN">Min Level: JURAGAN</option>
+                        <option value="SULTAN">Min Level: SULTAN</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1 sm:col-span-2">
+                      <label className="block text-[11px] font-medium text-slate-400">Deskripsi Benefit</label>
+                      <input
+                        type="text"
+                        maxLength={600}
+                        placeholder="Deskripsi singkat manfaat benefit"
+                        value={benefitForm.description}
+                        onChange={(e) => setBenefitForm({ ...benefitForm, description: e.target.value })}
+                        className="w-full bg-[#070B19] text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="block text-[11px] font-medium text-slate-400">Kuota/Stok (kosong = unlimited)</label>
+                      <input
+                        type="number"
+                        min={0}
+                        placeholder="Kosong = tanpa batas"
+                        value={benefitForm.stock}
+                        onChange={(e) => setBenefitForm({ ...benefitForm, stock: e.target.value })}
+                        className="w-full bg-[#070B19] text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm font-mono tabular-nums"
+                      />
+                    </div>
+                    <div className="space-y-1 sm:col-span-2">
+                      <label className="block text-[11px] font-medium text-slate-400">Syarat &amp; Ketentuan</label>
+                      <input
+                        type="text"
+                        maxLength={600}
+                        placeholder="Syarat & ketentuan penukaran"
+                        value={benefitForm.terms}
+                        onChange={(e) => setBenefitForm({ ...benefitForm, terms: e.target.value })}
+                        className="w-full bg-[#070B19] text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                      />
+                    </div>
+                    <div className="flex items-end gap-4 pb-2 text-xs">
+                      <label className="flex items-center gap-1.5 cursor-pointer">
                         <input
                           type="checkbox"
                           checked={benefitForm.claimable}
@@ -2382,7 +2655,7 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                         />
                         <span>Claimable/Redeemable</span>
                       </label>
-                      <label className="flex items-center gap-1.5">
+                      <label className="flex items-center gap-1.5 cursor-pointer">
                         <input
                           type="checkbox"
                           checked={benefitForm.active}
@@ -2392,13 +2665,25 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                       </label>
                     </div>
                   </div>
-                  <button
-                    type="submit"
-                    disabled={busy}
-                    className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-5 text-xs font-semibold text-white hover:from-blue-500 hover:to-purple-500 disabled:opacity-50"
-                  >
-                    {busy ? 'Menyimpan...' : benefitForm.id ? 'Simpan Perubahan Benefit' : 'Simpan Benefit'}
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="submit"
+                      disabled={busy}
+                      className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-5 text-xs font-semibold text-white hover:from-blue-500 hover:to-purple-500 disabled:opacity-50 whitespace-nowrap"
+                    >
+                      {busy ? 'Menyimpan...' : benefitForm.id ? 'Simpan Perubahan Benefit' : 'Simpan Benefit'}
+                    </button>
+                    {benefitForm.id && (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={resetBenefitForm}
+                        className="h-10 rounded-xl border border-indigo-500/30 px-4 text-xs font-semibold text-slate-300 hover:text-white whitespace-nowrap"
+                      >
+                        Batal
+                      </button>
+                    )}
+                  </div>
                 </form>
               ) : (
                 <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-200">
@@ -2413,36 +2698,61 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                   </div>
                 ) : (
                   (activeRows as BenefitItem[]).map((b, idx) => (
-                    <div key={b.id || `ben-${idx}`} className="p-4 flex items-center justify-between gap-4">
-                      <div>
-                        <p className="text-sm font-bold text-white">{b.name}</p>
-                        <p className="text-xs text-slate-400">
-                          Level {b.levelRequirement} · {b.xpCost} XP · {b.claimable ? 'Redeemable' : 'Info Only'} · {b.stock !== null ? `Stok: ${b.stock} · ` : ''}{b.active ? 'ACTIVE' : 'DISABLED'}
+                    <div key={b.id || `ben-${idx}`} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-white">
+                          {b.name}{' '}
+                          <span className="font-mono text-purple-300 tabular-nums">
+                            ({b.xpCost > 0 ? `-${b.xpCost} XP` : 'Gratis Level'})
+                          </span>
+                        </p>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          Level {b.levelRequirement} · {b.claimable ? 'Redeemable' : 'Info Only'} · {b.stock !== null ? `Stok: ${b.stock} · ` : ''}
+                          <strong className={b.active ? 'text-emerald-300' : 'text-rose-300'}>
+                            {b.active ? 'ACTIVE' : 'DISABLED'}
+                          </strong>
                         </p>
                       </div>
                       {canManageCatalog && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setBenefitOriginalMeta({ createdAt: b.createdAt, createdBy: b.createdBy });
-                            setBenefitForm({
-                              id: b.id,
-                              name: b.name,
-                              description: b.description,
-                              xpCost: String(b.xpCost),
-                              levelRequirement: b.levelRequirement,
-                              claimable: b.claimable,
-                              redeemable: b.redeemable,
-                              stock: b.stock === null ? '' : String(b.stock),
-                              terms: b.terms,
-                              active: b.active,
-                            });
-                            window.scrollTo({ top: 0, behavior: 'smooth' });
-                          }}
-                          className="text-xs font-semibold text-sky-300 hover:underline shrink-0"
-                        >
-                          Edit
-                        </button>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setBenefitOriginalMeta({
+                                createdAt: b.createdAt,
+                                createdBy: b.createdBy,
+                                imageUrl: b.imageUrl || '',
+                                expiryAt: b.expiryAt ?? null,
+                              });
+                              setBenefitForm({
+                                id: b.id,
+                                name: b.name,
+                                description: b.description,
+                                xpCost: String(b.xpCost),
+                                levelRequirement: b.levelRequirement,
+                                claimable: b.claimable,
+                                redeemable: b.redeemable,
+                                stock: b.stock === null ? '' : String(b.stock),
+                                terms: b.terms,
+                                active: b.active,
+                              });
+                              benefitFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                            }}
+                            className="inline-flex items-center gap-1.5 min-h-[34px] px-3 rounded-lg border border-sky-400/35 bg-sky-500/10 text-xs font-semibold text-sky-300 hover:bg-sky-500/20 hover:text-white whitespace-nowrap shrink-0 transition-colors"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                            <span>Edit</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy || hardDeleteBusy}
+                            onClick={() => openHardDeleteModal({ kind: 'benefit', item: b })}
+                            className="inline-flex items-center gap-1.5 min-h-[34px] px-3 rounded-lg border border-rose-500/35 bg-rose-500/10 text-xs font-semibold text-rose-300 hover:bg-rose-500/20 hover:text-white disabled:opacity-50 whitespace-nowrap shrink-0 transition-colors"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Hapus</span>
+                          </button>
+                        </div>
                       )}
                     </div>
                   ))
@@ -2456,103 +2766,153 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
             <div className="space-y-6">
               {(() => {
                 const cType: CampaignType = menu === 'challenges' ? 'CHALLENGE' : menu === 'events' ? 'EVENT' : 'PROMO';
+                const cLabel = cType === 'CHALLENGE' ? 'XP Challenge' : cType === 'EVENT' ? 'Event' : 'Promo';
+                const isPromoMenu = cType === 'PROMO';
                 if (!canManageCatalog) {
                   return (
                     <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-200">
-                      Mode Read-Only: Role STAFF hanya dapat melihat daftar {cType}. Pengelolaan program dilakukan oleh ADMIN atau SUPER_ADMIN.
+                      Mode Read-Only: Role STAFF hanya dapat melihat daftar {cLabel}. Pengelolaan program dilakukan oleh ADMIN atau SUPER_ADMIN.
                     </div>
                   );
                 }
                 return (
-                  <form onSubmit={(e) => void handleSaveCampaign(e, cType)} className="bg-[#0B1124] rounded-2xl border border-indigo-500/20 p-5 space-y-4">
-                    <div className="flex items-center justify-between gap-2">
-                      <h2 className="font-display text-base font-bold text-white">
-                        {campaignForm.id ? `Ubah ${cType}` : `Buat ${cType} Baru`}
-                      </h2>
+                  <form
+                    ref={campaignFormRef}
+                    onSubmit={(e) => void handleSaveCampaign(e, cType)}
+                    className={`bg-[#0B1124] rounded-2xl border p-5 space-y-4 transition-colors ${
+                      campaignForm.id ? 'border-sky-400/60' : 'border-indigo-500/20'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h2 className="font-display text-base font-bold text-white">
+                          {campaignForm.id ? `Edit ${cLabel}: ${campaignForm.title || campaignForm.id}` : `Buat ${cLabel} Baru`}
+                        </h2>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          {isPromoMenu
+                            ? 'Klaim Promo memotong saldo XP Reward member melalui sistem Hold (sama seperti klaim Benefit — otomatis kembali jika ditolak).'
+                            : `Klaim ${cLabel} yang disetujui akan menambahkan XP Progress & XP Reward member.`}
+                        </p>
+                      </div>
                       {campaignForm.id && (
                         <button
                           type="button"
                           onClick={() => {
-                            setCampaignForm(makeDefaultCampaignForm());
+                            setCampaignForm(makeDefaultCampaignForm(cType));
                             setCampaignOriginalMeta(null);
                           }}
-                          className="text-xs font-semibold text-slate-300 hover:text-white underline"
+                          className="h-8 px-3 rounded-lg border border-indigo-500/30 text-xs font-semibold text-slate-200 hover:border-sky-400/50 hover:text-white whitespace-nowrap shrink-0"
                         >
                           Batal Edit
                         </button>
                       )}
                     </div>
                     <div className="grid sm:grid-cols-3 gap-3">
-                      <input
-                        type="text"
-                        required
-                        placeholder={`Judul ${cType} *`}
-                        value={campaignForm.title}
-                        onChange={(e) => setCampaignForm({ ...campaignForm, title: e.target.value })}
-                        className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
-                      />
-                      <input
-                        type="number"
-                        required
-                        min={1}
-                        placeholder="XP Reward *"
-                        value={campaignForm.xpReward}
-                        onChange={(e) => setCampaignForm({ ...campaignForm, xpReward: e.target.value })}
-                        className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm font-mono"
-                      />
-                      <select
-                        value={campaignForm.status}
-                        onChange={(e) => setCampaignForm({ ...campaignForm, status: e.target.value as CampaignStatus })}
-                        className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
-                      >
-                        <option value="ACTIVE">ACTIVE</option>
-                        <option value="DRAFT">DRAFT</option>
-                        <option value="DISABLED">DISABLED</option>
-                      </select>
-                      <input
-                        type="datetime-local"
-                        value={campaignForm.startAt}
-                        onChange={(e) => setCampaignForm({ ...campaignForm, startAt: e.target.value })}
-                        className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
-                      />
-                      <input
-                        type="datetime-local"
-                        value={campaignForm.endAt}
-                        onChange={(e) => setCampaignForm({ ...campaignForm, endAt: e.target.value })}
-                        className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
-                      />
-                      <input
-                        type="number"
-                        min={1}
-                        placeholder="Max Claim / Member"
-                        value={campaignForm.maxClaimsPerMember}
-                        onChange={(e) => setCampaignForm({ ...campaignForm, maxClaimsPerMember: e.target.value })}
-                        className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm font-mono"
-                      />
-                      <input
-                        type="text"
-                        required
-                        placeholder="Deskripsi *"
-                        value={campaignForm.description}
-                        onChange={(e) => setCampaignForm({ ...campaignForm, description: e.target.value })}
-                        className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm sm:col-span-2"
-                      />
-                      <input
-                        type="number"
-                        min={1}
-                        placeholder="Kuota Total Claim (kosong = unlimited)"
-                        value={campaignForm.totalClaimLimit}
-                        onChange={(e) => setCampaignForm({ ...campaignForm, totalClaimLimit: e.target.value })}
-                        className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm font-mono"
-                      />
-                      <input
-                        type="text"
-                        placeholder="Syarat & Ketentuan (opsional)"
-                        value={campaignForm.terms}
-                        onChange={(e) => setCampaignForm({ ...campaignForm, terms: e.target.value })}
-                        className="bg-[#070B19] text-white placeholder:text-slate-400 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm sm:col-span-2"
-                      />
-                      <label className="flex items-center gap-2 text-xs">
+                      <div className="space-y-1">
+                        <label className="block text-[11px] font-medium text-slate-400">Judul {cLabel} *</label>
+                        <input
+                          type="text"
+                          required
+                          minLength={2}
+                          maxLength={120}
+                          placeholder={`Judul ${cLabel} *`}
+                          value={campaignForm.title}
+                          onChange={(e) => setCampaignForm({ ...campaignForm, title: e.target.value })}
+                          className="w-full bg-[#070B19] text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="block text-[11px] font-medium text-slate-400">
+                          {isPromoMenu ? 'Biaya XP Promo (Potong XP Member) *' : 'XP Reward (+XP Member) *'}
+                        </label>
+                        <input
+                          type="number"
+                          required
+                          min={isPromoMenu ? 0 : 1}
+                          max={100000}
+                          placeholder={isPromoMenu ? 'Biaya XP (0 = gratis)' : 'XP Reward *'}
+                          value={campaignForm.xpReward}
+                          onChange={(e) => setCampaignForm({ ...campaignForm, xpReward: e.target.value })}
+                          className="w-full bg-[#070B19] text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm font-mono tabular-nums"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="block text-[11px] font-medium text-slate-400">Status</label>
+                        <select
+                          value={campaignForm.status}
+                          onChange={(e) => setCampaignForm({ ...campaignForm, status: e.target.value as CampaignStatus })}
+                          className="w-full bg-[#070B19] text-white focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                        >
+                          <option value="ACTIVE">ACTIVE</option>
+                          <option value="DRAFT">DRAFT</option>
+                          <option value="DISABLED">DISABLED</option>
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="block text-[11px] font-medium text-slate-400">Mulai Berlaku</label>
+                        <input
+                          type="datetime-local"
+                          value={campaignForm.startAt}
+                          onChange={(e) => setCampaignForm({ ...campaignForm, startAt: e.target.value })}
+                          className="w-full bg-[#070B19] text-white focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="block text-[11px] font-medium text-slate-400">Berakhir Pada</label>
+                        <input
+                          type="datetime-local"
+                          value={campaignForm.endAt}
+                          onChange={(e) => setCampaignForm({ ...campaignForm, endAt: e.target.value })}
+                          className="w-full bg-[#070B19] text-white focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="block text-[11px] font-medium text-slate-400">Maks. Klaim / Member</label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={100}
+                          placeholder="Max Claim / Member"
+                          value={campaignForm.maxClaimsPerMember}
+                          onChange={(e) => setCampaignForm({ ...campaignForm, maxClaimsPerMember: e.target.value })}
+                          className="w-full bg-[#070B19] text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm font-mono tabular-nums"
+                        />
+                      </div>
+                      <div className="space-y-1 sm:col-span-2">
+                        <label className="block text-[11px] font-medium text-slate-400">Deskripsi *</label>
+                        <input
+                          type="text"
+                          required
+                          maxLength={1000}
+                          placeholder={`Deskripsi ${cLabel} *`}
+                          value={campaignForm.description}
+                          onChange={(e) => setCampaignForm({ ...campaignForm, description: e.target.value })}
+                          className="w-full bg-[#070B19] text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="block text-[11px] font-medium text-slate-400">Kuota Total (kosong = unlimited)</label>
+                        <input
+                          type="number"
+                          min={1}
+                          placeholder="Kosong = tanpa batas"
+                          value={campaignForm.totalClaimLimit}
+                          onChange={(e) => setCampaignForm({ ...campaignForm, totalClaimLimit: e.target.value })}
+                          className="w-full bg-[#070B19] text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm font-mono tabular-nums"
+                        />
+                      </div>
+                      <div className="space-y-1 sm:col-span-2">
+                        <label className="block text-[11px] font-medium text-slate-400">Syarat &amp; Ketentuan (opsional)</label>
+                        <input
+                          type="text"
+                          maxLength={600}
+                          placeholder="Syarat & Ketentuan (opsional)"
+                          value={campaignForm.terms}
+                          onChange={(e) => setCampaignForm({ ...campaignForm, terms: e.target.value })}
+                          className="w-full bg-[#070B19] text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                        />
+                      </div>
+                      <label className="flex items-end gap-2 pb-2 text-xs cursor-pointer">
                         <input
                           type="checkbox"
                           checked={campaignForm.requiresEvidence}
@@ -2561,13 +2921,28 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                         <span>Wajib Upload Bukti Foto</span>
                       </label>
                     </div>
-                    <button
-                      type="submit"
-                      disabled={busy}
-                      className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-5 text-xs font-semibold text-white hover:from-blue-500 hover:to-purple-500 disabled:opacity-50"
-                    >
-                      {busy ? 'Menyimpan...' : campaignForm.id ? `Simpan Perubahan ${cType}` : `Simpan ${cType}`}
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="submit"
+                        disabled={busy}
+                        className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 px-5 text-xs font-semibold text-white hover:from-blue-500 hover:to-purple-500 disabled:opacity-50 whitespace-nowrap"
+                      >
+                        {busy ? 'Menyimpan...' : campaignForm.id ? `Simpan Perubahan ${cLabel}` : `Simpan ${cLabel}`}
+                      </button>
+                      {campaignForm.id && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => {
+                            setCampaignForm(makeDefaultCampaignForm(cType));
+                            setCampaignOriginalMeta(null);
+                          }}
+                          className="h-10 rounded-xl border border-indigo-500/30 px-4 text-xs font-semibold text-slate-300 hover:text-white whitespace-nowrap"
+                        >
+                          Batal
+                        </button>
+                      )}
+                    </div>
                   </form>
                 );
               })()}
@@ -2579,42 +2954,70 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                   </div>
                 ) : (
                   (activeRows as CampaignItem[]).map((c, idx) => (
-                    <div key={c.id || `camp-${idx}`} className="p-4 flex items-center justify-between gap-4">
-                      <div>
-                        <p className="text-sm font-bold text-white">{c.title} (+{c.xpReward} XP)</p>
-                        <p className="text-xs text-slate-400">
+                    <div key={c.id || `camp-${idx}`} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-white">
+                          {c.title}{' '}
+                          <span
+                            className={`font-mono tabular-nums ${
+                              c.type === 'PROMO' ? 'text-purple-300' : 'text-emerald-300'
+                            }`}
+                          >
+                            (
+                            {c.type === 'PROMO'
+                              ? c.xpReward > 0
+                                ? `-${c.xpReward} XP`
+                                : 'Gratis 0 XP'
+                              : `+${c.xpReward} XP`}
+                            )
+                          </span>
+                        </p>
+                        <p className="text-xs text-slate-400 mt-0.5">
                           Status Efektif: <strong>{resolveCampaignStatus(c)}</strong> · Claim: {c.claimsCount}{c.totalClaimLimit !== null ? `/${c.totalClaimLimit}` : ''} · Berakhir: {formatJakartaDateTime(c.endAt)} WIB
                         </p>
                       </div>
                       {canManageCatalog && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setCampaignOriginalMeta({
-                              createdAt: c.createdAt,
-                              createdBy: c.createdBy,
-                              claimsCount: c.claimsCount ?? 0,
-                            });
-                            setCampaignForm({
-                              id: c.id,
-                              title: c.title,
-                              description: c.description,
-                              xpReward: String(c.xpReward),
-                              startAt: formatDateTimeLocalInput(c.startAt),
-                              endAt: formatDateTimeLocalInput(c.endAt),
-                              terms: c.terms,
-                              maxClaimsPerMember: String(c.maxClaimsPerMember),
-                              totalClaimLimit: c.totalClaimLimit === null ? '' : String(c.totalClaimLimit),
-                              requiresEvidence: c.requiresEvidence,
-                              status: c.status,
-                              active: c.active,
-                            });
-                            window.scrollTo({ top: 0, behavior: 'smooth' });
-                          }}
-                          className="text-xs font-semibold text-sky-300 hover:underline shrink-0"
-                        >
-                          Edit
-                        </button>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCampaignOriginalMeta({
+                                createdAt: c.createdAt,
+                                createdBy: c.createdBy,
+                                claimsCount: c.claimsCount ?? 0,
+                                imageUrl: c.imageUrl || '',
+                              });
+                              setCampaignForm({
+                                id: c.id,
+                                title: c.title,
+                                description: c.description,
+                                xpReward: String(c.xpReward),
+                                startAt: formatDateTimeLocalInput(c.startAt),
+                                endAt: formatDateTimeLocalInput(c.endAt),
+                                terms: c.terms,
+                                maxClaimsPerMember: String(c.maxClaimsPerMember),
+                                totalClaimLimit: c.totalClaimLimit === null ? '' : String(c.totalClaimLimit),
+                                requiresEvidence: c.requiresEvidence,
+                                status: c.status,
+                                active: c.active,
+                              });
+                              campaignFormRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                            }}
+                            className="inline-flex items-center gap-1.5 min-h-[34px] px-3 rounded-lg border border-sky-400/35 bg-sky-500/10 text-xs font-semibold text-sky-300 hover:bg-sky-500/20 hover:text-white whitespace-nowrap shrink-0 transition-colors"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                            <span>Edit</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy || hardDeleteBusy}
+                            onClick={() => openHardDeleteModal({ kind: 'campaign', item: c })}
+                            className="inline-flex items-center gap-1.5 min-h-[34px] px-3 rounded-lg border border-rose-500/35 bg-rose-500/10 text-xs font-semibold text-rose-300 hover:bg-rose-500/20 hover:text-white disabled:opacity-50 whitespace-nowrap shrink-0 transition-colors"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Hapus</span>
+                          </button>
+                        </div>
                       )}
                     </div>
                   ))
@@ -2713,12 +3116,25 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                   </div>
                 ) : (
                   (activeRows as NotificationCampaign[]).map((nc, idx) => (
-                    <div key={nc.id || `nc-${idx}`} className="p-4">
-                      <p className="text-sm font-bold text-white">{nc.title}</p>
-                      <p className="text-xs text-slate-300">{nc.message}</p>
-                      <p className="text-[11px] text-slate-400 mt-1">
-                        Target: {nc.targetType} {nc.inactivityDays ? `(>= ${nc.inactivityDays} hari)` : nc.targetFilter} · {formatJakartaDateTime(nc.createdAt)}
-                      </p>
+                    <div key={nc.id || `nc-${idx}`} className="p-4 flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold text-white">{nc.title}</p>
+                        <p className="text-xs text-slate-300">{nc.message}</p>
+                        <p className="text-[11px] text-slate-400 mt-1">
+                          Target: {nc.targetType} {nc.inactivityDays ? `(>= ${nc.inactivityDays} hari)` : nc.targetFilter} · {formatJakartaDateTime(nc.createdAt)}
+                        </p>
+                      </div>
+                      {canManageCatalog && (
+                        <button
+                          type="button"
+                          disabled={busy || hardDeleteBusy}
+                          onClick={() => openHardDeleteModal({ kind: 'notification', item: nc })}
+                          className="inline-flex items-center gap-1 text-xs font-semibold text-rose-400 hover:underline disabled:opacity-50 shrink-0 whitespace-nowrap"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Hapus</span>
+                        </button>
+                      )}
                     </div>
                   ))
                 )}
@@ -2729,6 +3145,10 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
           {/* 13. ADMIN & CASHIER MANAGEMENT (SUPER_ADMIN) */}
           {menu === 'adminManagement' && isSuper && (() => {
             const isEditingOperator = Boolean(adminForm.uid);
+            const isEditingSelf = isEditingOperator && adminForm.uid === adminProfile.uid;
+            const editingTargetObj = isEditingOperator
+              ? (activeRows as AdminUser[]).find((a) => a.uid === adminForm.uid) || null
+              : null;
             const pendingInvites = adminInvites.filter((inv) => inv.status === 'PENDING');
 
             return (
@@ -2769,12 +3189,30 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                           </div>
                           <p className="text-xs font-semibold text-white">{slot.label}</p>
                           {assigned ? (
-                            <div className="text-[11px] space-y-0.5">
-                              <p className="text-emerald-300 font-semibold truncate">{assigned.fullName}</p>
-                              <p className="font-mono text-slate-400 truncate">{assigned.email}</p>
-                              <p className="font-mono text-[10px] text-emerald-400/90">
-                                {assigned.active ? 'AKTIF' : 'NONAKTIF'}
-                              </p>
+                            <div className="text-[11px] space-y-1.5">
+                              <div className="space-y-0.5">
+                                <p className="text-emerald-300 font-semibold truncate">{assigned.fullName}</p>
+                                <p className="font-mono text-slate-400 truncate">{assigned.email}</p>
+                                <p className="font-mono text-[10px] text-emerald-400/90">
+                                  {assigned.active ? 'AKTIF' : 'NONAKTIF'}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-3 pt-1 border-t border-indigo-500/15">
+                                <button
+                                  type="button"
+                                  onClick={() => openOperatorEdit(assigned)}
+                                  className="text-[11px] font-semibold text-sky-300 hover:underline whitespace-nowrap"
+                                >
+                                  Edit Profil
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => openOperatorPasswordModal(assigned)}
+                                  className="text-[11px] font-semibold text-amber-300 hover:underline whitespace-nowrap"
+                                >
+                                  Password
+                                </button>
+                              </div>
                             </div>
                           ) : pendingSlotInvite ? (
                             <div className="text-[11px] space-y-1">
@@ -2834,7 +3272,7 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                           uid: adminForm.uid.trim(),
                           email: adminForm.email.trim().toLowerCase(),
                           fullName: adminForm.fullName.trim(),
-                          role: adminForm.role,
+                          role: isEditingSelf ? 'SUPER_ADMIN' : adminForm.role,
                           branchScope: adminForm.branchScope,
                           branchId:
                             adminForm.branchScope === 'DEMANG' || adminForm.branchScope === 'SEKIP'
@@ -2843,8 +3281,10 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                           cashierCode: isCashierRole(adminForm.role)
                             ? adminForm.cashierCode.trim() || null
                             : null,
-                          permissions: getDefaultPermissionsForRole(adminForm.role),
-                          active: adminForm.active,
+                          permissions: getDefaultPermissionsForRole(
+                            isEditingSelf ? 'SUPER_ADMIN' : adminForm.role
+                          ),
+                          active: isEditingSelf ? true : adminForm.active,
                           createdAt: adminOriginalCreatedAt || now,
                           updatedAt: now,
                         };
@@ -2852,10 +3292,13 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                         setLastProvisionResult(null);
                         setFeedback({
                           type: 'success',
-                          text: `Perubahan operator ${target.email} (${target.role} · ${target.branchScope}) berhasil disimpan.`,
+                          text: `Profil operator ${target.fullName} (${target.email} · ${target.role} · ${target.branchScope}) berhasil diperbarui.`,
                         });
                         resetAdminForm();
-                        await loadMenuRows(true);
+                        await Promise.all([
+                          loadMenuRows(true),
+                          isEditingSelf ? refreshProfiles() : Promise.resolve(),
+                        ]);
                       } else {
                         const result = await provisionOperatorAccountBySuperAdmin(
                           {
@@ -2880,7 +3323,7 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                           type: 'success',
                           text:
                             result.mode === 'CREATED_DIRECTLY'
-                              ? `Akun ${result.email} (${result.role} · ${result.branchScope}) berhasil dibuat otomatis. Email verifikasi telah dikirim.`
+                              ? `Akun ${result.email} (${result.role} · ${result.branchScope}) berhasil dibuat dan langsung aktif tanpa verifikasi email.`
                               : result.mode === 'INVITED_EXISTING_EMAIL'
                                 ? `Email ${result.email} sudah terdaftar di Firebase Auth — undangan otorisasi ${result.role} (${result.branchScope}) berhasil disimpan.`
                                 : `Undangan operator untuk ${result.email} (${result.role} · ${result.branchScope}) berhasil disimpan.`,
@@ -2900,23 +3343,35 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                     <div>
                       <h2 className="font-display text-base font-bold text-white">
                         {isEditingOperator
-                          ? 'Edit Operator Terdaftar (RBAC)'
+                          ? 'Edit Profil Operator Terdaftar'
                           : 'Tambah Admin, Superadmin atau Kasir Baru'}
                       </h2>
                       <p className="text-xs text-slate-400 mt-0.5 leading-relaxed">
                         {isEditingOperator
-                          ? `Mengubah hak akses akun aktif · UID otomatis: ${adminForm.uid}`
+                          ? `Mengubah profil & hak akses · UID otomatis: ${adminForm.uid}`
                           : 'Tidak perlu mengisi Firebase Auth UID. Cukup isi email dan data operator — sistem membuat UID dan hak akses secara otomatis.'}
                       </p>
                     </div>
                     {isEditingOperator && (
-                      <button
-                        type="button"
-                        onClick={() => resetAdminForm()}
-                        className="text-xs font-semibold text-slate-300 hover:text-white underline min-h-[36px] px-2"
-                      >
-                        Batal Edit
-                      </button>
+                      <div className="flex items-center gap-2 shrink-0">
+                        {editingTargetObj && (
+                          <button
+                            type="button"
+                            onClick={() => openOperatorPasswordModal(editingTargetObj)}
+                            className="inline-flex items-center gap-1.5 min-h-[36px] rounded-lg border border-amber-400/35 bg-amber-500/10 hover:bg-amber-500/20 px-3 text-xs font-semibold text-amber-200 whitespace-nowrap transition-colors"
+                          >
+                            <KeyRound className="w-3.5 h-3.5" />
+                            <span>Ubah Password</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => resetAdminForm()}
+                          className="text-xs font-semibold text-slate-300 hover:text-white underline min-h-[36px] px-2 whitespace-nowrap"
+                        >
+                          Batal Edit
+                        </button>
+                      </div>
                     )}
                   </div>
 
@@ -2939,7 +3394,7 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                           <span>Buat Akun Langsung (Email + Password)</span>
                         </div>
                         <p className="text-[11px] text-slate-400 mt-0.5">
-                          Direkomendasikan · Akun login &amp; UID langsung dibuat otomatis tanpa logout Super Admin.
+                          Direkomendasikan · Langsung aktif tanpa verifikasi email &amp; tanpa logout Super Admin.
                         </p>
                       </button>
                       <button
@@ -3059,6 +3514,7 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                       </label>
                       <select
                         value={adminForm.role}
+                        disabled={isEditingSelf}
                         onChange={(e) => {
                           const nextRole = e.target.value as AdminRole;
                           setAdminForm({
@@ -3070,7 +3526,7 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                                 : adminForm.branchScope,
                           });
                         }}
-                        className="w-full bg-[#070B19] text-white focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm"
+                        className="w-full bg-[#070B19] text-white focus:border-sky-400 focus:outline-none h-10 rounded-lg border border-indigo-500/30 px-3 text-sm disabled:opacity-60 disabled:cursor-not-allowed"
                       >
                         <option value="CASHIER">CASHIER (Kasir Cabang · Terisolasi)</option>
                         <option value="ADMIN">ADMIN (Operasional Penuh)</option>
@@ -3132,24 +3588,27 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                       <input
                         type="checkbox"
                         checked={adminForm.active}
+                        disabled={isEditingSelf}
                         onChange={(e) => setAdminForm({ ...adminForm, active: e.target.checked })}
                       />
                       <span>
-                        {isCashierRole(adminForm.role)
-                          ? `Akun Kasir Aktif (akses /cashier cabang ${adminForm.branchScope})`
-                          : 'Status Akun Aktif'}
+                        {isEditingSelf
+                          ? 'Akun Anda sendiri (role SUPER_ADMIN & status aktif terkunci)'
+                          : isCashierRole(adminForm.role)
+                            ? `Akun Kasir Aktif (akses /cashier cabang ${adminForm.branchScope})`
+                            : 'Status Akun Aktif'}
                       </span>
                     </label>
 
                     <button
                       type="submit"
                       disabled={busy}
-                      className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 px-5 text-xs font-semibold text-white disabled:opacity-50 transition-colors"
+                      className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 px-5 text-xs font-semibold text-white disabled:opacity-50 transition-colors whitespace-nowrap"
                     >
                       {busy
                         ? 'Memproses...'
                         : isEditingOperator
-                          ? 'Simpan Perubahan Operator'
+                          ? 'Simpan Perubahan Profil'
                           : adminForm.createMode === 'DIRECT_CREATE'
                             ? 'Buat Akun & Aktifkan Operator'
                             : 'Simpan Undangan Operator'}
@@ -3171,11 +3630,12 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                           {lastProvisionResult.mode === 'CREATED_DIRECTLY' ? (
                             <>
                               Akun <strong className="text-white">{lastProvisionResult.email}</strong>{' '}
-                              ({lastProvisionResult.role} · {lastProvisionResult.branchScope}) telah terdaftar dengan UID otomatis{' '}
-                              <span className="font-mono text-emerald-200">{lastProvisionResult.uid}</span>. Tautan verifikasi email sudah dikirim.
+                              ({lastProvisionResult.role} · {lastProvisionResult.branchScope}) telah aktif dengan UID otomatis{' '}
+                              <span className="font-mono text-emerald-200">{lastProvisionResult.uid}</span>.{' '}
+                              <strong className="text-white">Tidak perlu verifikasi email.</strong>
                               <br />
-                              <strong className="text-white">Langkah operator:</strong> 1) Buka Inbox/Spam &amp; klik link verifikasi email, 2) Login di{' '}
-                              <span className="font-mono text-white">{lastProvisionResult.portalPath}</span> dengan email &amp; password awal tersebut.
+                              <strong className="text-white">Langkah operator:</strong> Langsung login sekarang di{' '}
+                              <span className="font-mono text-white">{lastProvisionResult.portalPath}</span> menggunakan email &amp; password awal tersebut.
                             </>
                           ) : lastProvisionResult.mode === 'INVITED_EXISTING_EMAIL' ? (
                             <>
@@ -3270,11 +3730,33 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                                 {inv.email} · Cabang: {inv.branchScope} · MENUNGGU AKTIVASI · Portal: {invitePortal}
                               </p>
                             </div>
-                            <div className="flex items-center gap-2 shrink-0">
+                            <div className="flex flex-wrap items-center gap-2 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setLastProvisionResult(null);
+                                  resetAdminForm({
+                                    email: inv.email,
+                                    fullName: inv.fullName,
+                                    createMode: 'EMAIL_INVITE',
+                                    role: inv.role,
+                                    branchScope: inv.branchScope,
+                                    cashierCode: inv.cashierCode || '',
+                                    active: inv.active,
+                                  });
+                                  document
+                                    .getElementById('operator-management-form')
+                                    ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                }}
+                                className="inline-flex items-center gap-1 min-h-[34px] rounded-lg border border-indigo-500/30 px-3 text-xs font-semibold text-slate-200 hover:bg-indigo-500/15 whitespace-nowrap"
+                              >
+                                <UserCog className="w-3.5 h-3.5" />
+                                <span>Edit</span>
+                              </button>
                               <button
                                 type="button"
                                 onClick={() => void copyPortalUrl(invitePortal, copyKey)}
-                                className="inline-flex items-center gap-1 min-h-[34px] rounded-lg border border-indigo-500/30 px-3 text-xs font-semibold text-sky-300 hover:bg-indigo-500/15"
+                                className="inline-flex items-center gap-1 min-h-[34px] rounded-lg border border-indigo-500/30 px-3 text-xs font-semibold text-sky-300 hover:bg-indigo-500/15 whitespace-nowrap"
                               >
                                 <Copy className="w-3.5 h-3.5" />
                                 <span>
@@ -3302,7 +3784,7 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                                     }
                                   })()
                                 }
-                                className="inline-flex items-center gap-1 min-h-[34px] rounded-lg border border-rose-500/30 px-3 text-xs font-semibold text-rose-300 hover:bg-rose-500/15 disabled:opacity-50"
+                                className="inline-flex items-center gap-1 min-h-[34px] rounded-lg border border-rose-500/30 px-3 text-xs font-semibold text-rose-300 hover:bg-rose-500/15 disabled:opacity-50 whitespace-nowrap"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                                 <span>Batalkan</span>
@@ -3336,50 +3818,65 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                         {loadingRows ? 'Memuat daftar operator...' : 'Belum ada data operator tambahan.'}
                       </div>
                     ) : (
-                      (activeRows as AdminUser[]).map((a, idx) => (
-                        <div
-                          key={a.uid || a.email || `adm-${idx}`}
-                          className="p-4 flex items-center justify-between gap-4"
-                        >
-                          <div className="min-w-0">
-                            <p className="text-sm font-bold text-white">
-                              {a.fullName}{' '}
-                              <span className="font-mono text-xs text-sky-300">
-                                ({a.role}
-                                {a.cashierCode ? ` · ${a.cashierCode}` : ''})
-                              </span>
-                            </p>
-                            <p className="text-xs font-mono text-slate-400 break-all">
-                              {a.email} · Cabang: {a.branchScope} · {a.active ? 'ACTIVE' : 'DISABLED'} · UID: {a.uid}
-                            </p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setLastProvisionResult(null);
-                              setAdminOriginalCreatedAt(a.createdAt);
-                              setAdminForm({
-                                uid: a.uid,
-                                email: a.email,
-                                fullName: a.fullName,
-                                password: '',
-                                createMode: 'DIRECT_CREATE',
-                                showPassword: false,
-                                role: a.role,
-                                branchScope: a.branchScope,
-                                cashierCode: a.cashierCode || '',
-                                active: a.active,
-                              });
-                              document
-                                .getElementById('operator-management-form')
-                                ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            }}
-                            className="text-xs font-semibold text-sky-300 hover:underline shrink-0"
+                      (activeRows as AdminUser[]).map((a, idx) => {
+                        const isSelfRow = a.uid === adminProfile.uid;
+                        const isProtectedBootstrap = a.email.toLowerCase() === 'spv.xpplay@gmail.com';
+                        const canDeleteRow = !isSelfRow && !isProtectedBootstrap;
+                        return (
+                          <div
+                            key={a.uid || a.email || `adm-${idx}`}
+                            className="p-4 flex flex-wrap items-center justify-between gap-3"
                           >
-                            Edit
-                          </button>
-                        </div>
-                      ))
+                            <div className="min-w-0">
+                              <p className="text-sm font-bold text-white">
+                                {a.fullName}{' '}
+                                <span className="font-mono text-xs text-sky-300">
+                                  ({a.role}
+                                  {a.cashierCode ? ` · ${a.cashierCode}` : ''})
+                                </span>
+                                {isSelfRow && (
+                                  <span className="text-xs font-normal text-emerald-300"> · Akun Anda</span>
+                                )}
+                              </p>
+                              <p className="text-xs font-mono text-slate-400 break-all">
+                                {a.email} · Cabang: {a.branchScope} · {a.active ? 'ACTIVE' : 'DISABLED'} · UID: {a.uid}
+                              </p>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => openOperatorEdit(a)}
+                                className="inline-flex items-center gap-1.5 min-h-[36px] rounded-lg border border-indigo-500/30 px-3 text-xs font-semibold text-sky-300 hover:bg-indigo-500/15 whitespace-nowrap transition-colors"
+                              >
+                                <UserCog className="w-3.5 h-3.5" />
+                                <span>Edit Profil</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => openOperatorPasswordModal(a)}
+                                className="inline-flex items-center gap-1.5 min-h-[36px] rounded-lg border border-amber-400/30 px-3 text-xs font-semibold text-amber-200 hover:bg-amber-500/15 whitespace-nowrap transition-colors"
+                              >
+                                <KeyRound className="w-3.5 h-3.5" />
+                                <span>Password</span>
+                              </button>
+                              {canDeleteRow ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openOperatorDeleteModal(a)}
+                                  className="inline-flex items-center gap-1.5 min-h-[36px] rounded-lg border border-rose-500/35 px-3 text-xs font-semibold text-rose-300 hover:bg-rose-500/15 whitespace-nowrap transition-colors"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>Hapus</span>
+                                </button>
+                              ) : (
+                                <span className="text-[11px] font-mono text-slate-500 px-2">
+                                  Dilindungi
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })
                     )}
                   </div>
                 </div>
@@ -3420,6 +3917,379 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
                   </tbody>
                 </table>
               </div>
+
+              {/* Modal: Edit / Reset Password Operator (Tanpa Form Password Lama) */}
+              {passwordModalOperator && (() => {
+                const isSelfTarget = passwordModalOperator.uid === adminProfile.uid;
+                return (
+                  <div
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="operator-password-modal-title"
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+                  >
+                    <div className="w-full max-w-lg rounded-2xl bg-[#0B1124] border border-indigo-500/30 p-6 space-y-5 shadow-2xl">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <h3
+                            id="operator-password-modal-title"
+                            className="font-display text-base font-bold text-white"
+                          >
+                            Ubah Password Operator
+                          </h3>
+                          <p className="text-xs text-slate-400 mt-1 truncate">
+                            {passwordModalOperator.fullName} · {passwordModalOperator.role} ·{' '}
+                            <span className="font-mono text-slate-300">{passwordModalOperator.email}</span>
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={closeOperatorPasswordModal}
+                          aria-label="Tutup modal password"
+                          className="p-1.5 text-slate-400 hover:text-white"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      {isSelfTarget && (
+                        <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-[#070B19] border border-indigo-500/25">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setOperatorPwdForm((prev) => ({
+                                ...prev,
+                                mode: 'DIRECT_UPDATE',
+                                error: '',
+                              }))
+                            }
+                            className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${
+                              operatorPwdForm.mode === 'DIRECT_UPDATE'
+                                ? 'bg-indigo-600/30 border border-sky-400/50 text-white'
+                                : 'border border-transparent text-slate-400 hover:text-slate-200'
+                            }`}
+                          >
+                            Isi Password Baru Langsung
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setOperatorPwdForm((prev) => ({
+                                ...prev,
+                                mode: 'RESET_EMAIL',
+                                error: '',
+                              }))
+                            }
+                            className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${
+                              operatorPwdForm.mode === 'RESET_EMAIL'
+                                ? 'bg-indigo-600/30 border border-sky-400/50 text-white'
+                                : 'border border-transparent text-slate-400 hover:text-slate-200'
+                            }`}
+                          >
+                            Kirim Link Reset ke Email
+                          </button>
+                        </div>
+                      )}
+
+                      {operatorPwdForm.error && (
+                        <div
+                          role="alert"
+                          className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3.5 py-2.5 text-xs text-rose-200 leading-relaxed"
+                        >
+                          {operatorPwdForm.error}
+                        </div>
+                      )}
+
+                      <form
+                        onSubmit={async (e) => {
+                          e.preventDefault();
+                          setOperatorPwdForm((prev) => ({ ...prev, submitting: true, error: '' }));
+                          try {
+                            const effectiveMode = isSelfTarget ? operatorPwdForm.mode : 'RESET_EMAIL';
+                            const res = await updateOperatorPasswordBySuperAdmin(
+                              {
+                                target: passwordModalOperator,
+                                mode: effectiveMode,
+                                newPassword: operatorPwdForm.newPassword,
+                                confirmPassword: operatorPwdForm.confirmPassword,
+                                reason: operatorPwdForm.reason,
+                              },
+                              adminProfile
+                            );
+                            closeOperatorPasswordModal();
+                            setFeedback({
+                              type: 'success',
+                              text:
+                                res.method === 'DIRECT_UPDATE'
+                                  ? `Password akun ${res.email} berhasil diubah secara langsung di Firebase Auth.`
+                                  : `Link reset password resmi Firebase telah dikirim ke email ${res.email} (tanpa perlu password lama).`,
+                            });
+                          } catch (err) {
+                            setOperatorPwdForm((prev) => ({
+                              ...prev,
+                              submitting: false,
+                              error: mapFriendlyError(err),
+                            }));
+                          }
+                        }}
+                        className="space-y-4"
+                      >
+                        {isSelfTarget && operatorPwdForm.mode === 'DIRECT_UPDATE' ? (
+                          <>
+                            <p className="text-xs text-slate-400 leading-relaxed">
+                              Langsung masukkan password baru Anda tanpa perlu mengisi password lama. Password diperbarui langsung di Firebase Auth.
+                            </p>
+
+                            <div className="space-y-1.5">
+                              <div className="flex items-center justify-between gap-2">
+                                <label className="block text-xs font-medium text-slate-300">
+                                  Password Baru * (min. 8 karakter)
+                                </label>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const pwd = generateOperatorPassword();
+                                    setOperatorPwdForm((prev) => ({
+                                      ...prev,
+                                      newPassword: pwd,
+                                      confirmPassword: pwd,
+                                      showPasswords: true,
+                                    }));
+                                  }}
+                                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-sky-300 hover:text-sky-200"
+                                >
+                                  <Wand2 className="w-3 h-3" />
+                                  <span>Acak Password</span>
+                                </button>
+                              </div>
+                              <input
+                                type={operatorPwdForm.showPasswords ? 'text' : 'password'}
+                                required
+                                minLength={8}
+                                autoComplete="new-password"
+                                placeholder="Minimal 8 karakter"
+                                value={operatorPwdForm.newPassword}
+                                onChange={(e) =>
+                                  setOperatorPwdForm((prev) => ({
+                                    ...prev,
+                                    newPassword: e.target.value,
+                                  }))
+                                }
+                                className="w-full h-10 rounded-lg bg-[#070B19] border border-indigo-500/30 px-3 text-sm font-mono text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
+                              />
+                            </div>
+
+                            <div className="space-y-1.5">
+                              <label className="block text-xs font-medium text-slate-300">
+                                Konfirmasi Password Baru *
+                              </label>
+                              <input
+                                type={operatorPwdForm.showPasswords ? 'text' : 'password'}
+                                required
+                                minLength={8}
+                                autoComplete="new-password"
+                                placeholder="Ulangi password baru"
+                                value={operatorPwdForm.confirmPassword}
+                                onChange={(e) =>
+                                  setOperatorPwdForm((prev) => ({
+                                    ...prev,
+                                    confirmPassword: e.target.value,
+                                  }))
+                                }
+                                className="w-full h-10 rounded-lg bg-[#070B19] border border-indigo-500/30 px-3 text-sm font-mono text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
+                              />
+                            </div>
+
+                            <label className="inline-flex items-center gap-2 text-xs text-slate-300">
+                              <input
+                                type="checkbox"
+                                checked={operatorPwdForm.showPasswords}
+                                onChange={(e) =>
+                                  setOperatorPwdForm((prev) => ({
+                                    ...prev,
+                                    showPasswords: e.target.checked,
+                                  }))
+                                }
+                              />
+                              <span>Tampilkan karakter password</span>
+                            </label>
+                          </>
+                        ) : (
+                          <div className="rounded-xl bg-[#070B19] border border-indigo-500/25 p-4 text-xs text-slate-300 leading-relaxed space-y-1.5">
+                            <p className="font-semibold text-white">
+                              Ubah Password 1-Klik via Link Resmi Firebase (Tanpa Password Lama)
+                            </p>
+                            <p>
+                              Firebase akan langsung mengirim tautan pengisian password baru ke{' '}
+                              <span className="font-mono text-sky-300">{passwordModalOperator.email}</span>. Tidak perlu memasukkan password lama dan password tidak pernah disimpan di database.
+                            </p>
+                          </div>
+                        )}
+
+                        <div className="space-y-1.5">
+                          <label className="block text-xs font-medium text-slate-300">
+                            Catatan Audit (Opsional)
+                          </label>
+                          <input
+                            type="text"
+                            maxLength={200}
+                            placeholder="contoh: Rotasi shift kasir / permintaan reset password"
+                            value={operatorPwdForm.reason}
+                            onChange={(e) =>
+                              setOperatorPwdForm((prev) => ({ ...prev, reason: e.target.value }))
+                            }
+                            className="w-full h-10 rounded-lg bg-[#070B19] border border-indigo-500/30 px-3 text-sm text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
+                          />
+                        </div>
+
+                        <div className="flex items-center justify-end gap-2 pt-2 border-t border-indigo-500/15">
+                          <button
+                            type="button"
+                            disabled={operatorPwdForm.submitting}
+                            onClick={closeOperatorPasswordModal}
+                            className="h-10 rounded-xl border border-indigo-500/30 px-4 text-xs font-semibold text-slate-300 hover:text-white transition-colors"
+                          >
+                            Batal
+                          </button>
+                          <button
+                            type="submit"
+                            disabled={operatorPwdForm.submitting}
+                            className="h-10 rounded-xl bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 px-5 text-xs font-semibold text-white disabled:opacity-50 transition-colors whitespace-nowrap"
+                          >
+                            {operatorPwdForm.submitting
+                              ? 'Memproses...'
+                              : isSelfTarget && operatorPwdForm.mode === 'DIRECT_UPDATE'
+                                ? 'Simpan Password Baru'
+                                : 'Kirim Link Reset Password'}
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Modal: Confirm Permanent Hard Delete Operator (Tanpa Form Password) */}
+              {deleteModalOperator && (
+                <div
+                  role="dialog"
+                  aria-modal="true"
+                  aria-labelledby="operator-delete-modal-title"
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+                >
+                  <div className="w-full max-w-lg rounded-2xl bg-[#0B1124] border border-rose-500/35 p-6 space-y-5 shadow-2xl">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <h3
+                          id="operator-delete-modal-title"
+                          className="font-display text-base font-bold text-white"
+                        >
+                          Hapus Permanen User Admin / Kasir?
+                        </h3>
+                        <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                          Data operator akan langsung dihapus permanen dari database Firebase Firestore (tidak memenuhi penyimpanan), seluruh akses portal dicabut seketika, dan slot cabangnya kembali kosong.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={closeOperatorDeleteModal}
+                        aria-label="Tutup modal hapus"
+                        className="p-1.5 text-slate-400 hover:text-white"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <div className="rounded-xl bg-[#070B19] border border-rose-500/25 p-4 space-y-1 text-xs">
+                      <p className="font-bold text-white text-sm">{deleteModalOperator.fullName}</p>
+                      <p className="font-mono text-slate-300">{deleteModalOperator.email}</p>
+                      <p className="font-mono text-rose-300">
+                        Role: {deleteModalOperator.role} · Cabang: {deleteModalOperator.branchScope}
+                        {deleteModalOperator.cashierCode ? ` · ${deleteModalOperator.cashierCode}` : ''}
+                      </p>
+                    </div>
+
+                    {operatorDeleteForm.error && (
+                      <div
+                        role="alert"
+                        className="rounded-xl border border-rose-500/40 bg-rose-500/10 px-3.5 py-2.5 text-xs text-rose-200 leading-relaxed"
+                      >
+                        {operatorDeleteForm.error}
+                      </div>
+                    )}
+
+                    <form
+                      onSubmit={async (e) => {
+                        e.preventDefault();
+                        setOperatorDeleteForm((prev) => ({
+                          ...prev,
+                          submitting: true,
+                          error: '',
+                        }));
+                        try {
+                          const res = await deleteOperatorAccountBySuperAdmin(
+                            {
+                              target: deleteModalOperator,
+                              reason: operatorDeleteForm.reason,
+                            },
+                            adminProfile
+                          );
+                          if (adminForm.uid === deleteModalOperator.uid) {
+                            resetAdminForm();
+                          }
+                          closeOperatorDeleteModal();
+                          setFeedback({
+                            type: 'success',
+                            text: `Operator ${res.email} berhasil dihapus permanen dari database Firebase dan seluruh akses portalnya telah dicabut.`,
+                          });
+                          await Promise.all([loadMenuRows(true), loadAdminInvites()]);
+                        } catch (err) {
+                          setOperatorDeleteForm((prev) => ({
+                            ...prev,
+                            submitting: false,
+                            error: mapFriendlyError(err),
+                          }));
+                        }
+                      }}
+                      className="space-y-4"
+                    >
+                      <div className="space-y-1.5">
+                        <label className="block text-xs font-medium text-slate-300">
+                          Alasan Penghapusan (Opsional)
+                        </label>
+                        <input
+                          type="text"
+                          maxLength={200}
+                          placeholder="contoh: Staf sudah resign / pindah tugas"
+                          value={operatorDeleteForm.reason}
+                          onChange={(e) =>
+                            setOperatorDeleteForm((prev) => ({ ...prev, reason: e.target.value }))
+                          }
+                          className="w-full h-10 rounded-lg bg-[#070B19] border border-indigo-500/30 px-3 text-sm text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-end gap-2 pt-2 border-t border-indigo-500/15">
+                        <button
+                          type="button"
+                          disabled={operatorDeleteForm.submitting}
+                          onClick={closeOperatorDeleteModal}
+                          className="h-10 rounded-xl border border-indigo-500/30 px-4 text-xs font-semibold text-slate-300 hover:text-white transition-colors"
+                        >
+                          Batal
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={operatorDeleteForm.submitting}
+                          className="h-10 rounded-xl bg-rose-600 hover:bg-rose-500 px-5 text-xs font-semibold text-white disabled:opacity-50 transition-colors whitespace-nowrap"
+                        >
+                          {operatorDeleteForm.submitting ? 'Menghapus...' : 'Ya, Hapus Permanen'}
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              )}
             </div>
             );
           })()}
@@ -3913,7 +4783,126 @@ export function AdminDashboardPage({ mode = 'ADMIN' }: { mode?: 'ADMIN' | 'SUPER
             setPasswordInitialMember(member);
             setMenu('passwordManagement');
           }}
+          onRequestHardDelete={(member) => openHardDeleteModal({ kind: 'member', item: member })}
         />
+      )}
+
+      {/* System-Wide Permanent Firestore Hard Delete Modal */}
+      {hardDeleteTarget && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="system-hard-delete-modal-title"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4"
+        >
+          <div className="w-full max-w-md rounded-2xl bg-[#0B1124] border border-rose-500/35 p-6 space-y-4 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3
+                  id="system-hard-delete-modal-title"
+                  className="font-display text-base font-bold text-white"
+                >
+                  Hapus Permanen dari Firebase?
+                </h3>
+                <p className="text-xs text-slate-400 mt-1 leading-relaxed">
+                  {hardDeleteTarget.kind === 'member'
+                    ? 'Seluruh dokumen member beserta transaksi, ledger XP, benefit request, referral, notifikasi, dan indeks loginnya akan dihapus permanen dari database Firestore.'
+                    : hardDeleteTarget.kind === 'notification'
+                      ? 'Dokumen kampanye notifikasi beserta seluruh notifikasi inbox member terkait akan dihapus permanen dari database Firestore.'
+                      : 'Dokumen ini akan langsung dihapus permanen dari database Firebase Firestore agar penyimpanan tetap ringan.'}
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={hardDeleteBusy}
+                onClick={closeHardDeleteModal}
+                aria-label="Tutup konfirmasi hapus"
+                className="p-1.5 text-slate-400 hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="rounded-xl bg-[#070B19] border border-rose-500/25 p-3.5 text-xs space-y-1">
+              {hardDeleteTarget.kind === 'member' && (
+                <>
+                  <p className="font-bold text-white text-sm">{hardDeleteTarget.item.fullName}</p>
+                  <p className="font-mono text-slate-300">
+                    {hardDeleteTarget.item.memberId} ·{' '}
+                    {hardDeleteTarget.item.username
+                      ? `@${hardDeleteTarget.item.username}`
+                      : 'PRE_REGISTERED'}{' '}
+                    · {hardDeleteTarget.item.whatsapp}
+                  </p>
+                  <p className="font-mono text-rose-300">
+                    Level {hardDeleteTarget.item.currentLevel} · Progress {hardDeleteTarget.item.xpProgress} XP · Reward {hardDeleteTarget.item.xpReward} XP
+                  </p>
+                </>
+              )}
+              {hardDeleteTarget.kind === 'benefit' && (
+                <>
+                  <p className="font-bold text-white text-sm">{hardDeleteTarget.item.name}</p>
+                  <p className="font-mono text-rose-300">
+                    Benefit · Level {hardDeleteTarget.item.levelRequirement} · {hardDeleteTarget.item.xpCost} XP
+                  </p>
+                </>
+              )}
+              {hardDeleteTarget.kind === 'campaign' && (
+                <>
+                  <p className="font-bold text-white text-sm">{hardDeleteTarget.item.title}</p>
+                  <p className="font-mono text-rose-300">
+                    {hardDeleteTarget.item.type === 'PROMO'
+                      ? hardDeleteTarget.item.xpReward > 0
+                        ? `PROMO · Biaya -${hardDeleteTarget.item.xpReward} XP`
+                        : 'PROMO · Gratis (0 XP)'
+                      : `${hardDeleteTarget.item.type} · +${hardDeleteTarget.item.xpReward} XP`}
+                  </p>
+                </>
+              )}
+              {hardDeleteTarget.kind === 'notification' && (
+                <>
+                  <p className="font-bold text-white text-sm">{hardDeleteTarget.item.title}</p>
+                  <p className="text-slate-400 line-clamp-2">{hardDeleteTarget.item.message}</p>
+                </>
+              )}
+            </div>
+
+            {hardDeleteTarget.kind === 'member' && (
+              <div className="space-y-1.5">
+                <label className="block text-xs font-medium text-slate-300">
+                  Alasan Penghapusan (Opsional)
+                </label>
+                <input
+                  type="text"
+                  maxLength={200}
+                  placeholder="contoh: Data duplikat / permintaan hapus akun member"
+                  value={hardDeleteReason}
+                  onChange={(e) => setHardDeleteReason(e.target.value)}
+                  className="w-full h-10 rounded-lg bg-[#070B19] border border-indigo-500/30 px-3 text-sm text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
+                />
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-indigo-500/15">
+              <button
+                type="button"
+                disabled={hardDeleteBusy}
+                onClick={closeHardDeleteModal}
+                className="h-10 rounded-xl border border-indigo-500/30 px-4 text-xs font-semibold text-slate-300 hover:text-white transition-colors"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={hardDeleteBusy}
+                onClick={() => void handleConfirmHardDelete()}
+                className="h-10 rounded-xl bg-rose-600 hover:bg-rose-500 px-5 text-xs font-semibold text-white disabled:opacity-50 transition-colors whitespace-nowrap"
+              >
+                {hardDeleteBusy ? 'Menghapus...' : 'Ya, Hapus Permanen'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Deny Reason Modal */}

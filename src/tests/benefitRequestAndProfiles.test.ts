@@ -18,6 +18,7 @@ import {
   getMemberCategoryLabel,
   getXpLedgerMovementLabel,
   isBenefitRequestEffectivelyExpired,
+  resolveCampaignBenefitRequestEconomics,
   resolveJakartaDateRange,
   validateBirthDate,
   validateMemberCategory,
@@ -599,5 +600,190 @@ describe('FASE 32 & 33 — 15-Point Integrity Specific Checks & Firestore Rules 
     expect(rules).toContain("existing().status == 'ON_PROCESS' && incoming().status in ['APPROVED', 'DENIED', 'REFUNDED']");
     expect(rules).toContain("existing().status == 'APPROVED' && incoming().status in ['USED', 'EXPIRED', 'REFUNDED']");
     expect(rules).toContain("notificationId == ('new_member_' + request.auth.uid)");
+  });
+
+  it('PROMO XP DEDUCTION: Promo claim deducts member XP Reward via XP Hold (same lifecycle as Benefit) instead of adding XP', () => {
+    const T0 = Date.UTC(2026, 6, 1, 10, 0, 0);
+
+    // 1. Economics resolution: PROMO deducts xpCost (grant = 0), while CHALLENGE/EVENT grant XP (cost = 0)
+    expect(resolveCampaignBenefitRequestEconomics({ type: 'PROMO', xpReward: 80 })).toEqual({
+      xpCost: 80,
+      xpRewardGrant: 0,
+    });
+    expect(resolveCampaignBenefitRequestEconomics({ type: 'PROMO', xpReward: 0 })).toEqual({
+      xpCost: 0,
+      xpRewardGrant: 0,
+    });
+    expect(resolveCampaignBenefitRequestEconomics({ type: 'CHALLENGE', xpReward: 50 })).toEqual({
+      xpCost: 0,
+      xpRewardGrant: 50,
+    });
+    expect(resolveCampaignBenefitRequestEconomics({ type: 'EVENT', xpReward: 120 })).toEqual({
+      xpCost: 0,
+      xpRewardGrant: 120,
+    });
+
+    // 2. Submit PROMO claim (80 XP): immediately holds 80 XP Reward into reservedXp; XP Progress & Level unchanged
+    const memberBefore = makeMember({ xpProgress: 180, xpReward: 120, reservedXp: 0, currentLevel: 'SILVER' });
+    const promoEcon = resolveCampaignBenefitRequestEconomics({ type: 'PROMO', xpReward: 80 });
+    const hold = computeBenefitHoldBalances({
+      memberXpReward: memberBefore.xpReward,
+      memberReservedXp: memberBefore.reservedXp,
+      memberXpProgress: memberBefore.xpProgress,
+      memberLevel: memberBefore.currentLevel,
+      xpCost: promoEcon.xpCost,
+    });
+
+    expect(hold.afterXpReward).toBe(40);
+    expect(hold.afterReservedXp).toBe(80);
+    expect(hold.xpProgress).toBe(180);
+    expect(hold.currentLevel).toBe('SILVER');
+    expect(hold.ledgerAmount).toBe(-80);
+
+    // 3. Approve PROMO claim: consumes held reservedXp, does NOT add XP Progress or XP Reward, grants 7-day validity
+    const memberAfterHold = makeMember({
+      xpProgress: 180,
+      xpReward: hold.afterXpReward,
+      reservedXp: hold.afterReservedXp,
+      currentLevel: 'SILVER',
+    });
+    const approved = computeBenefitApproval({
+      request: {
+        status: 'ON_PROCESS',
+        xpCost: promoEcon.xpCost,
+        xpRewardGrant: promoEcon.xpRewardGrant,
+      },
+      member: memberAfterHold,
+      levels: DEFAULT_LEVELS,
+      nowMs: T0,
+    });
+
+    expect(approved.nextStatus).toBe('APPROVED');
+    expect(approved.nextXpProgress).toBe(180); // unchanged — Promo never adds XP!
+    expect(approved.nextXpReward).toBe(40); // permanently reduced from 120 -> 40!
+    expect(approved.nextReservedXp).toBe(0);
+    expect(approved.nextLevel).toBe('SILVER');
+    expect(approved.levelChanged).toBe(false);
+    expect(approved.expiresAt).toBe(T0 + BENEFIT_VALIDITY_MS);
+
+    // 4. Deny PROMO claim: automatically refunds 80 XP back to available XP Reward
+    const denied = computeBenefitDenial({
+      request: { status: 'ON_PROCESS', xpCost: promoEcon.xpCost },
+      member: memberAfterHold,
+      nowMs: T0,
+    });
+    expect(denied.nextStatus).toBe('REFUNDED');
+    expect(denied.refundedAmount).toBe(80);
+    expect(denied.afterXpReward).toBe(120);
+    expect(denied.afterReservedXp).toBe(0);
+    expect(denied.shouldCreateRefundLedger).toBe(true);
+
+    // 5. Reject PROMO claim when member's XP Reward is insufficient
+    expect(() =>
+      computeBenefitHoldBalances({
+        memberXpReward: 50,
+        memberReservedXp: 0,
+        memberXpProgress: 180,
+        memberLevel: 'SILVER',
+        xpCost: promoEcon.xpCost,
+      })
+    ).toThrow(/tidak mencukupi/i);
+
+    // 6. Integrity engine passes cleanly for an ON_PROCESS PROMO request with matching reservedXp
+    const promoMember = makeMember({ uid: 'm_promo', xpProgress: 180, xpReward: 40, reservedXp: 80 });
+    const promoReq: BenefitRequestRecord = {
+      id: 'BRQ-PROMO-1',
+      memberId: promoMember.memberId,
+      memberUid: promoMember.uid,
+      memberUsername: promoMember.username,
+      memberName: promoMember.fullName,
+      memberWhatsapp: promoMember.whatsapp,
+      sourceType: 'PROMO',
+      sourceId: 'camp_promo_1',
+      title: 'Diskon 50% VIP Room',
+      xpCost: 80,
+      xpRewardGrant: 0,
+      levelRequirement: 'BRONZE',
+      evidenceUrl: '',
+      evidencePath: '',
+      note: '',
+      status: 'ON_PROCESS',
+      resolution: null,
+      holdLedgerId: 'hold_promo_1',
+      refundLedgerId: null,
+      branch: 'DEMANG',
+      approvedAt: null,
+      approvedBy: null,
+      approvedByRole: null,
+      deniedAt: null,
+      deniedBy: null,
+      deniedReason: null,
+      expiresAt: null,
+      expiredAt: null,
+      usedAt: null,
+      usedBy: null,
+      usedBranch: null,
+      receiptReference: null,
+      refundedAt: null,
+      refundReason: null,
+      refundedAmount: 0,
+      cycleId: 'cycle_2026_s1',
+      createdAt: T0,
+      updatedAt: T0,
+    };
+    const dataset: IntegrityDataset = {
+      members: [promoMember],
+      levels: DEFAULT_LEVELS,
+      xpProgressLedger: [],
+      xpRewardLedger: [
+        {
+          id: 'hold_promo_1',
+          memberId: promoMember.memberId,
+          memberUid: promoMember.uid,
+          amount: -80,
+          type: 'REWARD',
+          direction: 'DEBIT',
+          source: 'BENEFIT_REQUEST_HOLD',
+          referenceId: promoReq.id,
+          branch: 'DEMANG',
+          cycleId: 'cycle_2026_s1',
+          createdAt: T0,
+          createdBy: promoMember.uid,
+          note: 'XP Ditahan (Hold) untuk Klaim Promo: Diskon 50% VIP Room',
+        },
+      ],
+      referrals: [],
+      claims: [],
+      redemptions: [],
+      benefitRequests: [promoReq],
+      transactions: [],
+      campaigns: [
+        {
+          id: 'camp_promo_1',
+          type: 'PROMO',
+          title: 'Diskon 50% VIP Room',
+          description: 'Tukar 80 XP untuk diskon 50%',
+          startAt: T0 - 86400000,
+          endAt: T0 + 7 * 86400000,
+          xpReward: 80,
+          imageUrl: '',
+          terms: '',
+          maxClaimsPerMember: 1,
+          totalClaimLimit: 20,
+          claimsCount: 0,
+          active: true,
+          status: 'ACTIVE',
+          requiresEvidence: false,
+          createdBy: 'adm1',
+          createdAt: T0 - 86400000,
+          updatedAt: T0 - 86400000,
+        },
+      ],
+      benefits: [],
+      existingStoragePaths: new Set(),
+    };
+    const report = runDataIntegrityChecks(dataset, { auditId: 'audit_promo', checkedBy: 'adm1', checkedAt: T0 });
+    expect(report.checks.find((c) => c.code === 'NO_ORPHAN_BENEFIT_REQUESTS')?.passed).toBe(true);
+    expect(report.checks.find((c) => c.code === 'NO_DUPLICATE_DEDUCTION_OR_REFUND')?.passed).toBe(true);
   });
 });

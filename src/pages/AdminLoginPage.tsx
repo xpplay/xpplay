@@ -126,7 +126,9 @@ export function AdminLoginPage() {
     }
   };
 
-  const needsEmailVerification = Boolean(firebaseUser && !firebaseUser.emailVerified);
+  const needsEmailVerification = Boolean(
+    firebaseUser && !firebaseUser.emailVerified && !loading && !adminProfile && !memberProfile
+  );
 
   return (
     <div className="min-h-screen gaming-canvas text-slate-100 flex flex-col justify-center px-4 py-8 sm:py-10">

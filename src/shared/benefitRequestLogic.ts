@@ -246,9 +246,26 @@ export interface BenefitApproveComputation {
 }
 
 /**
+ * Resolves XP economics for a campaign Benefit Request:
+ * - PROMO: deducts member XP Reward (xpCost = xpReward, xpRewardGrant = 0),
+ *   following the exact same XP Hold -> Approve / Auto-Refund lifecycle as Benefits.
+ * - CHALLENGE / EVENT: grants XP Progress & XP Reward upon approval (xpCost = 0, xpRewardGrant = xpReward).
+ */
+export function resolveCampaignBenefitRequestEconomics(campaign: {
+  type: 'CHALLENGE' | 'EVENT' | 'PROMO';
+  xpReward: number;
+}): { xpCost: number; xpRewardGrant: number } {
+  const xpAmount = Math.max(0, Math.floor(Number(campaign.xpReward) || 0));
+  if (campaign.type === 'PROMO') {
+    return { xpCost: xpAmount, xpRewardGrant: 0 };
+  }
+  return { xpCost: 0, xpRewardGrant: xpAmount };
+}
+
+/**
  * FASE 3 & 4: Approve an ON_PROCESS Benefit Request.
- * - Consumes held reservedXp (does NOT return xpCost to available XP Reward).
- * - If xpRewardGrant > 0 (Challenge/Event/Promo claim), credits both XP Progress & XP Reward and updates level if AUTOMATIC.
+ * - Consumes held reservedXp (does NOT return xpCost to available XP Reward) — applies to Benefits & Promos.
+ * - If xpRewardGrant > 0 (Challenge/Event claim), credits both XP Progress & XP Reward and updates level if AUTOMATIC.
  * - Sets 7-day benefit validity: expiresAt = approvedAt + 7 days.
  */
 export function computeBenefitApproval(input: {
